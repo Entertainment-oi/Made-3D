@@ -1,0 +1,42 @@
+{
+  "name": "made3d-studio",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./made3d.module.js",
+  "module": "./made3d.module.js",
+  "sideEffects": false,
+  "exports": {
+    ".": "./made3d.module.js",
+    "./core": "./src/modules/core.js",
+    "./full": "./made3d.full.js",
+    "./loaders": "./src/modules/loaders.js",
+    "./exporters": "./src/modules/exporters.js",
+    "./modeling": "./src/modules/modeling.js",
+    "./sculpt": "./src/modules/sculpt.js",
+    "./gizmo": "./src/modules/gizmo.js",
+    "./animation": "./src/modules/animation.js",
+    "./rigging": "./src/modules/rigging.js",
+    "./helpers": "./src/modules/helpers.js",
+    "./stylized": "./src/modules/stylized.js",
+    "./environment": "./src/modules/environment.js",
+    "./text": "./src/modules/text.js",
+    "./video": "./src/modules/video.js"
+  },
+  "scripts": {
+    "dev": "vite --port=3000 --host=0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview",
+    "clean": "rm -rf dist server.js",
+    "lint": "find src editor -name '*.js' -print0 | xargs -0 -n1 node --check && node --check app.js made3d.module.js made3d.full.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "express": "^4.21.2",
+    "vite": "^8.3.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

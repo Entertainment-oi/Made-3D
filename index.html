@@ -1,0 +1,1014 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Made3D Studio</title>
+    <meta name="description" content="Entorno interactivo con la librería 3D WebGL2 y WebGPU Made3D (v0.1.0)." />
+    <meta property="og:title" content="Made3D Studio" />
+    <meta property="og:description" content="Entorno interactivo con la librería 3D WebGL2 y WebGPU Made3D (v0.1.0)." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <!-- Barra superior limpia -->
+      <header class="topbar">
+        <div class="topbar-left">
+          <button
+            type="button"
+            id="btn-nav-scene"
+            class="top-menu-btn"
+            data-popover-target="menu-scene"
+            aria-expanded="false"
+          >
+            <span>Escena</span>
+            <svg class="chev-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            id="btn-nav-object"
+            class="top-menu-btn"
+            data-popover-target="menu-object"
+            aria-expanded="false"
+          >
+            <span>Objeto</span>
+            <svg class="chev-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            id="btn-nav-mode"
+            class="top-menu-btn mode-dropdown-btn"
+            data-popover-target="menu-mode"
+            aria-expanded="false"
+            title="Cambiar modo de trabajo"
+          >
+            <span id="mode-btn-label">Pose</span>
+            <svg class="chev-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M6 9l6 6 6-6" />
+            </svg>
+          </button>
+        </div>
+
+        <div class="topbar-right">
+          <button
+            type="button"
+            id="btn-nav-settings"
+            class="top-icon-btn"
+            data-popover-target="menu-settings"
+            aria-expanded="false"
+            title="Ajustes del visor y entorno"
+            aria-label="Ajustes"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+              <circle cx="12" cy="12" r="3" />
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.77 1.02 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+            </svg>
+          </button>
+
+          <button
+            type="button"
+            id="btn-nav-outliner"
+            class="top-icon-btn"
+            data-popover-target="menu-outliner"
+            aria-expanded="false"
+            title="Lista de objetos de la escena"
+            aria-label="Menú de objetos"
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
+        </div>
+
+        <input
+          type="file"
+          id="model-file-input"
+          class="sr-only"
+          multiple
+          accept=".glb,.gltf,.obj,.mtl,.ktx2,.bin,.png,.jpg,.jpeg,.webp,.zip"
+        />
+      </header>
+
+      <!-- Área principal del visor -->
+      <main class="workspace">
+        <section id="viewport-wrap" class="viewport-wrap" aria-label="Visor 3D">
+          <canvas id="viewport" tabindex="0"></canvas>
+          <canvas id="edit-overlay" class="edit-overlay"></canvas>
+          <canvas id="sculpt-overlay" class="sculpt-overlay" hidden></canvas>
+
+          <!-- Indicador discreto de estado / grabación -->
+          <div id="loader-status" class="status-toast" hidden></div>
+
+          <div id="rec-indicator" class="rec-indicator" hidden>
+            <span class="rec-dot"></span>
+            <span id="rec-indicator-text">REC 00:00</span>
+          </div>
+
+          <div id="camera-viewfinder" class="camera-viewfinder" hidden>
+            <div id="vf-mask-top" class="vf-mask"></div>
+            <div id="vf-mask-bottom" class="vf-mask"></div>
+            <div id="vf-mask-left" class="vf-mask"></div>
+            <div id="vf-mask-right" class="vf-mask"></div>
+            <div id="vf-frame" class="vf-frame">
+              <span class="vf-corner vf-tl"></span>
+              <span class="vf-corner vf-tr"></span>
+              <span class="vf-corner vf-bl"></span>
+              <span class="vf-corner vf-br"></span>
+              <div id="vf-thirds" class="vf-thirds">
+                <span class="vf-line vf-v1"></span>
+                <span class="vf-line vf-v2"></span>
+                <span class="vf-line vf-h1"></span>
+                <span class="vf-line vf-h2"></span>
+              </div>
+              <div id="vf-label" class="vf-label">Cámara · 1920×1080</div>
+            </div>
+            <div class="vf-actions">
+              <button type="button" id="btn-vf-render" class="vf-btn is-primary">Renderizar imagen</button>
+              <button type="button" id="btn-vf-video" class="vf-btn is-record">Grabar video</button>
+              <button type="button" id="btn-vf-lock" class="vf-btn">Fijar cámara</button>
+              <button type="button" id="btn-vf-exit" class="vf-btn">Salir vista</button>
+            </div>
+          </div>
+
+          <div id="gizmo-readout" class="gizmo-readout" hidden></div>
+
+          <!-- ========================== MODO EDICIÓN: BARRA SUPERIOR IZQUIERDA (3 CUBOS) ========================== -->
+          <div id="edit-sel-bar" class="edit-sel-bar" role="toolbar" aria-label="Modo de selección de malla" hidden>
+            <button type="button" class="cube-mode-btn is-active" data-edit-sel="face" title="Seleccionar Caras (3)">
+              <svg viewBox="0 0 28 28" fill="none">
+                <polygon points="14,3 24,8.5 14,14 4,8.5" fill="#f59e0b" fill-opacity="0.82" stroke="#fde68a" stroke-width="1.4" />
+                <polygon points="4,8.5 14,14 14,25 4,19.5" fill="rgba(255,255,255,0.06)" stroke="#9ca3af" stroke-width="1.3" />
+                <polygon points="24,8.5 14,14 14,25 24,19.5" fill="rgba(255,255,255,0.04)" stroke="#9ca3af" stroke-width="1.3" />
+              </svg>
+            </button>
+            <button type="button" class="cube-mode-btn" data-edit-sel="edge" title="Seleccionar Aristas (2)">
+              <svg viewBox="0 0 28 28" fill="none">
+                <polygon points="14,3 24,8.5 14,14 4,8.5" fill="rgba(255,255,255,0.04)" stroke="#71717a" stroke-width="1.2" />
+                <polygon points="4,8.5 14,14 14,25 4,19.5" fill="rgba(255,255,255,0.04)" stroke="#71717a" stroke-width="1.2" />
+                <polygon points="24,8.5 14,14 14,25 24,19.5" fill="rgba(255,255,255,0.04)" stroke="#71717a" stroke-width="1.2" />
+                <line x1="14" y1="14" x2="14" y2="25" stroke="#facc15" stroke-width="2.8" stroke-linecap="round" />
+                <line x1="4" y1="8.5" x2="14" y2="14" stroke="#f59e0b" stroke-width="2.4" stroke-linecap="round" />
+              </svg>
+            </button>
+            <button type="button" class="cube-mode-btn" data-edit-sel="vertex" title="Seleccionar Vértices (1)">
+              <svg viewBox="0 0 28 28" fill="none">
+                <polygon points="14,3 24,8.5 14,14 4,8.5" fill="rgba(255,255,255,0.04)" stroke="#71717a" stroke-width="1.2" />
+                <polygon points="4,8.5 14,14 14,25 4,19.5" fill="rgba(255,255,255,0.04)" stroke="#71717a" stroke-width="1.2" />
+                <polygon points="24,8.5 14,14 14,25 24,19.5" fill="rgba(255,255,255,0.04)" stroke="#71717a" stroke-width="1.2" />
+                <circle cx="14" cy="14" r="3.4" fill="#facc15" stroke="#18181b" stroke-width="1.2" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- ========================== MODO EDICIÓN: BARRA VERTICAL IZQUIERDA ========================== -->
+          <div id="edit-tool-bar" class="float-bar float-bar-left" role="toolbar" aria-label="Herramientas de edición de malla" hidden>
+            <!-- 1. Extruir (2x tap -> distancia) -->
+            <div class="tool-slot">
+              <button type="button" id="btn-edit-extrude" class="tool-cube-btn" title="Extruir selección (2× clic para ajustar distancia)">
+                <svg viewBox="0 0 28 28" fill="none">
+                  <path d="M6 12l8-4 8 4v8l-8 4-8-4v-8z" stroke="#9ca3af" stroke-width="1.3" fill="rgba(255,255,255,0.04)" />
+                  <path d="M9 9V4l5-2.2L19 4v5" stroke="#f59e0b" stroke-width="1.6" fill="rgba(245,158,11,0.22)" />
+                  <path d="M14 2v9" stroke="#fde68a" stroke-width="1.4" />
+                </svg>
+                <span class="tool-mini-label">Extruir</span>
+              </button>
+              <div id="pop-edit-extrude" class="side-flyout" hidden>
+                <div class="flyout-header">
+                  <span class="flyout-title">Distancia de extrusión</span>
+                  <button type="button" class="flyout-close-btn" data-close-flyout aria-label="Cerrar">×</button>
+                </div>
+                <div class="flyout-row">
+                  <input type="number" id="edit-extrude-dist" class="num-mini" step="0.05" value="0.25" />
+                  <button type="button" id="btn-edit-extrude-apply" class="mini-accent-btn">Extruir</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 2. Dividir (Toggle + sub-botones Línea & Bucle 360°) -->
+            <div id="cut-tool-slot" class="tool-slot">
+              <button type="button" id="btn-edit-cut-toggle" class="tool-cube-btn" title="Activar/desactivar división de caras (K)">
+                <svg viewBox="0 0 28 28" fill="none">
+                  <polygon points="14,3 23,8 23,19 14,24 5,19 5,8" stroke="#9ca3af" stroke-width="1.3" fill="rgba(255,255,255,0.04)" />
+                  <line x1="5" y1="13.5" x2="23" y2="13.5" stroke="#f59e0b" stroke-width="2" stroke-dasharray="3 2" />
+                </svg>
+                <span class="tool-mini-label">Dividir</span>
+              </button>
+              <div id="edit-cut-subbar" class="cut-subbar" hidden>
+                <button type="button" class="tool-cube-btn is-sub" data-edit-cut-mode="knife" title="Dividir trazando línea libre (Cuchillo)">
+                  <svg viewBox="0 0 28 28" fill="none">
+                    <polygon points="14,3 23,8 23,19 14,24 5,19 5,8" stroke="#9ca3af" stroke-width="1.2" fill="rgba(255,255,255,0.04)" />
+                    <path d="M6.5 11.5C10 8.5 16 14 21.5 9.5" stroke="#facc15" stroke-width="2.1" stroke-linecap="round" />
+                  </svg>
+                  <span class="tool-mini-label">Línea</span>
+                </button>
+                <button type="button" class="tool-cube-btn is-sub" data-edit-cut-mode="loop" title="División completa 360° alrededor (Bucle)">
+                  <svg viewBox="0 0 28 28" fill="none">
+                    <polygon points="14,3 23,8 23,19 14,24 5,19 5,8" stroke="#9ca3af" stroke-width="1.2" fill="rgba(255,255,255,0.04)" />
+                    <path d="M5 13.5L14 18.5L23 13.5" stroke="#38bdf8" stroke-width="2.1" stroke-linejoin="round" />
+                    <path d="M5 13.5L14 8.5L23 13.5" stroke="#38bdf8" stroke-width="1.3" stroke-dasharray="2.5 2" />
+                  </svg>
+                  <span class="tool-mini-label">360°</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- 3. Subdividir en cuatro (2x tap -> cortes) -->
+            <div class="tool-slot">
+              <button type="button" id="btn-edit-subdivide" class="tool-cube-btn" title="Dividir selección en 4 (2× clic para cambiar cortes)">
+                <svg viewBox="0 0 28 28" fill="none">
+                  <rect x="5" y="5" width="18" height="18" rx="1.5" stroke="#d4d4d8" stroke-width="1.5" fill="rgba(255,255,255,0.04)" />
+                  <line x1="14" y1="5" x2="14" y2="23" stroke="#f59e0b" stroke-width="1.6" />
+                  <line x1="5" y1="14" x2="23" y2="14" stroke="#f59e0b" stroke-width="1.6" />
+                </svg>
+                <span class="tool-mini-label">Div. ÷4</span>
+              </button>
+              <div id="pop-edit-subdivide" class="side-flyout" hidden>
+                <div class="flyout-header">
+                  <span class="flyout-title">Cortes por lado</span>
+                  <button type="button" class="flyout-close-btn" data-close-flyout aria-label="Cerrar">×</button>
+                </div>
+                <div class="flyout-row">
+                  <input type="number" id="edit-subdivide-cuts" class="num-mini" min="1" max="4" step="1" value="1" />
+                  <button type="button" id="btn-edit-subdivide-apply" class="mini-accent-btn">Dividir</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 4. Alisar (cubo esquinas lisas + submenu -, +, barra 1-100) -->
+            <div class="tool-slot">
+              <button type="button" id="btn-edit-smooth-toggle" class="tool-cube-btn" title="Alisar geometría (Subdivisión Suave)">
+                <svg viewBox="0 0 28 28" fill="none">
+                  <rect x="5" y="5" width="18" height="18" rx="6.5" stroke="#e4e4e7" stroke-width="1.7" fill="rgba(245,158,11,0.12)" />
+                  <circle cx="14" cy="14" r="3" stroke="#f59e0b" stroke-width="1.2" />
+                </svg>
+                <span class="tool-mini-label">Alisar</span>
+              </button>
+              <div id="pop-edit-smooth" class="side-flyout flyout-wide" hidden>
+                <div class="flyout-header">
+                  <span class="flyout-title">Alisar malla</span>
+                  <div class="flyout-header-right">
+                    <span id="edit-subsurf-badge" class="flyout-badge">Original</span>
+                    <button type="button" class="flyout-close-btn" data-close-flyout aria-label="Cerrar">×</button>
+                  </div>
+                </div>
+                <div class="subsurf-stepper-row">
+                  <button type="button" id="btn-edit-subsurf-dec" class="stepper-btn" aria-label="Restar suavizado">−</button>
+                  <span id="edit-subsurf-val" class="stepper-value">×0</span>
+                  <button type="button" id="btn-edit-subsurf-inc" class="stepper-btn" aria-label="Sumar suavizado">+</button>
+                </div>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label">Suavidad</span>
+                  <input type="range" id="edit-subsurf-smoothness" min="1" max="100" step="1" value="100" />
+                  <input type="number" id="edit-subsurf-smoothness-num" class="num-mini" min="1" max="100" step="1" value="100" />
+                </div>
+                <label class="check-row-compact"><input type="checkbox" id="edit-subsurf-cage" checked /> Ver líneas al seleccionar</label>
+                <label class="check-row-compact"><input type="checkbox" id="edit-subsurf-always-cage" /> Ver líneas siempre</label>
+              </div>
+            </div>
+
+            <!-- 5. Fusionar (2 cubos + submenu Vértices / Mallas) -->
+            <div class="tool-slot">
+              <button type="button" id="btn-edit-merge-toggle" class="tool-cube-btn" title="Fusionar vértices o soldar mallas">
+                <svg viewBox="0 0 28 28" fill="none">
+                  <rect x="4" y="9" width="11" height="11" rx="1.2" stroke="#d4d4d8" stroke-width="1.4" fill="rgba(255,255,255,0.06)" />
+                  <rect x="13" y="6" width="11" height="11" rx="1.2" stroke="#f59e0b" stroke-width="1.5" fill="rgba(245,158,11,0.18)" />
+                </svg>
+                <span class="tool-mini-label">Fusionar</span>
+              </button>
+              <div id="pop-edit-merge" class="side-flyout flyout-wide" hidden>
+                <div class="flyout-header">
+                  <span class="flyout-title">Fusionar</span>
+                  <button type="button" class="flyout-close-btn" data-close-flyout aria-label="Cerrar">×</button>
+                </div>
+                <div class="flyout-tabs">
+                  <button type="button" id="btn-edit-merge" class="mini-accent-btn" title="Fusionar vértices cercanos de la malla activa">Vértices</button>
+                  <button type="button" id="btn-edit-merge-meshes" class="mini-accent-btn is-amber" title="Soldar los objetos marcados en la lista inferior">Mallas</button>
+                </div>
+                <div class="merge-meshes-wrap">
+                  <div class="flyout-label">Mallas a fusionar (Mallas):</div>
+                  <div id="edit-merge-targets-list" class="merge-targets-list"></div>
+                </div>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label">Distancia</span>
+                  <input type="number" id="edit-merge-dist" class="num-mini" min="0.0001" step="0.005" value="0.015" />
+                </div>
+                <label class="check-row-compact"><input type="checkbox" id="edit-weld-interior" checked /> Quitar caras internas</label>
+                <label class="check-row-compact"><input type="checkbox" id="edit-weld-stitch" checked /> Coser costuras (T)</label>
+              </div>
+            </div>
+
+            <!-- 6. Más herramientas (3 puntos: Biselar, Puente/Rellenar, Dureza arista, Multi, Recuadro, Sel. todo, Eliminar) -->
+            <div class="tool-slot">
+              <button type="button" id="btn-edit-more" class="tool-cube-btn" title="Más herramientas de edición (Biselar, Puente, Dureza, Selección)">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="5" cy="12" r="2" />
+                  <circle cx="12" cy="12" r="2" />
+                  <circle cx="19" cy="12" r="2" />
+                </svg>
+              </button>
+              <div id="pop-edit-more" class="side-flyout flyout-wide" hidden>
+                <div class="flyout-header">
+                  <span class="flyout-title">Herramientas extra</span>
+                  <button type="button" class="flyout-close-btn" data-close-flyout aria-label="Cerrar">×</button>
+                </div>
+                <div class="flyout-grid2">
+                  <button type="button" id="btn-edit-multi-select" class="mini-btn" title="Selección múltiple amarilla">Multi-sel</button>
+                  <button type="button" id="btn-edit-box-select" class="mini-btn" title="Arrastrar caja selectora">Recuadro</button>
+                  <button type="button" id="btn-edit-select-all" class="mini-btn">Sel. todo</button>
+                  <button type="button" id="btn-edit-invert" class="mini-btn">Invertir</button>
+                  <button type="button" id="btn-edit-clear-sel" class="mini-btn">Deselec.</button>
+                  <button type="button" id="btn-edit-delete" class="mini-btn is-danger">Eliminar</button>
+                </div>
+                <div class="flyout-divider"></div>
+                <div class="flyout-row">
+                  <button type="button" id="btn-edit-bevel" class="mini-accent-btn">Biselar</button>
+                  <input type="number" id="edit-bevel-width" class="num-mini" min="0.005" step="0.02" value="0.08" title="Ancho de bisel" />
+                  <input type="number" id="edit-bevel-segments" class="num-mini" min="1" max="4" step="1" value="1" title="Segmentos" />
+                </div>
+                <button type="button" id="btn-edit-bridge-fill" class="mini-btn btn-full">Rellenar hueco / Puente</button>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label">Dureza <span id="edit-crease-val">0%</span></span>
+                  <input type="range" id="edit-crease-range" min="0" max="100" step="5" value="0" />
+                </div>
+                <div class="flyout-row">
+                  <button type="button" class="mini-btn" data-edit-crease="0">Suave</button>
+                  <button type="button" class="mini-btn" data-edit-crease="0.5">Medio</button>
+                  <button type="button" class="mini-btn" data-edit-crease="1">Filo duro</button>
+                </div>
+                <div id="edit-mesh-info" class="flyout-info"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ========================== MODO MODELAR: BARRA PINCELES IZQUIERDA ========================== -->
+          <div id="sculpt-brush-bar" class="float-bar float-bar-left" role="toolbar" aria-label="Pinceles de modelado" hidden>
+            <button type="button" class="brush-btn is-active" data-sculpt-tool="draw" title="Dibujar volumen">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
+              <span>Dibujar</span>
+            </button>
+            <button type="button" class="brush-btn" data-sculpt-tool="clay" title="Añadir arcilla">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><ellipse cx="12" cy="14" rx="8" ry="5"/><path d="M6 12c0-3 2.5-6 6-6s6 3 6 6"/></svg>
+              <span>Arcilla</span>
+            </button>
+            <button type="button" class="brush-btn" data-sculpt-tool="grab" title="Agarrar y estirar">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M18 11V6a2 2 0 0 0-4 0v4"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8l-1.5-1.5a2 2 0 0 0-2.8 2.8l5 5.2A4 4 0 0 0 9.5 22H16a4 4 0 0 0 4-4v-7a2 2 0 0 0-2-2z"/></svg>
+              <span>Agarrar</span>
+            </button>
+            <button type="button" class="brush-btn" data-sculpt-tool="smooth" title="Suavizar relieve">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M3 16c3-6 7-8 10-4s5 2 8-4"/></svg>
+              <span>Suavizar</span>
+            </button>
+            <button type="button" class="brush-btn" data-sculpt-tool="inflate" title="Inflar volumen">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
+              <span>Inflar</span>
+            </button>
+            <button type="button" class="brush-btn" data-sculpt-tool="flatten" title="Aplanar superficie">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 18h16"/><path d="M7 10h10l-2 4H9z"/></svg>
+              <span>Aplanar</span>
+            </button>
+            <button type="button" class="brush-btn" data-sculpt-tool="pinch" title="Pellizcar pliegue">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 6l6 6-6 6M20 6l-6 6 6 6"/></svg>
+              <span>Pellizcar</span>
+            </button>
+          </div>
+
+          <!-- ========================== MODO MODELAR: BARRAS VERTICALES DERECHA (RADIO / FUERZA + ⋯) ========================== -->
+          <div id="sculpt-params-bar" class="float-bar float-bar-right" aria-label="Ajustes de pincel" hidden>
+            <div class="vslider-group">
+              <span class="vslider-title">Radio</span>
+              <span id="sculpt-radius-val" class="vslider-num">0.45</span>
+              <div class="vslider-wrap">
+                <input type="range" id="sculpt-radius" class="v-range" min="0.08" max="2.5" step="0.02" value="0.45" aria-label="Radio del pincel" />
+              </div>
+            </div>
+
+            <div class="vslider-group">
+              <span class="vslider-title">Fuerza</span>
+              <span id="sculpt-strength-val" class="vslider-num">0.35</span>
+              <div class="vslider-wrap">
+                <input type="range" id="sculpt-strength" class="v-range" min="0.04" max="1" step="0.02" value="0.35" aria-label="Fuerza del pincel" />
+              </div>
+            </div>
+
+            <div class="tool-slot tool-slot-right">
+              <button type="button" id="btn-sculpt-more" class="tool-cube-btn" title="Opciones de modelado">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="5" cy="12" r="2" />
+                  <circle cx="12" cy="12" r="2" />
+                  <circle cx="19" cy="12" r="2" />
+                </svg>
+              </button>
+              <div id="pop-sculpt-more" class="side-flyout flyout-right flyout-wide" hidden>
+                <div class="flyout-header">
+                  <span class="flyout-title">Opciones de modelado</span>
+                  <button type="button" class="flyout-close-btn" data-close-flyout aria-label="Cerrar">×</button>
+                </div>
+                <button type="button" id="btn-sculpt-subdivide" class="mini-accent-btn btn-full">Subdividir ×4</button>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label">Curva caída</span>
+                  <select id="sculpt-falloff" class="input-select-compact"></select>
+                </div>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label">Simetría</span>
+                  <select id="sculpt-symmetry" class="input-select-compact"></select>
+                </div>
+                <label class="check-row-compact"><input type="checkbox" id="sculpt-invert" /> Invertir dirección</label>
+                <label class="check-row-compact"><input type="checkbox" id="sculpt-front-only" checked /> Solo caras frontales</label>
+                <div class="flyout-divider"></div>
+                <div class="flyout-grid2">
+                  <button type="button" id="btn-sculpt-clay-mat" class="mini-btn">Mat. Arcilla</button>
+                  <button type="button" id="btn-sculpt-new-clay" class="mini-btn">+ Esfera</button>
+                </div>
+                <div id="sculpt-mesh-info" class="flyout-info"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ========================== MINI PANEL XYZ SOBRE DOCK (DOBLE CLIC EN MOVER/ROTAR/ESCALAR) ========================== -->
+          <div id="gizmo-xyz-panel" class="gizmo-xyz-panel" hidden>
+            <div class="xyz-panel-head">
+              <span id="gizmo-xyz-title" class="xyz-panel-title">Mover</span>
+              <button type="button" id="btn-gizmo-xyz-close" class="xyz-panel-close" aria-label="Cerrar coordenadas">×</button>
+            </div>
+            <div class="xyz-panel-fields">
+              <label class="xyz-field"><span class="axis-x">X</span><input type="number" id="gizmo-val-x" step="0.1" /></label>
+              <label class="xyz-field"><span class="axis-y">Y</span><input type="number" id="gizmo-val-y" step="0.1" /></label>
+              <label class="xyz-field"><span class="axis-z">Z</span><input type="number" id="gizmo-val-z" step="0.1" /></label>
+            </div>
+          </div>
+
+          <!-- ========================== DESHACER / REHACER FLOTANTE DERECHA ========================== -->
+          <div id="undo-redo-bar" class="undo-redo-bar" role="group" aria-label="Historial">
+            <button type="button" id="btn-undo" class="dock-btn is-icon-only" title="Deshacer (Ctrl+Z)" aria-label="Deshacer" disabled>
+              <svg class="dock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 14L4 9l5-5" />
+                <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+              </svg>
+            </button>
+            <button type="button" id="btn-redo" class="dock-btn is-icon-only" title="Rehacer (Ctrl+Y)" aria-label="Rehacer" disabled>
+              <svg class="dock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M15 14l5-5-5-5" />
+                <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- ========================== BARRA INFERIOR DE GIZMO Y ACCIONES ========================== -->
+          <div id="bottom-dock" class="bottom-dock" role="toolbar" aria-label="Herramientas de transformación y acciones">
+            <div class="dock-group">
+              <button type="button" class="dock-btn seg-btn is-active" data-mode="select" title="Cursor / Seleccionar (Q)">
+                <svg class="dock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M5 3l14 9-6 2-3 6-5-17z" />
+                </svg>
+                <span class="dock-label">Cursor</span>
+              </button>
+              <button type="button" class="dock-btn seg-btn" data-mode="translate" title="Mover (W · 2× clic para X/Y/Z)">
+                <svg class="dock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20" />
+                </svg>
+                <span class="dock-label">Mover</span>
+              </button>
+              <button type="button" class="dock-btn seg-btn" data-mode="rotate" title="Rotar (E · 2× clic para X/Y/Z)">
+                <svg class="dock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 12a9 9 0 1 1-3-6.7L21 8" />
+                  <path d="M21 3v5h-5" />
+                </svg>
+                <span class="dock-label">Rotar</span>
+              </button>
+              <button type="button" class="dock-btn seg-btn" data-mode="scale" title="Escalar (R · 2× clic para X/Y/Z)">
+                <svg class="dock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+                </svg>
+                <span class="dock-label">Escalar</span>
+              </button>
+            </div>
+
+            <span class="dock-sep"></span>
+
+            <div class="dock-group">
+              <button type="button" id="btn-dock-duplicate" class="dock-btn" title="Copiar selección" disabled>
+                <svg class="dock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+                  <rect x="3" y="8" width="11" height="11" rx="1.8" />
+                  <rect x="9" y="4" width="11" height="11" rx="1.8" fill="rgba(22,24,29,0.75)" />
+                </svg>
+                <span class="dock-label">Copiar</span>
+              </button>
+              <button type="button" id="btn-toolbar-delete" class="dock-btn is-danger" title="Borrar selección (Supr)" aria-label="Borrar" disabled>
+                <svg class="dock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6" />
+                </svg>
+                <span class="dock-label">Borrar</span>
+              </button>
+            </div>
+
+            <span class="dock-sep"></span>
+
+            <div class="dock-group">
+              <button type="button" id="btn-reset-camera" class="dock-btn" title="Centrar vista (F)">
+                <svg class="dock-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
+                  <circle cx="12" cy="12" r="2.5" />
+                </svg>
+                <span class="dock-label">Centrar</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- ========================== MENÚS DESPLEGABLES ANIMADOS SUPERIORES ========================== -->
+          <div id="popover-backdrop" class="popover-backdrop" hidden></div>
+
+          <!-- Popover 1: ESCENA (Modelos [Importar, Exportar], Malla [Primitivas, Agregar]) -->
+          <section id="menu-scene" class="top-popover" aria-label="Menú Escena" hidden>
+            <div class="popover-tabs">
+              <button type="button" class="subtab-btn is-active" data-scene-sec="modelos">Modelos</button>
+              <button type="button" class="subtab-btn" data-scene-sec="malla">Malla</button>
+            </div>
+
+            <div id="scene-sec-modelos" class="popover-body">
+              <div class="menu-stack">
+                <button type="button" id="btn-import-model" class="menu-item-btn is-accent">
+                  <span>Importar modelo / textura</span>
+                  <small>.glb .gltf .obj .zip .ktx2</small>
+                </button>
+                <button type="button" id="btn-export-sub-toggle" class="menu-item-btn">
+                  <span>Exportar...</span>
+                  <svg class="chev-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 6l6 6-6 6" /></svg>
+                </button>
+                <div id="export-submenu" class="nested-submenu" hidden>
+                  <div class="field-row">
+                    <label class="field-label" for="export-scope">Qué exportar</label>
+                    <select id="export-scope" class="input-select">
+                      <option value="scene">Toda la escena</option>
+                      <option value="selected">Solo selección</option>
+                    </select>
+                  </div>
+                  <div class="action-grid">
+                    <button type="button" id="btn-export-glb" class="action-btn">.glb</button>
+                    <button type="button" id="btn-export-gltf" class="action-btn">.gltf</button>
+                    <button type="button" id="btn-export-obj" class="action-btn">.obj</button>
+                    <button type="button" id="btn-export-mtl" class="action-btn">.mtl</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div id="scene-sec-malla" class="popover-body" hidden>
+              <div class="popover-subtabs">
+                <button type="button" class="chip-tab is-active" data-malla-sub="primitivas">Primitivas</button>
+                <button type="button" class="chip-tab" data-malla-sub="agregar">Agregar</button>
+              </div>
+
+              <div id="malla-sub-primitivas" class="action-grid action-grid-3">
+                <button type="button" class="action-btn" data-add="box">Cubo</button>
+                <button type="button" class="action-btn" data-add="sphere">Esfera</button>
+                <button type="button" class="action-btn" data-add="cylinder">Cilindro</button>
+                <button type="button" class="action-btn" data-add="cone">Cono</button>
+                <button type="button" class="action-btn" data-add="capsule">Cápsula</button>
+                <button type="button" class="action-btn" data-add="torus">Toroide</button>
+                <button type="button" class="action-btn" data-add="torusKnot">Nudo</button>
+                <button type="button" class="action-btn" data-add="pyramid">Pirámide</button>
+                <button type="button" class="action-btn" data-add="plane">Plano</button>
+                <button type="button" class="action-btn" data-add="circle">Círculo</button>
+                <button type="button" class="action-btn" data-add="ring">Anillo</button>
+                <button type="button" class="action-btn" data-add="tetrahedron">Tetraedro</button>
+                <button type="button" class="action-btn" data-add="octahedron">Octaedro</button>
+                <button type="button" class="action-btn" data-add="dodecahedron">Dodecaedro</button>
+                <button type="button" class="action-btn" data-add="icosahedron">Icosaedro</button>
+                <button type="button" class="action-btn" data-add="clay">Arcilla</button>
+                <button type="button" class="action-btn is-accent is-span2" data-add="text">+ Texto 3D</button>
+              </div>
+
+              <div id="malla-sub-agregar" class="action-grid" hidden>
+                <button type="button" class="action-btn" data-add="dirLight">+ Luz direccional</button>
+                <button type="button" class="action-btn" data-add="pointLight">+ Luz puntual</button>
+                <button type="button" class="action-btn" data-add="camera">+ Cámara</button>
+                <button type="button" class="action-btn" data-add="rig">+ Rig / Esqueleto</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- Popover 2: OBJETO (Submenús Material, Alisar, Texto, Cámara, Luz, Pivote — SIN Transform XYZ) -->
+          <section id="menu-object" class="top-popover popover-wide" aria-label="Menú Objeto" hidden>
+            <div id="object-empty" class="empty-state">
+              <p class="empty-title">Sin selección</p>
+              <p class="empty-sub">Toca un objeto, luz o cámara en el visor para editar sus propiedades.</p>
+            </div>
+
+            <div id="object-editor" hidden>
+              <div class="obj-popover-head">
+                <div>
+                  <div id="selected-name" class="group-title">Objeto</div>
+                  <span id="selected-type" class="meta-text">Mesh</span>
+                </div>
+                <div class="obj-quick-btns">
+                  <button type="button" id="btn-focus-obj" class="mini-btn">Enfocar</button>
+                  <button type="button" id="btn-duplicate-obj" class="mini-btn">Duplicar</button>
+                  <button type="button" id="btn-delete-obj" class="mini-btn is-danger">Eliminar</button>
+                </div>
+              </div>
+
+              <div class="popover-subtabs" id="object-subtabs">
+                <button type="button" class="chip-tab is-active" data-obj-sub="material" id="tab-btn-obj-material">Material</button>
+                <button type="button" class="chip-tab" data-obj-sub="subsurf" id="tab-btn-obj-subsurf">Alisar</button>
+                <button type="button" class="chip-tab" data-obj-sub="text" id="tab-btn-obj-text" hidden>Texto 3D</button>
+                <button type="button" class="chip-tab" data-obj-sub="camera" id="tab-btn-obj-camera" hidden>Cámara</button>
+                <button type="button" class="chip-tab" data-obj-sub="light" id="tab-btn-obj-light" hidden>Luz</button>
+                <button type="button" class="chip-tab" data-obj-sub="pivot" id="tab-btn-obj-pivot">Pivote</button>
+              </div>
+
+              <div class="popover-scroll">
+                <!-- Subpanel Material -->
+                <div id="material-group" class="obj-subpanel" data-obj-panel="material">
+                  <div class="field-row">
+                    <label class="field-label" for="mat-shader-type">Shader</label>
+                    <select id="mat-shader-type" class="input-select">
+                      <option value="standard">Standard (Blinn-Phong / PBR)</option>
+                      <option value="basic">Basic (Plano sin luz)</option>
+                      <option value="toon">Toon (Cel Shading / Anime)</option>
+                      <option value="hologram">Hologram (Sci-Fi)</option>
+                      <option value="matcap">MatCap (Escultura / Arcilla)</option>
+                      <option value="fresnel">Fresnel (Iridiscente)</option>
+                      <option value="dissolve">Dissolve (Desintegración)</option>
+                    </select>
+                  </div>
+                  <div class="field-row">
+                    <label class="field-label" for="mat-color">Color base</label>
+                    <input type="color" id="mat-color" class="input-color" value="#4f86f7" />
+                  </div>
+                  <div id="row-mat-shininess" class="field-row">
+                    <label class="field-label" for="mat-shininess">Brillo especular <span id="mat-shininess-val" class="val-num">48</span></label>
+                    <input type="range" id="mat-shininess" min="4" max="124" step="1" value="48" />
+                  </div>
+                  <div id="mat-pbr-block" class="mat-pbr-block">
+                    <label class="check-row"><input type="checkbox" id="mat-pbr" /> PBR Completo (Físico / GGX)</label>
+                    <div id="mat-pbr-controls" hidden>
+                      <div class="field-row">
+                        <label class="field-label" for="mat-roughness">Rugosidad <span id="mat-roughness-val" class="val-num">0.50</span></label>
+                        <input type="range" id="mat-roughness" min="0.04" max="1" step="0.01" value="0.50" />
+                      </div>
+                      <div class="field-row">
+                        <label class="field-label" for="mat-metalness">Metalicidad <span id="mat-metalness-val" class="val-num">0.00</span></label>
+                        <input type="range" id="mat-metalness" min="0" max="1" step="0.01" value="0" />
+                      </div>
+                      <div class="field-row">
+                        <label class="field-label" for="mat-normal-scale">Intensidad normal <span id="mat-normal-scale-val" class="val-num">1.00</span></label>
+                        <input type="range" id="mat-normal-scale" min="0" max="2.5" step="0.05" value="1" />
+                      </div>
+                      <div class="field-row">
+                        <label class="field-label" for="mat-ao-intensity">Oclusión AO <span id="mat-ao-intensity-val" class="val-num">1.00</span></label>
+                        <input type="range" id="mat-ao-intensity" min="0" max="2" step="0.05" value="1" />
+                      </div>
+                      <div class="field-row">
+                        <label class="field-label" for="mat-env-intensity">Intensidad IBL <span id="mat-env-intensity-val" class="val-num">1.00</span></label>
+                        <input type="range" id="mat-env-intensity" min="0" max="3" step="0.05" value="1" />
+                      </div>
+                    </div>
+                    <div id="mat-maps-section" class="mat-maps-section">
+                      <div class="mat-maps-title">Mapas PBR / Texturas</div>
+                      <div class="mat-maps-grid">
+                        <div class="mat-map-slot">
+                          <button type="button" class="mat-map-chip" data-mat-map="map"><span class="mat-map-name">Color</span><span class="mat-map-state" data-map-state="map">—</span></button>
+                          <button type="button" class="mat-map-clear" data-mat-map-clear="map" hidden>✕</button>
+                        </div>
+                        <div class="mat-map-slot">
+                          <button type="button" class="mat-map-chip" data-mat-map="normalMap"><span class="mat-map-name">Normal</span><span class="mat-map-state" data-map-state="normalMap">—</span></button>
+                          <button type="button" class="mat-map-clear" data-mat-map-clear="normalMap" hidden>✕</button>
+                        </div>
+                        <div class="mat-map-slot">
+                          <button type="button" class="mat-map-chip" data-mat-map="roughnessMap"><span class="mat-map-name">Rugos.</span><span class="mat-map-state" data-map-state="roughnessMap">—</span></button>
+                          <button type="button" class="mat-map-clear" data-mat-map-clear="roughnessMap" hidden>✕</button>
+                        </div>
+                        <div class="mat-map-slot">
+                          <button type="button" class="mat-map-chip" data-mat-map="metalnessMap"><span class="mat-map-name">Metal</span><span class="mat-map-state" data-map-state="metalnessMap">—</span></button>
+                          <button type="button" class="mat-map-clear" data-mat-map-clear="metalnessMap" hidden>✕</button>
+                        </div>
+                        <div class="mat-map-slot">
+                          <button type="button" class="mat-map-chip" data-mat-map="aoMap"><span class="mat-map-name">AO</span><span class="mat-map-state" data-map-state="aoMap">—</span></button>
+                          <button type="button" class="mat-map-clear" data-mat-map-clear="aoMap" hidden>✕</button>
+                        </div>
+                        <div class="mat-map-slot">
+                          <button type="button" class="mat-map-chip" data-mat-map="emissiveMap"><span class="mat-map-name">Emisivo</span><span class="mat-map-state" data-map-state="emissiveMap">—</span></button>
+                          <button type="button" class="mat-map-clear" data-mat-map-clear="emissiveMap" hidden>✕</button>
+                        </div>
+                      </div>
+                      <input type="file" id="mat-map-file-input" class="sr-only" accept=".png,.jpg,.jpeg,.webp" />
+                    </div>
+                  </div>
+                  <div class="field-row">
+                    <label class="field-label" for="mat-opacity">Opacidad <span id="mat-opacity-val" class="val-num">1.00</span></label>
+                    <input type="range" id="mat-opacity" min="0.05" max="1" step="0.01" value="1" />
+                  </div>
+                  <label class="check-row"><input type="checkbox" id="mat-texture" /> Textura de prueba</label>
+                  <label class="check-row"><input type="checkbox" id="mat-wireframe" /> Mostrar alambre (Wireframe)</label>
+                  <label class="check-row"><input type="checkbox" id="obj-cast-shadow" checked /> Proyectar sombra</label>
+                  <label class="check-row"><input type="checkbox" id="obj-auto-spin" /> Rotación automática</label>
+
+                  <div id="shader-params" hidden>
+                    <div class="shader-param-group" data-shader-group="toon" hidden>
+                      <div class="field-row"><label class="field-label" for="mat-toon-steps">Bandas Toon <span id="mat-toon-steps-val" class="val-num">3</span></label><input type="range" id="mat-toon-steps" min="2" max="6" step="1" value="3" /></div>
+                      <div class="field-row"><label class="field-label" for="mat-toon-ink">Contorno tinta <span id="mat-toon-ink-val" class="val-num">0.22</span></label><input type="range" id="mat-toon-ink" min="0" max="0.6" step="0.02" value="0.22" /></div>
+                      <div class="field-row"><label class="field-label" for="mat-toon-rim">Luz de borde <span id="mat-toon-rim-val" class="val-num">0.70</span></label><input type="range" id="mat-toon-rim" min="0" max="1.5" step="0.05" value="0.7" /></div>
+                      <div class="field-row"><label class="field-label" for="mat-toon-shadow">Color sombra</label><input type="color" id="mat-toon-shadow" class="input-color" value="#4b4a7a" /></div>
+                    </div>
+                    <div class="shader-param-group" data-shader-group="hologram" hidden>
+                      <div class="field-row"><label class="field-label" for="mat-holo-density">Líneas scan <span id="mat-holo-density-val" class="val-num">18</span></label><input type="range" id="mat-holo-density" min="4" max="42" step="1" value="18" /></div>
+                      <div class="field-row"><label class="field-label" for="mat-holo-glitch">Glitch <span id="mat-holo-glitch-val" class="val-num">0.35</span></label><input type="range" id="mat-holo-glitch" min="0" max="1" step="0.02" value="0.35" /></div>
+                    </div>
+                    <div class="shader-param-group" data-shader-group="matcap" hidden>
+                      <div class="field-row"><label class="field-label" for="mat-matcap-gloss">Brillo <span id="mat-matcap-gloss-val" class="val-num">0.55</span></label><input type="range" id="mat-matcap-gloss" min="0" max="1" step="0.02" value="0.55" /></div>
+                      <div class="field-row"><label class="field-label" for="mat-matcap-metal">Metálico <span id="mat-matcap-metal-val" class="val-num">0.25</span></label><input type="range" id="mat-matcap-metal" min="0" max="1" step="0.02" value="0.25" /></div>
+                    </div>
+                    <div class="shader-param-group" data-shader-group="fresnel" hidden>
+                      <div class="field-row"><label class="field-label" for="mat-fresnel-intensity">Intensidad <span id="mat-fresnel-intensity-val" class="val-num">1.60</span></label><input type="range" id="mat-fresnel-intensity" min="0.2" max="3" step="0.05" value="1.6" /></div>
+                      <div class="field-row"><label class="field-label" for="mat-fresnel-irid">Iridiscencia <span id="mat-fresnel-irid-val" class="val-num">0.55</span></label><input type="range" id="mat-fresnel-irid" min="0" max="1" step="0.02" value="0.55" /></div>
+                      <div class="field-row"><label class="field-label" for="mat-fresnel-rim">Color borde</label><input type="color" id="mat-fresnel-rim" class="input-color" value="#38bdf8" /></div>
+                    </div>
+                    <div class="shader-param-group" data-shader-group="dissolve" hidden>
+                      <label class="check-row"><input type="checkbox" id="mat-dissolve-auto" checked /> Animación automática</label>
+                      <div id="row-dissolve-progress" class="field-row" hidden><label class="field-label" for="mat-dissolve-progress">Progreso <span id="mat-dissolve-progress-val" class="val-num">0.35</span></label><input type="range" id="mat-dissolve-progress" min="0" max="1" step="0.01" value="0.35" /></div>
+                      <div class="field-row"><label class="field-label" for="mat-dissolve-edge">Color brasa</label><input type="color" id="mat-dissolve-edge" class="input-color" value="#ff5a1f" /></div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Subpanel Alisar -->
+                <div id="subsurf-group" class="obj-subpanel" data-obj-panel="subsurf" hidden>
+                  <div class="group-header">
+                    <span class="field-label">Subdivisión suave</span>
+                    <span id="subsurf-level-badge" class="meta-text">Original</span>
+                  </div>
+                  <div class="field-row">
+                    <span class="field-label">Nivel</span>
+                    <div class="subsurf-stepper">
+                      <button type="button" id="btn-subsurf-dec" class="stepper-btn">−</button>
+                      <span id="subsurf-level-val" class="stepper-value">×0</span>
+                      <button type="button" id="btn-subsurf-inc" class="stepper-btn">+</button>
+                    </div>
+                  </div>
+                  <div class="field-row">
+                    <label class="field-label" for="subsurf-smoothness">Suavidad (1–100%)</label>
+                    <div class="smoothness-control">
+                      <input type="range" id="subsurf-smoothness" min="1" max="100" step="1" value="100" />
+                      <label class="num-field smoothness-num"><input type="number" id="subsurf-smoothness-num" min="1" max="100" step="1" value="100" /><span>%</span></label>
+                    </div>
+                  </div>
+                  <label class="check-row"><input type="checkbox" id="subsurf-show-cage" checked /> Ver líneas al seleccionar</label>
+                  <label class="check-row"><input type="checkbox" id="subsurf-always-cage" /> Ver líneas siempre</label>
+                  <label class="check-row"><input type="checkbox" id="subsurf-smooth-shading" checked /> Sombreado suave</label>
+                  <div class="btn-row">
+                    <button type="button" id="btn-obj-enter-edit" class="action-btn is-accent">Editar malla</button>
+                    <button type="button" id="btn-subsurf-apply" class="action-btn">Aplicar</button>
+                  </div>
+                </div>
+
+                <!-- Subpanel Texto 3D -->
+                <div id="text-group" class="obj-subpanel" data-obj-panel="text" hidden>
+                  <div class="field-row"><label class="field-label" for="text-content">Contenido</label><textarea id="text-content" class="input-textarea" rows="2"></textarea></div>
+                  <div class="field-row">
+                    <label class="field-label" for="text-font">Tipografía</label>
+                    <select id="text-font" class="input-select">
+                      <option value="Plus Jakarta Sans, system-ui, -apple-system, sans-serif">Sans (Plus Jakarta)</option>
+                      <option value="JetBrains Mono, monospace">Monoespaciada (JetBrains)</option>
+                      <option value="Georgia, Times New Roman, serif">Serif (Georgia)</option>
+                      <option value="Impact, Arial Black, sans-serif">Display (Impact)</option>
+                      <option value="cursive">Manuscrita</option>
+                    </select>
+                  </div>
+                  <div class="text-checks-row">
+                    <label class="check-row"><input type="checkbox" id="text-bold" checked /> Negrita</label>
+                    <label class="check-row"><input type="checkbox" id="text-italic" /> Cursiva</label>
+                  </div>
+                  <div class="field-row">
+                    <label class="field-label" for="text-align">Alineación</label>
+                    <select id="text-align" class="input-select"><option value="left">Izquierda</option><option value="center" selected>Centro</option><option value="right">Derecha</option></select>
+                  </div>
+                  <div class="field-row"><label class="field-label" for="text-size">Tamaño <span id="text-size-val" class="val-num">0.72</span></label><input type="range" id="text-size" min="0.2" max="2.5" step="0.02" value="0.72" /></div>
+                  <div class="field-row"><label class="field-label" for="text-depth">Profundidad <span id="text-depth-val" class="val-num">0.18</span></label><input type="range" id="text-depth" min="0.02" max="1" step="0.01" value="0.18" /></div>
+                  <div class="field-row"><label class="field-label" for="text-spacing">Espaciado <span id="text-spacing-val" class="val-num">0.00</span></label><input type="range" id="text-spacing" min="-0.1" max="0.4" step="0.01" value="0" /></div>
+                </div>
+
+                <!-- Subpanel Cámara -->
+                <div id="camera-group" class="obj-subpanel" data-obj-panel="camera" hidden>
+                  <div class="btn-row">
+                    <button type="button" id="btn-cam-enter" class="action-btn is-accent">Entrar a cámara</button>
+                    <button type="button" id="btn-cam-align" class="action-btn">Alinear a vista</button>
+                  </div>
+                  <div class="field-row"><label class="field-label" for="scene-cam-fov">Lente (FOV) <span id="scene-cam-fov-val" class="val-num">50°</span></label><input type="range" id="scene-cam-fov" min="15" max="110" step="1" value="50" /></div>
+                  <div class="field-row">
+                    <label class="field-label" for="scene-cam-preset">Resolución</label>
+                    <select id="scene-cam-preset" class="input-select">
+                      <option value="1280x720">HD (1280×720)</option>
+                      <option value="1920x1080" selected>Full HD (1920×1080)</option>
+                      <option value="2560x1440">2K QHD (2560×1440)</option>
+                      <option value="3840x2160">4K UHD (3840×2160)</option>
+                      <option value="1080x1080">Cuadrado (1080×1080)</option>
+                      <option value="1080x1920">Vertical (1080×1920)</option>
+                      <option value="custom">Personalizada</option>
+                    </select>
+                  </div>
+                  <div class="res-inputs">
+                    <label class="num-field"><span>W</span><input type="number" id="scene-cam-width" min="64" max="7680" step="2" value="1920" /></label>
+                    <label class="num-field"><span>H</span><input type="number" id="scene-cam-height" min="64" max="7680" step="2" value="1080" /></label>
+                  </div>
+                  <div class="field-row">
+                    <label class="field-label" for="scene-cam-format">Formato imagen</label>
+                    <select id="scene-cam-format" class="input-select"><option value="image/png">PNG</option><option value="image/jpeg">JPEG</option><option value="image/webp">WebP</option></select>
+                  </div>
+                  <label class="check-row"><input type="checkbox" id="scene-cam-thirds" checked /> Regla de tercios</label>
+                  <label class="check-row"><input type="checkbox" id="scene-cam-include-grid" /> Incluir rejilla</label>
+                  <label class="check-row"><input type="checkbox" id="scene-cam-lock" /> Bloquear vista</label>
+                  <button type="button" id="btn-cam-render" class="action-btn is-accent btn-full">Renderizar imagen</button>
+                  <div class="camera-video-divider">
+                    <div class="res-inputs">
+                      <div class="field-row"><label class="field-label" for="scene-cam-fps">FPS</label><input type="number" id="scene-cam-fps" class="input-select" min="12" max="60" value="30" /></div>
+                      <div class="field-row"><label class="field-label" for="scene-cam-duration">Duración (s)</label><input type="number" id="scene-cam-duration" class="input-select" min="0" max="120" value="0" /></div>
+                    </div>
+                    <div class="field-row"><label class="field-label" for="scene-cam-video-format">Video</label><select id="scene-cam-video-format" class="input-select"><option value="auto" selected>Automático</option></select></div>
+                    <div class="field-row"><label class="field-label" for="scene-cam-video-mode">Captura</label><select id="scene-cam-video-mode" class="input-select"><option value="fixed" selected>Fluido (FPS fijos)</option><option value="realtime">Tiempo real</option></select></div>
+                    <button type="button" id="btn-cam-video" class="action-btn btn-video btn-full">Grabar video</button>
+                  </div>
+                </div>
+
+                <!-- Subpanel Luz (para PointLight / DirectionalLight seleccionada) -->
+                <div id="light-obj-group" class="obj-subpanel" data-obj-panel="light" hidden>
+                  <div class="field-row"><label class="field-label" for="sel-light-color">Color</label><input type="color" id="sel-light-color" class="input-color" value="#ffffff" /></div>
+                  <div class="field-row"><label class="field-label" for="sel-light-intensity">Intensidad <span id="sel-light-intensity-val" class="val-num">1.0</span></label><input type="range" id="sel-light-intensity" min="0" max="30" step="0.1" value="1" /></div>
+                  <div id="sel-light-point-fields" hidden>
+                    <div class="field-row"><label class="field-label" for="sel-light-distance">Alcance (círculos) <span id="sel-light-distance-val" class="val-num">18</span></label><input type="range" id="sel-light-distance" min="0" max="50" step="0.5" value="18" /></div>
+                    <div class="field-row"><label class="field-label" for="sel-light-decay">Caída (decay) <span id="sel-light-decay-val" class="val-num">2.0</span></label><input type="range" id="sel-light-decay" min="0" max="4" step="0.2" value="2" /></div>
+                  </div>
+                  <div id="sel-light-dir-fields" hidden>
+                    <label class="check-row"><input type="checkbox" id="sel-light-shadows" checked /> Proyectar sombras</label>
+                    <div class="field-row"><label class="field-label" for="sel-light-shadow-soft">Suavizado <span id="sel-light-shadow-soft-val" class="val-num">1.25</span></label><input type="range" id="sel-light-shadow-soft" min="0" max="4" step="0.25" value="1.25" /></div>
+                  </div>
+                </div>
+
+                <!-- Subpanel Pivote (sin coordenadas numéricas por indicación del usuario) -->
+                <div id="pivot-group" class="obj-subpanel" data-obj-panel="pivot" hidden>
+                  <button type="button" id="btn-inspector-edit-pivot" class="action-btn btn-full">Editar pivote en visor</button>
+                  <div class="btn-row">
+                    <button type="button" id="btn-pivot-center" class="action-btn">Centro</button>
+                    <button type="button" id="btn-pivot-base" class="action-btn">Base</button>
+                    <button type="button" id="btn-pivot-reset" class="action-btn">Reset</button>
+                  </div>
+                </div>
+
+                <div id="animation-group" class="panel-group" hidden>
+                  <div class="group-title">Animaciones</div>
+                  <div class="field-row"><label class="field-label" for="anim-clip-select">Clip</label><select id="anim-clip-select" class="input-select"></select></div>
+                  <div class="btn-row"><button type="button" id="btn-anim-play" class="action-btn">Pausar</button><button type="button" id="btn-anim-reset" class="action-btn">Reiniciar</button></div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Popover Modo de trabajo: Pose | Modelar | Edición -->
+          <section id="menu-mode" class="top-popover popover-mode" aria-label="Modo de trabajo" hidden>
+            <div class="menu-stack">
+              <button type="button" class="menu-item-btn mode-option-btn is-active" data-app-mode="pose">
+                <span>Pose</span>
+                <small>Objetos y cámara</small>
+              </button>
+              <button type="button" class="menu-item-btn mode-option-btn" data-app-mode="modelar">
+                <span>Modelar</span>
+                <small>Esculpido</small>
+              </button>
+              <button type="button" class="menu-item-btn mode-option-btn" data-app-mode="edicion">
+                <span>Edición</span>
+                <small>Topología</small>
+              </button>
+            </div>
+          </section>
+
+          <!-- Popover 3: AJUSTES (⚙) -->
+          <section id="menu-settings" class="top-popover popover-wide" aria-label="Ajustes de entorno y visor" hidden>
+            <div class="popover-subtabs" id="settings-subtabs">
+              <button type="button" class="chip-tab is-active" data-set-sub="hdri">HDRI</button>
+              <button type="button" class="chip-tab" data-set-sub="luces">Luces</button>
+              <button type="button" class="chip-tab" data-set-sub="escenario">Escenario</button>
+              <button type="button" class="chip-tab" data-set-sub="visor">Visor / Gizmo</button>
+            </div>
+
+            <div class="popover-scroll">
+              <div class="set-subpanel" data-set-panel="hdri">
+                <div class="field-row">
+                  <label class="field-label" for="env-preset">Mapa HDRI / IBL</label>
+                  <select id="env-preset" class="input-select">
+                    <option value="studio" selected>Estudio limpio (Procedural)</option>
+                    <option value="sunset">Atardecer cálido (Procedural)</option>
+                    <option value="overcast">Cielo difuso (Procedural)</option>
+                    <option value="night">Noche neón (Procedural)</option>
+                    <option value="custom" hidden>Archivo personalizado</option>
+                    <option value="none">Desactivado</option>
+                  </select>
+                </div>
+                <div class="field-row"><label class="field-label" for="env-intensity">Intensidad IBL <span id="env-intensity-val" class="val-num">0.65</span></label><input type="range" id="env-intensity" min="0" max="2.5" step="0.05" value="0.65" /></div>
+                <div class="btn-row">
+                  <button type="button" id="btn-env-upload" class="action-btn">Cargar .hdr</button>
+                  <button type="button" id="btn-env-clear" class="action-btn">Quitar IBL</button>
+                </div>
+                <input type="file" id="env-file-input" class="sr-only" accept=".hdr,.png,.jpg,.jpeg,.webp" />
+              </div>
+
+              <div class="set-subpanel" data-set-panel="luces" hidden>
+                <div class="field-row"><label class="field-label" for="amb-intensity">Luz Ambiental <span id="amb-intensity-val" class="val-num">0.35</span></label><input type="range" id="amb-intensity" min="0" max="2" step="0.05" value="0.35" /></div>
+                <div class="flyout-divider"></div>
+                <div class="field-row"><label class="field-label" for="dir-intensity">Direccional <span id="dir-intensity-val" class="val-num">1.2</span></label><input type="range" id="dir-intensity" min="0" max="4" step="0.05" value="1.2" /></div>
+                <div class="field-row"><label class="field-label" for="dir-color">Color Direccional</label><input type="color" id="dir-color" class="input-color" value="#fff3df" /></div>
+                <label class="check-row"><input type="checkbox" id="dir-shadows" checked /> Sombras Direccional</label>
+                <div class="field-row"><label class="field-label" for="dir-shadow-res">Resolución sombra <span id="dir-shadow-res-val" class="val-num">1024 px</span></label><select id="dir-shadow-res" class="input-select"></select></div>
+                <div class="field-row"><label class="field-label" for="dir-shadow-soft">Suavizado PCF <span id="dir-shadow-soft-val" class="val-num">1.25</span></label><input type="range" id="dir-shadow-soft" min="0" max="4" step="0.25" value="1.25" /></div>
+                <label class="check-row"><input type="checkbox" id="dir-orbit" /> Orbitar sol automáticamente</label>
+                <div class="flyout-divider"></div>
+                <div class="field-row"><label class="field-label" for="point-intensity">Luz Puntual <span id="point-intensity-val" class="val-num">6.0</span></label><input type="range" id="point-intensity" min="0" max="25" step="0.5" value="6" /></div>
+                <div class="field-row"><label class="field-label" for="point-color">Color Puntual</label><input type="color" id="point-color" class="input-color" value="#5ea3ff" /></div>
+              </div>
+
+              <div class="set-subpanel" data-set-panel="escenario" hidden>
+                <div class="field-row"><label class="field-label" for="bg-color">Color de fondo</label><input type="color" id="bg-color" class="input-color" value="#121110" /></div>
+                <label class="check-row"><input type="checkbox" id="fog-enabled" checked /> Niebla atmosférica (Fog)</label>
+                <div class="field-row"><label class="field-label" for="fog-far">Distancia niebla <span id="fog-far-val" class="val-num">38</span></label><input type="range" id="fog-far" min="14" max="80" step="1" value="38" /></div>
+                <label class="check-row"><input type="checkbox" id="grid-visible" checked /> Mostrar rejilla</label>
+                <label class="check-row"><input type="checkbox" id="floor-visible" checked /> Mostrar piso de sombras</label>
+              </div>
+
+              <div class="set-subpanel" data-set-panel="visor" hidden>
+                <div class="field-row">
+                  <label class="field-label" for="camera-type">Cámara del visor</label>
+                  <select id="camera-type" class="input-select"><option value="perspective" selected>Perspectiva</option><option value="orthographic">Ortográfica</option></select>
+                </div>
+                <div class="field-row" id="fov-row"><label class="field-label" for="camera-fov">Campo visión (FOV) <span id="camera-fov-val" class="val-num">50°</span></label><input type="range" id="camera-fov" min="25" max="90" step="1" value="50" /></div>
+                <div class="field-row">
+                  <label class="field-label" for="render-quality">Calidad</label>
+                  <select id="render-quality" class="input-select"><option value="auto" selected>Automática</option><option value="high">Alta</option><option value="medium">Media</option><option value="low">Baja</option></select>
+                </div>
+                <div class="field-row">
+                  <label class="field-label" for="render-backend">Motor gráfico</label>
+                  <select id="render-backend" class="input-select"><option value="auto" selected>Auto (WebGPU/WebGL2)</option><option value="webgpu">WebGPU</option><option value="webgl2">WebGL2</option></select>
+                </div>
+                <div class="flyout-divider"></div>
+                <div class="field-row">
+                  <label class="field-label" for="gizmo-style-select">Estilo de gizmo</label>
+                  <select id="gizmo-style-select" class="input-select"><option value="made3d">Made3D (moderno)</option><option value="classic">Clásico (flechas)</option></select>
+                </div>
+                <div class="btn-row">
+                  <button type="button" id="btn-space" class="action-btn">Espacio: Mundo</button>
+                  <button type="button" id="btn-snap" class="action-btn">Snap: Off</button>
+                  <button type="button" id="btn-edit-pivot" class="action-btn">Pivote: Off</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Drawer derecho: MENÚ HAMBURGUESA (☰ Outliner: Renombrar, Mostrar/Ocultar, Borrar) -->
+          <aside id="menu-outliner" class="outliner-drawer" aria-label="Lista de escena" hidden>
+            <div class="outliner-head">
+              <h2 class="group-title">Objetos en escena</h2>
+              <div class="outliner-head-actions">
+                <button type="button" id="btn-clear-scene" class="link-btn">Limpiar todo</button>
+                <button type="button" id="btn-close-outliner" class="xyz-panel-close" aria-label="Cerrar lista">×</button>
+              </div>
+            </div>
+            <ul id="object-list" class="object-list"></ul>
+            <div class="outliner-foot">
+              <a id="btn-download-zip" class="action-btn download-link" href="./zip/Made-3D.zip" download="Made-3D.zip">
+                Descargar Made-3D.zip (v0.1.0)
+              </a>
+            </div>
+          </aside>
+
+          <div id="drop-overlay" class="drop-overlay" hidden>
+            <div class="drop-card">
+              <h2 class="drop-title">Suelta tu archivo 3D aquí</h2>
+              <p class="drop-sub">Compatible con .glb, .gltf, .obj/.mtl, texturas .ktx2 y paquetes .zip</p>
+            </div>
+          </div>
+
+          <div id="webgl-fallback" class="webgl-fallback" hidden>
+            <div class="fallback-card">
+              <h2 class="fallback-title">Contexto gráfico no disponible</h2>
+              <p id="webgl-fallback-msg" class="fallback-text">No se pudo inicializar WebGPU ni WebGL2 en este navegador.</p>
+              <button type="button" id="btn-retry-webgl" class="btn-primary">Reintentar</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

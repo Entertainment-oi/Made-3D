@@ -1,0 +1,158 @@
+import { Clock, Vec3 } from '../made3d.module.js';
+import { Sculptor } from '../src/modules/sculpt.js';
+import { MeshEditor } from '../src/modules/modeling.js';
+
+export const clock = new Clock();
+
+export const viewport = {
+  renderer: null,
+  scene: null,
+  perspCam: null,
+  orthoCam: null,
+  camera: null,
+  controls: null,
+  picker: null,
+  gizmo: null,
+  gizmoStyle: 'made3d',
+  snapOn: false,
+  orthoHalfH: 5.5,
+  ktx2Loader: null,
+  dracoLoader: null,
+  appMode: 'pose', // 'pose' | 'modelar' | 'edicion'
+  gizmoXyzOpen: false,
+  openPopover: null,
+  scheduler: null,
+};
+
+export const sceneStore = {
+  grid: null,
+  floor: null,
+  userObjects: [],
+  spinObjects: new Set(),
+  selected: null,
+  selectedList: [],
+  mixer: null,
+  animations: [],
+  activeAction: null,
+  activeClipIndex: 0,
+  animPlaying: true,
+  objectCounter: 0,
+  cameraCounter: 0,
+  lightCounter: 0,
+};
+
+export const lighting = {
+  ambientLight: null,
+  dirLight: null,
+  pointLight: null,
+  fogColorHex: '#121110',
+  fogEnabled: true,
+  fogFar: 38,
+  orbitLight: false,
+};
+
+export const cameraView = {
+  activeSceneCam: null,
+  viewCam: null,
+  camViewLocked: false,
+  editorViewSnapshot: null,
+};
+
+export const recorder = {
+  instance: null,
+  camera: null,
+  duration: 0,
+  stopping: false,
+  starting: false,
+  mode: 'fixed',
+};
+
+export const sculpt = {
+  active: false,
+  sculptor: new Sculptor(),
+};
+
+export const edit = {
+  active: false,
+  subtab: 'sculpt',
+  editor: new MeshEditor(),
+};
+
+export const debug = {
+  timers: {},
+  hudTimer: 0,
+  hudInterval: 0.2,
+};
+
+// Metadatos del editor por objeto sin contaminar `obj.userData`
+const _cameraMeta = new WeakMap();
+
+export function getCameraMeta(cam) {
+  if (!cam) return { showThirds: true, includeGrid: false, helper: null };
+  let meta = _cameraMeta.get(cam);
+  if (!meta) {
+    meta = { showThirds: true, includeGrid: false, helper: null };
+    _cameraMeta.set(cam, meta);
+  }
+  return meta;
+}
+
+export function setCameraMeta(cam, patch) {
+  if (!cam) return null;
+  const meta = getCameraMeta(cam);
+  Object.assign(meta, patch);
+  return meta;
+}
+
+export function isInScene(obj) {
+  let cur = obj;
+  while (cur) {
+    if (cur === viewport.scene) return true;
+    cur = cur.parent;
+  }
+  return false;
+}
+
+export function isDescendantOrSelf(node, ancestor) {
+  let cur = node;
+  while (cur) {
+    if (cur === ancestor) return true;
+    cur = cur.parent;
+  }
+  return false;
+}
+
+export function snapshotLocal(o) {
+  return {
+    p: o.position.clone(),
+    q: o.quaternion.clone(),
+    s: o.scale.clone(),
+    pv: o.pivot ? o.pivot.clone() : new Vec3(),
+  };
+}
+
+export function cloneLocalState(s) {
+  return {
+    p: s.p.clone(),
+    q: s.q.clone(),
+    s: s.s.clone(),
+    pv: s.pv ? s.pv.clone() : new Vec3(),
+  };
+}
+
+export function restoreLocal(o, st) {
+  o.position.copy(st.p);
+  o.quaternion.copy(st.q);
+  o.scale.copy(st.s);
+  if (o.pivot && st.pv) o.pivot.copy(st.pv);
+  o.updateMatrixWorld();
+}
+
+export function findOwningUserRoot(obj) {
+  let cur = obj;
+  while (cur && cur !== viewport.scene) {
+    if (sceneStore.userObjects.includes(cur)) return cur;
+    cur = cur.parent;
+  }
+  return null;
+}

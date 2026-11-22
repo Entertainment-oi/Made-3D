@@ -1,0 +1,6 @@
+{
+  "name": "Made3D Studio",
+  "description": "Entorno interactivo con la librería 3D WebGL2 / WebGPU Made3D (v0.1.0).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

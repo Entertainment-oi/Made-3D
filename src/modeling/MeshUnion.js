@@ -1244,7 +1244,7 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
   }
   const diag = Math.hypot(gMaxX - gMinX, gMaxY - gMinY, gMaxZ - gMinZ) || 1;
   const planeTol = Math.min(tol * 0.5, diag * 1e-4);
-  const polyPlanarTol = Math.max(planeTol, diag * 2e-4);
+  const polyPlanarTol = Math.min(planeTol * 0.25, diag * 2e-5);
 
   const allTris = [];
   const facesMeta = new Array(editableMesh.faces.length);
@@ -1521,6 +1521,9 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
     coplanarTouchedFaces.add(coplanarTriPairs[i][1].faceIndex);
   }
 
+  const seamSnap = Math.max(1e-5, Math.min(tol * 0.25, diag * 2e-4));
+  const chordVertTolSq = (seamSnap * 2.5) * (seamSnap * 2.5);
+
   const classifySubTriKeep = (pa, pb, pc, stNormal, stShell) => {
     const cx = (pa.x + pb.x + pc.x) / 3;
     const cy = (pa.y + pb.y + pc.y) / 3;
@@ -1539,6 +1542,27 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
         if (dot < -0.9 || (dot > 0.9 && stShell > s)) {
           return false;
         }
+        // Detectar sub-triángulos puente ("chord-bridge") sobre curvas transversales de intersección:
+        // los 3 vértices caen sobre la otra malla y el centroide queda ligeramente dentro por sagitta
+        if (Math.abs(dot) <= 0.9) {
+          const da = minDistTriToBVH(pa.x, pa.y, pa.z, sInfo.bvh, sInfo.tris, sInfo.verts, chordVertTolSq);
+          if (da.tri) {
+            const db = minDistTriToBVH(pb.x, pb.y, pb.z, sInfo.bvh, sInfo.tris, sInfo.verts, chordVertTolSq);
+            if (db.tri) {
+              const dc = minDistTriToBVH(pc.x, pc.y, pc.z, sInfo.bvh, sInfo.tris, sInfo.verts, chordVertTolSq);
+              if (dc.tri) {
+                let odd = 0;
+                for (let r = 0; r < 3; r++) {
+                  const dir = _PARITY_DIRS[r];
+                  if ((rayCountBVH(cx, cy, cz, dir[0], dir[1], dir[2], sInfo.bvh, sInfo.tris, sInfo.verts) & 1) === 1) {
+                    odd++;
+                  }
+                }
+                if (odd >= 2) return false;
+              }
+            }
+          }
+        }
       }
     }
     return true;
@@ -1546,7 +1570,6 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
 
   // Subdividir caras cortadas preservando intactas las caras no cortadas
   const splitVerts = verts.map((v) => ({ x: v.x, y: v.y, z: v.z }));
-  const seamSnap = Math.max(1e-5, Math.min(tol * 0.25, diag * 2e-4));
 
   const keptFaces = [];
   const keptUvs = [];
@@ -2182,4 +2205,1754 @@ export function simplifyUnionTopology(editableMesh, faceOrigins = null, {
   }
 
   return { mergedFaces, dissolvedVerts };
+}
+
+// ============================================================================
+// Saneamiento No-Manifold, Colapso de Astillas y Suavizado de Pegue (Fillet)
+// ============================================================================
+
+function computeFaceAreaSq3D(face, verts) {
+  if (!face || face.length < 3) return 0;
+  const p0 = verts[face[0]];
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 1; i + 1 < face.length; i++) {
+    const p1 = verts[face[i]];
+    const p2 = verts[face[i + 1]];
+    const ax = p1.x - p0.x, ay = p1.y - p0.y, az = p1.z - p0.z;
+    const bx = p2.x - p0.x, by = p2.y - p0.y, bz = p2.z - p0.z;
+    nx += ay * bz - az * by;
+    ny += az * bx - ax * bz;
+    nz += ax * by - ay * bx;
+  }
+  return 0.25 * (nx * nx + ny * ny + nz * nz);
+}
+
+export function pruneNonManifoldFlaps(editableMesh, faceOrigins = null, { sealPinholes = false } = {}) {
+  if (!editableMesh || editableMesh.faces.length < 2) {
+    return { removed: 0, sealed: 0 };
+  }
+
+  let removedTotal = 0;
+  let sealedTotal = 0;
+  const verts = editableMesh.verts;
+
+  // 1. Eliminar caras exactamente duplicadas o con el mismo conjunto de vértices en sentido opuesto
+  {
+    const F = editableMesh.faces.length;
+    const removed = new Uint8Array(F);
+    const sigGroups = new Map();
+    const normals = new Array(F);
+    for (let fi = 0; fi < F; fi++) {
+      const f = editableMesh.faces[fi];
+      normals[fi] = computeFaceUnitNormal(f, verts);
+      const sig = f.slice().sort((a, b) => a - b).join(',');
+      let list = sigGroups.get(sig);
+      if (!list) { list = []; sigGroups.set(sig, list); }
+      list.push(fi);
+    }
+    let dropped = 0;
+    for (const list of sigGroups.values()) {
+      if (list.length < 2) continue;
+      for (let i = 0; i < list.length; i++) {
+        const fa = list[i];
+        if (removed[fa] || !normals[fa]) continue;
+        for (let j = i + 1; j < list.length; j++) {
+          const fb = list[j];
+          if (removed[fb] || !normals[fb]) continue;
+          const dot = normals[fa].x * normals[fb].x + normals[fa].y * normals[fb].y + normals[fa].z * normals[fb].z;
+          if (dot < -0.5) {
+            removed[fa] = 1;
+            removed[fb] = 1;
+            dropped += 2;
+            break;
+          } else if (dot > 0.8) {
+            removed[fb] = 1;
+            dropped += 1;
+          }
+        }
+      }
+    }
+    if (dropped > 0) {
+      const nextFaces = [];
+      const nextUvs = [];
+      const nextOrigins = faceOrigins ? [] : null;
+      for (let fi = 0; fi < F; fi++) {
+        if (removed[fi]) continue;
+        nextFaces.push(editableMesh.faces[fi]);
+        nextUvs.push(editableMesh.faceUvs[fi] || editableMesh.faces[fi].map(() => [0, 0]));
+        if (nextOrigins) nextOrigins.push(faceOrigins[fi]);
+      }
+      editableMesh.faces = nextFaces;
+      editableMesh.faceUvs = nextUvs;
+      if (faceOrigins && nextOrigins) faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+      editableMesh.invalidateTopology();
+      removedTotal += dropped;
+    }
+  }
+
+  // 2. Poda voraz basada en reducción de defecto de arista:
+  // Elimina pestañas colgantes y triángulos puente en aristas con >= 3 caras sin abrir mallas válidas.
+  const edgeDefect = (c) => (c <= 0 || c === 2 ? 0 : c === 1 ? 1 : (c - 2) * 1.5);
+
+  for (let pass = 0; pass < 16; pass++) {
+    const F = editableMesh.faces.length;
+    if (F < 3) break;
+    const topo = editableMesh.getTopology();
+    let hasNonManifold = false;
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      if (topo.edges[ei].faces.length >= 3) {
+        hasNonManifold = true;
+        break;
+      }
+    }
+    if (!hasNonManifold) break;
+
+    const edgeCounts = new Int32Array(topo.edges.length);
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      edgeCounts[ei] = topo.edges[ei].faces.length;
+    }
+
+    const candidates = [];
+    const candidateSeen = new Uint8Array(F);
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (e.faces.length < 3) continue;
+      for (let k = 0; k < e.faces.length; k++) {
+        const fi = e.faces[k];
+        if (candidateSeen[fi]) continue;
+        candidateSeen[fi] = 1;
+        const fe = topo.faceEdges[fi] || [];
+        const uniqueEdges = [];
+        const edgeSeen = new Set();
+        let gain = 0;
+        for (let m = 0; m < fe.length; m++) {
+          const eIdx = fe[m];
+          if (edgeSeen.has(eIdx)) continue;
+          edgeSeen.add(eIdx);
+          uniqueEdges.push(eIdx);
+          const c = edgeCounts[eIdx];
+          gain += edgeDefect(c) - edgeDefect(c - 1);
+        }
+        if (gain > 0.05) {
+          candidates.push({
+            fi,
+            uniqueEdges,
+            gain,
+            wasTouched: faceOrigins?.[fi]?.wasTouched ? 1 : 0,
+            areaSq: computeFaceAreaSq3D(editableMesh.faces[fi], verts),
+          });
+        }
+      }
+    }
+
+    if (!candidates.length) break;
+    candidates.sort((a, b) => {
+      const dg = Math.round(b.gain * 100) - Math.round(a.gain * 100);
+      if (dg !== 0) return dg;
+      if (b.wasTouched !== a.wasTouched) return b.wasTouched - a.wasTouched;
+      return a.areaSq - b.areaSq;
+    });
+
+    const removed = new Uint8Array(F);
+    let removedHere = 0;
+    for (let i = 0; i < candidates.length; i++) {
+      const cand = candidates[i];
+      let touchesNM = false;
+      let curGain = 0;
+      for (let m = 0; m < cand.uniqueEdges.length; m++) {
+        const eIdx = cand.uniqueEdges[m];
+        const c = edgeCounts[eIdx];
+        if (c >= 3) touchesNM = true;
+        curGain += edgeDefect(c) - edgeDefect(c - 1);
+      }
+      if (!touchesNM || curGain <= 0.05) continue;
+      removed[cand.fi] = 1;
+      removedHere++;
+      for (let m = 0; m < cand.uniqueEdges.length; m++) {
+        edgeCounts[cand.uniqueEdges[m]]--;
+      }
+    }
+
+    if (!removedHere) break;
+    removedTotal += removedHere;
+
+    const nextFaces = [];
+    const nextUvs = [];
+    const nextOrigins = faceOrigins ? [] : null;
+    for (let fi = 0; fi < F; fi++) {
+      if (removed[fi]) continue;
+      nextFaces.push(editableMesh.faces[fi]);
+      nextUvs.push(editableMesh.faceUvs[fi] || editableMesh.faces[fi].map(() => [0, 0]));
+      if (nextOrigins) nextOrigins.push(faceOrigins[fi]);
+    }
+    editableMesh.faces = nextFaces;
+    editableMesh.faceUvs = nextUvs;
+    if (faceOrigins && nextOrigins) faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+    editableMesh.invalidateTopology();
+  }
+
+  // 3. Sellar poros aislados de exactamente 3 aristas de borde (1 triángulo faltante)
+  if (sealPinholes && editableMesh.faces.length >= 6) {
+    const topo = editableMesh.getTopology();
+    const bAdj = new Map();
+    const addAdj = (u, v, fi) => {
+      let arr = bAdj.get(u);
+      if (!arr) { arr = []; bAdj.set(u, arr); }
+      arr.push({ other: v, fi });
+    };
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (e.faces.length !== 1) continue;
+      addAdj(e.a, e.b, e.faces[0]);
+      addAdj(e.b, e.a, e.faces[0]);
+    }
+
+    if (bAdj.size >= 3) {
+      const existingTriSigs = new Set();
+      for (let fi = 0; fi < editableMesh.faces.length; fi++) {
+        const f = editableMesh.faces[fi];
+        if (f.length === 3) {
+          existingTriSigs.add(f.slice().sort((x, y) => x - y).join(','));
+        }
+      }
+      const visitedTri = new Set();
+      let added = 0;
+      for (const [a, listA] of bAdj.entries()) {
+        if (listA.length !== 2) continue;
+        const b = listA[0].other;
+        const c = listA[1].other;
+        if (b === c || a === b || a === c) continue;
+        const listB = bAdj.get(b);
+        const listC = bAdj.get(c);
+        if (!listB || !listC || listB.length !== 2 || listC.length !== 2) continue;
+        if (!listB.some((x) => x.other === c)) continue;
+
+        const sig = [a, b, c].sort((x, y) => x - y).join(',');
+        if (visitedTri.has(sig) || existingTriSigs.has(sig)) continue;
+        visitedTri.add(sig);
+
+        // Determinar devanado opuesto a la cara adyacente sobre la arista (a, b)
+        const adjFace = editableMesh.faces[listA[0].fi];
+        const idxA = adjFace.indexOf(a);
+        const nextV = adjFace[(idxA + 1) % adjFace.length];
+        const newFace = nextV === b ? [b, a, c] : [a, b, c];
+        if (computeFaceAreaSq3D(newFace, verts) <= 1e-16) continue;
+
+        editableMesh.faces.push(newFace);
+        editableMesh.faceUvs.push([[0, 0], [0, 0], [0, 0]]);
+        if (faceOrigins) {
+          faceOrigins.push({
+            origFaceId: -1,
+            shell: faceOrigins[listA[0].fi]?.shell ?? -1,
+            wasTouched: true,
+          });
+        }
+        existingTriSigs.add(sig);
+        added++;
+        sealedTotal++;
+      }
+      if (added > 0) editableMesh.invalidateTopology();
+    }
+  }
+
+  return { removed: removedTotal, sealed: sealedTotal };
+}
+
+export function collapseTinySeamSlivers(editableMesh, faceOrigins = null, { maxEdgeLen = 1e-3 } = {}) {
+  if (!editableMesh || editableMesh.faces.length < 4) return { collapsed: 0 };
+  const verts = editableMesh.verts;
+
+  const seamLengths = [];
+  {
+    const topo = editableMesh.getTopology();
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (faceOrigins && !faceOrigins[e.faces[0]]?.wasTouched && !faceOrigins[e.faces[1]]?.wasTouched) continue;
+      const pa = verts[e.a], pb = verts[e.b];
+      const len = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
+      if (len > 1e-8) seamLengths.push(len);
+    }
+  }
+  if (!seamLengths.length) return { collapsed: 0 };
+  seamLengths.sort((a, b) => a - b);
+  const medSeamLen = seamLengths[(seamLengths.length * 0.5) | 0];
+  const sliverCut = Math.min(maxEdgeLen, medSeamLen * 0.14);
+  if (sliverCut <= 1e-7) return { collapsed: 0 };
+
+  let totalCollapsed = 0;
+
+  for (let pass = 0; pass < 6; pass++) {
+    const topo = editableMesh.getTopology();
+    const V = verts.length;
+    const F = editableMesh.faces.length;
+
+    const isBoundaryVert = new Uint8Array(V);
+    const isSeamVert = new Uint8Array(V);
+    const vertNeighbors = Array.from({ length: V }, () => new Set());
+
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      vertNeighbors[e.a].add(e.b);
+      vertNeighbors[e.b].add(e.a);
+      if (e.faces.length !== 2) {
+        isBoundaryVert[e.a] = 1;
+        isBoundaryVert[e.b] = 1;
+      }
+    }
+
+    if (faceOrigins) {
+      for (let vi = 0; vi < V; vi++) {
+        const inc = topo.vertFaces[vi] || [];
+        let firstShell = -1;
+        for (let i = 0; i < inc.length; i++) {
+          const sh = faceOrigins[inc[i]]?.shell ?? -1;
+          if (sh < 0) continue;
+          if (firstShell < 0) firstShell = sh;
+          else if (sh !== firstShell) { isSeamVert[vi] = 1; break; }
+        }
+      }
+    }
+
+    const candidates = [];
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (e.faces.length !== 2) continue;
+      if (isBoundaryVert[e.a] || isBoundaryVert[e.b]) continue;
+      const fa = e.faces[0], fb = e.faces[1];
+      if (fa === fb) continue;
+      if (editableMesh.faces[fa].length !== 3 || editableMesh.faces[fb].length !== 3) continue;
+      if (faceOrigins && !faceOrigins[fa]?.wasTouched && !faceOrigins[fb]?.wasTouched) continue;
+      const pa = verts[e.a], pb = verts[e.b];
+      const len = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
+      if (len < sliverCut) {
+        candidates.push({ ei, u: e.a, v: e.b, fa, fb, len });
+      }
+    }
+
+    if (!candidates.length) break;
+    candidates.sort((a, b) => a.len - b.len);
+
+    const dirtyVert = new Uint8Array(V);
+    const droppedFace = new Uint8Array(F);
+    const faceNormals = new Array(F);
+    for (let fi = 0; fi < F; fi++) {
+      faceNormals[fi] = computeFaceUnitNormal(editableMesh.faces[fi], verts);
+    }
+
+    let collapsedHere = 0;
+    for (let i = 0; i < candidates.length; i++) {
+      const { u, v, fa, fb } = candidates[i];
+      if (dirtyVert[u] || dirtyVert[v] || droppedFace[fa] || droppedFace[fb]) continue;
+
+      // Condición de enlace 2-manifold: los vecinos comunes de u y v deben ser exactamente 2
+      let commonCount = 0;
+      const nu = vertNeighbors[u];
+      const nv = vertNeighbors[v];
+      for (const w of nu) {
+        if (nv.has(w)) commonCount++;
+      }
+      if (commonCount !== 2) continue;
+
+      const seamU = isSeamVert[u], seamV = isSeamVert[v];
+      const pu = verts[u], pv = verts[v];
+      const target = seamU && !seamV
+        ? { x: pu.x, y: pu.y, z: pu.z }
+        : (!seamU && seamV)
+        ? { x: pv.x, y: pv.y, z: pv.z }
+        : { x: (pu.x + pv.x) * 0.5, y: (pu.y + pv.y) * 0.5, z: (pu.z + pv.z) * 0.5 };
+
+      const incFaces = new Set([...(topo.vertFaces[u] || []), ...(topo.vertFaces[v] || [])]);
+      let valid = true;
+      for (const fi of incFaces) {
+        if (fi === fa || fi === fb || droppedFace[fi]) continue;
+        const oldN = faceNormals[fi];
+        if (!oldN) { valid = false; break; }
+        const f = editableMesh.faces[fi];
+        const pts = f.map((vi) => ((vi === u || vi === v) ? target : verts[vi]));
+        let nx = 0, ny = 0, nz = 0;
+        for (let k = 0; k < pts.length; k++) {
+          const p = pts[k], q = pts[(k + 1) % pts.length];
+          nx += (p.y - q.y) * (p.z + q.z);
+          ny += (p.z - q.z) * (p.x + q.x);
+          nz += (p.x - q.x) * (p.y + q.y);
+        }
+        const nl = Math.hypot(nx, ny, nz);
+        if (nl < 1e-12) { valid = false; break; }
+        const dot = (nx / nl) * oldN.x + (ny / nl) * oldN.y + (nz / nl) * oldN.z;
+        if (dot <= 0.25) { valid = false; break; }
+      }
+      if (!valid) continue;
+
+      const kept = Math.min(u, v);
+      const drop = Math.max(u, v);
+      verts[kept] = target;
+      droppedFace[fa] = 1;
+      droppedFace[fb] = 1;
+      for (const fi of incFaces) {
+        if (fi === fa || fi === fb || droppedFace[fi]) continue;
+        const f = editableMesh.faces[fi];
+        for (let k = 0; k < f.length; k++) {
+          if (f[k] === drop) f[k] = kept;
+        }
+        if (faceOrigins?.[fi]) faceOrigins[fi].wasTouched = true;
+      }
+
+      dirtyVert[u] = 1;
+      dirtyVert[v] = 1;
+      for (const w of nu) dirtyVert[w] = 1;
+      for (const w of nv) dirtyVert[w] = 1;
+      collapsedHere++;
+    }
+
+    if (!collapsedHere) break;
+    totalCollapsed += collapsedHere;
+
+    const nextFaces = [];
+    const nextUvs = [];
+    const nextOrigins = faceOrigins ? [] : null;
+    for (let fi = 0; fi < F; fi++) {
+      if (droppedFace[fi]) continue;
+      nextFaces.push(editableMesh.faces[fi]);
+      nextUvs.push(editableMesh.faceUvs[fi] || editableMesh.faces[fi].map(() => [0, 0]));
+      if (nextOrigins) nextOrigins.push(faceOrigins[fi]);
+    }
+    editableMesh.faces = nextFaces;
+    editableMesh.faceUvs = nextUvs;
+    if (faceOrigins && nextOrigins) faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+    editableMesh.invalidateTopology();
+  }
+
+  return { collapsed: totalCollapsed };
+}
+
+export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0) {
+  const s = Math.max(0, Math.min(1, Number(seamSmooth) || 0));
+  if (s <= 0 || !editableMesh || editableMesh.faces.length < 4) {
+    return { smoothed: false, refinedFaces: 0 };
+  }
+  if (!faceOrigins || faceOrigins.length !== editableMesh.faces.length) {
+    return { smoothed: false, refinedFaces: 0 };
+  }
+
+  const collectSeamData = () => {
+    const topo = editableMesh.getTopology();
+    const seamVerts = new Set();
+    const seamEdgeLens = [];
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (e.faces.length < 2) continue;
+      let s0 = -1;
+      let multiShell = false;
+      for (let i = 0; i < e.faces.length; i++) {
+        const sh = faceOrigins[e.faces[i]]?.shell ?? -1;
+        if (sh < 0) continue;
+        if (s0 < 0) s0 = sh;
+        else if (sh !== s0) { multiShell = true; break; }
+      }
+      if (multiShell) {
+        seamVerts.add(e.a);
+        seamVerts.add(e.b);
+        const pa = editableMesh.verts[e.a], pb = editableMesh.verts[e.b];
+        const l = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
+        if (l > 1e-8) seamEdgeLens.push(l);
+      }
+    }
+    for (let vi = 0; vi < editableMesh.verts.length; vi++) {
+      if (seamVerts.has(vi)) continue;
+      const inc = topo.vertFaces[vi] || [];
+      let s0 = -1;
+      for (let i = 0; i < inc.length; i++) {
+        const sh = faceOrigins[inc[i]]?.shell ?? -1;
+        if (sh < 0) continue;
+        if (s0 < 0) s0 = sh;
+        else if (sh !== s0) { seamVerts.add(vi); break; }
+      }
+    }
+    return { topo, seamVerts, seamEdgeLens };
+  };
+
+  let { topo, seamVerts, seamEdgeLens } = collectSeamData();
+  if (!seamVerts.size) return { smoothed: false, refinedFaces: 0 };
+
+  // 0. Triangular N-gonos (>=5 vértices) que tocan la costura para que el remallado sea válido
+  {
+    let splitNgons = false;
+    const nextFaces = [];
+    const nextUvs = [];
+    const nextOrigins = [];
+    for (let fi = 0; fi < editableMesh.faces.length; fi++) {
+      const f = editableMesh.faces[fi];
+      const fUv = editableMesh.faceUvs[fi] || f.map(() => [0, 0]);
+      const orig = faceOrigins[fi] || { origFaceId: -1, shell: -1, wasTouched: false };
+      if (f.length >= 5 && f.some((vi) => seamVerts.has(vi))) {
+        const pts3D = f.map((vi) => editableMesh.verts[vi]);
+        const basis = computePolygonBasis3D(pts3D);
+        if (basis && basis.pts2D) {
+          const tris2D = earClipSimplePoly(f.map((_, idx) => idx), basis.pts2D);
+          if (tris2D.length) {
+            splitNgons = true;
+            for (let t = 0; t < tris2D.length; t++) {
+              const [ia, ib, ic] = tris2D[t];
+              nextFaces.push([f[ia], f[ib], f[ic]]);
+              nextUvs.push([(fUv[ia] || [0, 0]).slice(), (fUv[ib] || [0, 0]).slice(), (fUv[ic] || [0, 0]).slice()]);
+              nextOrigins.push({ origFaceId: -1, shell: orig.shell, wasTouched: true });
+            }
+            continue;
+          }
+        }
+      }
+      nextFaces.push(f);
+      nextUvs.push(fUv);
+      nextOrigins.push(orig);
+    }
+    if (splitNgons) {
+      editableMesh.faces = nextFaces;
+      editableMesh.faceUvs = nextUvs;
+      faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+      editableMesh.invalidateTopology();
+      ({ topo, seamVerts, seamEdgeLens } = collectSeamData());
+    }
+  }
+
+  // Calcular escala de la malla y radio geodésico del collar de transición
+  let minX = Infinity, minY = Infinity, minZ = Infinity;
+  let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+  for (let i = 0; i < editableMesh.verts.length; i++) {
+    const p = editableMesh.verts[i];
+    if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+    if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+    if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+  }
+  const diag = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) || 1;
+  seamEdgeLens.sort((a, b) => a - b);
+  const medSeamLen = seamEdgeLens.length ? seamEdgeLens[(seamEdgeLens.length * 0.5) | 0] : diag * 0.03;
+  const filletRadius = Math.max(diag * 0.015, Math.min(diag * 0.095, medSeamLen * (0.65 + 1.15 * s)));
+  const bandRadius = filletRadius * 1.25;
+
+  // Dijkstra geodésico desde los vértices de costura hasta maxRadius
+  const computeGeodesicDist = (maxDist) => {
+    const V = editableMesh.verts.length;
+    const dist = new Float64Array(V);
+    dist.fill(Infinity);
+    const curTopo = editableMesh.getTopology();
+    const heap = []; // min-heap [d, vi]
+    const pushHeap = (d, vi) => {
+      heap.push([d, vi]);
+      let idx = heap.length - 1;
+      while (idx > 0) {
+        const p = (idx - 1) >> 1;
+        if (heap[p][0] <= heap[idx][0]) break;
+        const tmp = heap[p]; heap[p] = heap[idx]; heap[idx] = tmp;
+        idx = p;
+      }
+    };
+    const popHeap = () => {
+      const top = heap[0];
+      const last = heap.pop();
+      if (heap.length) {
+        heap[0] = last;
+        let idx = 0;
+        const n = heap.length;
+        while (true) {
+          let best = idx;
+          const l = idx * 2 + 1, r = idx * 2 + 2;
+          if (l < n && heap[l][0] < heap[best][0]) best = l;
+          if (r < n && heap[r][0] < heap[best][0]) best = r;
+          if (best === idx) break;
+          const tmp = heap[idx]; heap[idx] = heap[best]; heap[best] = tmp;
+          idx = best;
+        }
+      }
+      return top;
+    };
+
+    for (const vi of seamVerts) {
+      if (vi >= 0 && vi < V) {
+        dist[vi] = 0;
+        pushHeap(0, vi);
+      }
+    }
+
+    const verts = editableMesh.verts;
+    while (heap.length) {
+      const [du, u] = popHeap();
+      if (du > dist[u] || du >= maxDist) continue;
+      const incE = curTopo.vertEdges[u] || [];
+      const pu = verts[u];
+      for (let i = 0; i < incE.length; i++) {
+        const e = curTopo.edges[incE[i]];
+        if (!e) continue;
+        const w = e.a === u ? e.b : e.a;
+        const pw = verts[w];
+        const nd = du + Math.hypot(pw.x - pu.x, pw.y - pu.y, pw.z - pu.z);
+        if (nd < dist[w] && nd <= maxDist) {
+          dist[w] = nd;
+          pushHeap(nd, w);
+        }
+      }
+    }
+    return { dist, topo: curTopo };
+  };
+
+  let { dist: geoDist } = computeGeodesicDist(bandRadius);
+
+  // 1. Subdividir quads largos en el collar geodésico y ejecutar remallado isotrópico local
+  let refinedFaces = 0;
+  {
+    const nextFaces = [];
+    const nextUvs = [];
+    const nextOrigins = [];
+    const verts = editableMesh.verts;
+    const triQual = (a, b, c) => {
+      const pa = verts[a], pb = verts[b], pc = verts[c];
+      const e1x = pb.x - pa.x, e1y = pb.y - pa.y, e1z = pb.z - pa.z;
+      const e2x = pc.x - pa.x, e2y = pc.y - pa.y, e2z = pc.z - pa.z;
+      const cx = e1y * e2z - e1z * e2y;
+      const cy = e1z * e2x - e1x * e2z;
+      const cz = e1x * e2y - e1y * e2x;
+      const area2 = Math.hypot(cx, cy, cz);
+      const lSq = (e1x * e1x + e1y * e1y + e1z * e1z) + (e2x * e2x + e2y * e2y + e2z * e2z) +
+        ((pc.x - pb.x) ** 2 + (pc.y - pb.y) ** 2 + (pc.z - pb.z) ** 2);
+      return area2 / (lSq || 1e-12);
+    };
+
+    for (let fi = 0; fi < editableMesh.faces.length; fi++) {
+      const f = editableMesh.faces[fi];
+      const fUv = editableMesh.faceUvs[fi] || f.map(() => [0, 0]);
+      const orig = faceOrigins[fi] || { origFaceId: -1, shell: -1, wasTouched: false };
+      if (f.length === 4 && f.some((vi) => geoDist[vi] <= bandRadius * 0.9)) {
+        const q02 = Math.min(triQual(f[0], f[1], f[2]), triQual(f[0], f[2], f[3]));
+        const q13 = Math.min(triQual(f[1], f[2], f[3]), triQual(f[1], f[3], f[0]));
+        const u0 = fUv[0] || [0, 0], u1 = fUv[1] || [0, 0], u2 = fUv[2] || [0, 0], u3 = fUv[3] || [0, 0];
+        if (q02 >= q13) {
+          nextFaces.push([f[0], f[1], f[2]], [f[0], f[2], f[3]]);
+          nextUvs.push([u0.slice(), u1.slice(), u2.slice()], [u0.slice(), u2.slice(), u3.slice()]);
+        } else {
+          nextFaces.push([f[1], f[2], f[3]], [f[1], f[3], f[0]]);
+          nextUvs.push([u1.slice(), u2.slice(), u3.slice()], [u1.slice(), u3.slice(), u0.slice()]);
+        }
+        nextOrigins.push({ origFaceId: -1, shell: orig.shell, wasTouched: true }, { origFaceId: -1, shell: orig.shell, wasTouched: true });
+        refinedFaces++;
+      } else {
+        nextFaces.push(f);
+        nextUvs.push(fUv);
+        nextOrigins.push(orig);
+      }
+    }
+    if (refinedFaces > 0) {
+      editableMesh.faces = nextFaces;
+      editableMesh.faceUvs = nextUvs;
+      faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+      editableMesh.invalidateTopology();
+      ({ topo, seamVerts } = collectSeamData());
+      ({ dist: geoDist } = computeGeodesicDist(bandRadius));
+    }
+  }
+
+  // Remallado isotrópico local dentro de geoDist <= bandRadius (Edge Split -> Collapse -> Edge Flip -> Tangential Relax)
+  const targetLen = Math.max(diag * 0.008, Math.min(filletRadius * 0.65, medSeamLen * 1.15));
+  const remeshIters = 2;
+  for (let rIter = 0; rIter < remeshIters; rIter++) {
+    if (editableMesh.faces.length >= 35000) break;
+
+    // A) Edge Split en aristas largas dentro de la banda
+    ({ topo } = computeGeodesicDist(bandRadius));
+    const maxLen = targetLen * 1.45;
+    const splitMap = new Map(); // edgeKey -> { u, v, midVi }
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (e.faces.length !== 2) continue;
+      if (geoDist[e.a] > bandRadius && geoDist[e.b] > bandRadius) continue;
+      const fa = editableMesh.faces[e.faces[0]], fb = editableMesh.faces[e.faces[1]];
+      if (!fa || !fb || fa.length !== 3 || fb.length !== 3) continue;
+      const pa = editableMesh.verts[e.a], pb = editableMesh.verts[e.b];
+      const len = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
+      if (len <= maxLen) continue;
+      const midVi = editableMesh.verts.length;
+      editableMesh.verts.push({
+        x: (pa.x + pb.x) * 0.5,
+        y: (pa.y + pb.y) * 0.5,
+        z: (pa.z + pb.z) * 0.5,
+      });
+      splitMap.set(e.key, { u: e.a, v: e.b, midVi });
+    }
+
+    if (splitMap.size > 0 && editableMesh.faces.length + splitMap.size * 2 < 35000) {
+      const nextFaces = [];
+      const nextUvs = [];
+      const nextOrigins = [];
+      const distSqV = (vi, vj) => {
+        const a = editableMesh.verts[vi], b = editableMesh.verts[vj];
+        return (a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2;
+      };
+      for (let fi = 0; fi < editableMesh.faces.length; fi++) {
+        const f = editableMesh.faces[fi];
+        const fUv = editableMesh.faceUvs[fi] || f.map(() => [0, 0]);
+        const orig = faceOrigins[fi] || { origFaceId: -1, shell: -1, wasTouched: false };
+        if (f.length !== 3) {
+          nextFaces.push(f); nextUvs.push(fUv); nextOrigins.push(orig);
+          continue;
+        }
+        const splits = new Array(3);
+        let cnt = 0;
+        for (let k = 0; k < 3; k++) {
+          const sp = splitMap.get(edgeKey(f[k], f[(k + 1) % 3]));
+          if (sp) {
+            const ua = fUv[k] || [0, 0], ub = fUv[(k + 1) % 3] || [0, 0];
+            splits[k] = { midVi: sp.midVi, uv: [(ua[0] + ub[0]) * 0.5, (ua[1] + ub[1]) * 0.5] };
+            cnt++;
+          } else {
+            splits[k] = null;
+          }
+        }
+        if (cnt === 0) {
+          nextFaces.push(f); nextUvs.push(fUv); nextOrigins.push(orig);
+          continue;
+        }
+        refinedFaces++;
+        const pushTri = (vertsArr, uvsArr) => {
+          nextFaces.push(vertsArr);
+          nextUvs.push(uvsArr);
+          nextOrigins.push({ origFaceId: -1, shell: orig.shell, wasTouched: true });
+        };
+        const [v0, v1, v2] = f;
+        const [u0, u1, u2] = [fUv[0] || [0, 0], fUv[1] || [0, 0], fUv[2] || [0, 0]];
+        const [s0, s1, s2] = splits;
+        if (cnt === 3) {
+          pushTri([v0, s0.midVi, s2.midVi], [u0.slice(), s0.uv.slice(), s2.uv.slice()]);
+          pushTri([s0.midVi, v1, s1.midVi], [s0.uv.slice(), u1.slice(), s1.uv.slice()]);
+          pushTri([s2.midVi, s1.midVi, v2], [s2.uv.slice(), s1.uv.slice(), u2.slice()]);
+          pushTri([s0.midVi, s1.midVi, s2.midVi], [s0.uv.slice(), s1.uv.slice(), s2.uv.slice()]);
+        } else if (cnt === 2) {
+          const rot = !s1 ? 0 : (!s2 ? 1 : 2);
+          const rv = [f[rot], f[(rot + 1) % 3], f[(rot + 2) % 3]];
+          const ru = [fUv[rot] || [0, 0], fUv[(rot + 1) % 3] || [0, 0], fUv[(rot + 2) % 3] || [0, 0]];
+          const sa = splits[rot], sb = splits[(rot + 2) % 3];
+          pushTri([rv[0], sa.midVi, sb.midVi], [ru[0].slice(), sa.uv.slice(), sb.uv.slice()]);
+          if (distSqV(sa.midVi, rv[2]) <= distSqV(sb.midVi, rv[1])) {
+            pushTri([sa.midVi, rv[1], rv[2]], [sa.uv.slice(), ru[1].slice(), ru[2].slice()]);
+            pushTri([sa.midVi, rv[2], sb.midVi], [sa.uv.slice(), ru[2].slice(), sb.uv.slice()]);
+          } else {
+            pushTri([sa.midVi, rv[1], sb.midVi], [sa.uv.slice(), ru[1].slice(), sb.uv.slice()]);
+            pushTri([sb.midVi, rv[1], rv[2]], [sb.uv.slice(), ru[1].slice(), ru[2].slice()]);
+          }
+        } else {
+          const rot = s0 ? 0 : (s1 ? 1 : 2);
+          const rv = [f[rot], f[(rot + 1) % 3], f[(rot + 2) % 3]];
+          const ru = [fUv[rot] || [0, 0], fUv[(rot + 1) % 3] || [0, 0], fUv[(rot + 2) % 3] || [0, 0]];
+          const sm = splits[rot];
+          pushTri([rv[0], sm.midVi, rv[2]], [ru[0].slice(), sm.uv.slice(), ru[2].slice()]);
+          pushTri([sm.midVi, rv[1], rv[2]], [sm.uv.slice(), ru[1].slice(), ru[2].slice()]);
+        }
+      }
+      editableMesh.faces = nextFaces;
+      editableMesh.faceUvs = nextUvs;
+      faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+      editableMesh.invalidateTopology();
+      ({ topo, seamVerts } = collectSeamData());
+    }
+
+    // B) Colapso de aristas cortas o esquirlas dentro de la banda
+    ({ dist: geoDist, topo } = computeGeodesicDist(bandRadius));
+    const V = editableMesh.verts.length;
+    const minLen = targetLen * 0.42;
+    const isBoundaryVert = new Uint8Array(V);
+    const vertNeighbors = Array.from({ length: V }, () => new Set());
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      vertNeighbors[e.a].add(e.b);
+      vertNeighbors[e.b].add(e.a);
+      if (e.faces.length !== 2) {
+        isBoundaryVert[e.a] = 1;
+        isBoundaryVert[e.b] = 1;
+      }
+    }
+    const faceNormals = editableMesh.faces.map((f) => computeFaceUnitNormal(f, editableMesh.verts));
+    const droppedFace = new Uint8Array(editableMesh.faces.length);
+    const dirtyVert = new Uint8Array(V);
+    const candidates = [];
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (e.faces.length !== 2) continue;
+      if (isBoundaryVert[e.a] || isBoundaryVert[e.b]) continue;
+      if (Math.min(geoDist[e.a], geoDist[e.b]) > bandRadius * 0.92) continue;
+      const fa = editableMesh.faces[e.faces[0]], fb = editableMesh.faces[e.faces[1]];
+      if (!fa || !fb || fa.length !== 3 || fb.length !== 3) continue;
+      const pa = editableMesh.verts[e.a], pb = editableMesh.verts[e.b];
+      const len = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
+      if (len < minLen) candidates.push({ ei, len });
+    }
+    candidates.sort((x, y) => x.len - y.len);
+    let collapsedHere = 0;
+    for (let ci = 0; ci < candidates.length; ci++) {
+      const e = topo.edges[candidates[ci].ei];
+      const u = e.a, v = e.b;
+      if (dirtyVert[u] || dirtyVert[v]) continue;
+      const [fa, fb] = e.faces;
+      if (droppedFace[fa] || droppedFace[fb]) continue;
+
+      let common = 0;
+      const nu = vertNeighbors[u], nv = vertNeighbors[v];
+      for (const w of nu) {
+        if (nv.has(w)) common++;
+      }
+      if (common !== 2) continue;
+
+      const seamU = seamVerts.has(u), seamV = seamVerts.has(v);
+      const pu = editableMesh.verts[u], pv = editableMesh.verts[v];
+      const target = seamU && !seamV
+        ? { x: pu.x, y: pu.y, z: pu.z }
+        : (!seamU && seamV)
+        ? { x: pv.x, y: pv.y, z: pv.z }
+        : { x: (pu.x + pv.x) * 0.5, y: (pu.y + pv.y) * 0.5, z: (pu.z + pv.z) * 0.5 };
+
+      const incFaces = new Set([...(topo.vertFaces[u] || []), ...(topo.vertFaces[v] || [])]);
+      let valid = true;
+      for (const fi of incFaces) {
+        if (fi === fa || fi === fb || droppedFace[fi]) continue;
+        const oldN = faceNormals[fi];
+        if (!oldN) { valid = false; break; }
+        const f = editableMesh.faces[fi];
+        const pts = f.map((vi) => ((vi === u || vi === v) ? target : editableMesh.verts[vi]));
+        const curN = computeFaceUnitNormal([0, 1, 2], pts);
+        if (!curN || curN.x * oldN.x + curN.y * oldN.y + curN.z * oldN.z <= 0.35) {
+          valid = false; break;
+        }
+      }
+      if (!valid) continue;
+
+      const kept = Math.min(u, v), drop = Math.max(u, v);
+      editableMesh.verts[kept] = target;
+      droppedFace[fa] = 1;
+      droppedFace[fb] = 1;
+      for (const fi of incFaces) {
+        if (fi === fa || fi === fb || droppedFace[fi]) continue;
+        const f = editableMesh.faces[fi];
+        for (let k = 0; k < f.length; k++) {
+          if (f[k] === drop) f[k] = kept;
+        }
+        if (faceOrigins[fi]) faceOrigins[fi].wasTouched = true;
+      }
+      dirtyVert[u] = 1; dirtyVert[v] = 1;
+      for (const w of nu) dirtyVert[w] = 1;
+      for (const w of nv) dirtyVert[w] = 1;
+      collapsedHere++;
+    }
+    if (collapsedHere > 0) {
+      const nextFaces = [], nextUvs = [], nextOrigins = [];
+      for (let fi = 0; fi < editableMesh.faces.length; fi++) {
+        if (droppedFace[fi]) continue;
+        nextFaces.push(editableMesh.faces[fi]);
+        nextUvs.push(editableMesh.faceUvs[fi] || editableMesh.faces[fi].map(() => [0, 0]));
+        nextOrigins.push(faceOrigins[fi]);
+      }
+      editableMesh.faces = nextFaces;
+      editableMesh.faceUvs = nextUvs;
+      faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+      editableMesh.invalidateTopology();
+      ({ topo, seamVerts } = collectSeamData());
+    }
+
+    // C) Edge Flip guiado por valencia (objetivo = 6) y relación de aspecto con guarda diedral (> 0.72)
+    ({ dist: geoDist, topo } = computeGeodesicDist(bandRadius));
+    const Vflip = editableMesh.verts.length;
+    const deg = new Int32Array(Vflip);
+    const vNeighbors = Array.from({ length: Vflip }, () => new Set());
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      deg[e.a]++; deg[e.b]++;
+      vNeighbors[e.a].add(e.b);
+      vNeighbors[e.b].add(e.a);
+    }
+    const faceTouched = new Uint8Array(editableMesh.faces.length);
+    const vertsArr = editableMesh.verts;
+    const triQuality = (p0, p1, p2) => {
+      const e1x = p1.x - p0.x, e1y = p1.y - p0.y, e1z = p1.z - p0.z;
+      const e2x = p2.x - p0.x, e2y = p2.y - p0.y, e2z = p2.z - p0.z;
+      const cx = e1y * e2z - e1z * e2y;
+      const cy = e1z * e2x - e1x * e2z;
+      const cz = e1x * e2y - e1y * e2x;
+      const area2 = Math.hypot(cx, cy, cz);
+      if (area2 < 1e-12) return { q: 0, n: null };
+      const sumSq =
+        (e1x * e1x + e1y * e1y + e1z * e1z) +
+        (e2x * e2x + e2y * e2y + e2z * e2z) +
+        ((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2 + (p2.z - p1.z) ** 2);
+      return { q: area2 / (sumSq || 1e-12), n: { x: cx / area2, y: cy / area2, z: cz / area2 } };
+    };
+    let flips = 0;
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (e.faces.length !== 2) continue;
+      if (geoDist[e.a] > bandRadius && geoDist[e.b] > bandRadius) continue;
+      const [fi0, fi1] = e.faces;
+      if (faceTouched[fi0] || faceTouched[fi1]) continue;
+      const f0 = editableMesh.faces[fi0], f1 = editableMesh.faces[fi1];
+      if (!f0 || !f1 || f0.length !== 3 || f1.length !== 3) continue;
+
+      // Hallar vértices opuestos y orientación consistente en f0 (u->v)
+      const iu0 = f0.indexOf(e.a), iv0 = f0.indexOf(e.b);
+      if (iu0 < 0 || iv0 < 0) continue;
+      const uFirstInF0 = ((iu0 + 1) % 3) === iv0;
+      const a = uFirstInF0 ? e.a : e.b;
+      const b = uFirstInF0 ? e.b : e.a;
+      const c = f0[3 - f0.indexOf(a) - f0.indexOf(b)];
+      const d = f1[3 - f1.indexOf(a) - f1.indexOf(b)];
+      if (c === d || vNeighbors[c].has(d)) continue;
+      if (deg[a] <= 3 || deg[b] <= 3) continue;
+
+      const t0 = triQuality(vertsArr[a], vertsArr[b], vertsArr[c]);
+      const t1 = triQuality(vertsArr[b], vertsArr[a], vertsArr[d]);
+      if (!t0.n || !t1.n) continue;
+      // Nunca voltear aristas sobre filos agudos
+      if (t0.n.x * t1.n.x + t0.n.y * t1.n.y + t0.n.z * t1.n.z < 0.72) continue;
+
+      const n0 = triQuality(vertsArr[a], vertsArr[d], vertsArr[c]);
+      const n1 = triQuality(vertsArr[d], vertsArr[b], vertsArr[c]);
+      if (!n0.n || !n1.n) continue;
+      if (
+        n0.n.x * t0.n.x + n0.n.y * t0.n.y + n0.n.z * t0.n.z < 0.5 ||
+        n1.n.x * t1.n.x + n1.n.y * t1.n.y + n1.n.z * t1.n.z < 0.5
+      ) continue;
+
+      const errBefore = (deg[a] - 6) ** 2 + (deg[b] - 6) ** 2 + (deg[c] - 6) ** 2 + (deg[d] - 6) ** 2;
+      const errAfter = (deg[a] - 7) ** 2 + (deg[b] - 7) ** 2 + (deg[c] - 5) ** 2 + (deg[d] - 5) ** 2;
+      const minQBefore = Math.min(t0.q, t1.q);
+      const minQAfter = Math.min(n0.q, n1.q);
+      if (minQAfter < minQBefore * 0.6) continue;
+      if (!(errAfter < errBefore || (errAfter === errBefore && minQAfter > minQBefore * 1.06))) continue;
+
+      const uv0 = editableMesh.faceUvs[fi0] || [[0, 0], [0, 0], [0, 0]];
+      const uv1 = editableMesh.faceUvs[fi1] || [[0, 0], [0, 0], [0, 0]];
+      const getUv = (face, uvs, vi) => {
+        const idx = face.indexOf(vi);
+        return idx >= 0 && uvs[idx] ? uvs[idx].slice() : [0, 0];
+      };
+      const uvA = getUv(f0, uv0, a), uvB = getUv(f0, uv0, b), uvC = getUv(f0, uv0, c), uvD = getUv(f1, uv1, d);
+      editableMesh.faces[fi0] = [a, d, c];
+      editableMesh.faceUvs[fi0] = [uvA, uvD, uvC];
+      editableMesh.faces[fi1] = [d, b, c];
+      editableMesh.faceUvs[fi1] = [uvD.slice(), uvB, uvC.slice()];
+      if (faceOrigins[fi0]) faceOrigins[fi0].wasTouched = true;
+      if (faceOrigins[fi1]) faceOrigins[fi1].wasTouched = true;
+
+      deg[a]--; deg[b]--; deg[c]++; deg[d]++;
+      vNeighbors[a].delete(b); vNeighbors[b].delete(a);
+      vNeighbors[c].add(d); vNeighbors[d].add(c);
+      faceTouched[fi0] = 1; faceTouched[fi1] = 1;
+      flips++;
+    }
+    if (flips > 0) {
+      editableMesh.invalidateTopology();
+      ({ topo, seamVerts } = collectSeamData());
+    }
+
+    // D) Relajación tangencial suave en la banda
+    ({ dist: geoDist, topo } = computeGeodesicDist(bandRadius));
+    const Vrel = editableMesh.verts.length;
+    const isBnd = new Uint8Array(Vrel);
+    const vNbrs = Array.from({ length: Vrel }, () => new Set());
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      vNbrs[e.a].add(e.b); vNbrs[e.b].add(e.a);
+      if (e.faces.length !== 2) { isBnd[e.a] = 1; isBnd[e.b] = 1; }
+    }
+    const fNormalsRel = editableMesh.faces.map((f) => computeFaceUnitNormal(f, editableMesh.verts));
+    for (let vi = 0; vi < Vrel; vi++) {
+      if (isBnd[vi] || geoDist[vi] >= bandRadius * 0.95) continue;
+      const nbrs = vNbrs[vi];
+      if (!nbrs.size) continue;
+      let ax = 0, ay = 0, az = 0;
+      for (const w of nbrs) {
+        const pw = editableMesh.verts[w];
+        ax += pw.x; ay += pw.y; az += pw.z;
+      }
+      const inv = 1 / nbrs.size;
+      const p = editableMesh.verts[vi];
+      let dx = ax * inv - p.x, dy = ay * inv - p.y, dz = az * inv - p.z;
+      const incF = topo.vertFaces[vi] || [];
+      let vnx = 0, vny = 0, vnz = 0;
+      for (let k = 0; k < incF.length; k++) {
+        const fn = fNormalsRel[incF[k]];
+        if (fn) { vnx += fn.x; vny += fn.y; vnz += fn.z; }
+      }
+      const vnl = Math.hypot(vnx, vny, vnz);
+      if (vnl > 1e-6) {
+        vnx /= vnl; vny /= vnl; vnz /= vnl;
+        const proj = dx * vnx + dy * vny + dz * vnz;
+        dx -= proj * vnx; dy -= proj * vny; dz -= proj * vnz;
+      }
+      const ox = p.x, oy = p.y, oz = p.z;
+      p.x = ox + dx * 0.35; p.y = oy + dy * 0.35; p.z = oz + dz * 0.35;
+      let flipped = false;
+      for (let k = 0; k < incF.length; k++) {
+        const fi = incF[k];
+        const refN = fNormalsRel[fi];
+        if (!refN) continue;
+        const curN = computeFaceUnitNormal(editableMesh.faces[fi], editableMesh.verts);
+        if (!curN || curN.x * refN.x + curN.y * refN.y + curN.z * refN.z < 0.35) {
+          flipped = true; break;
+        }
+      }
+      if (flipped) { p.x = ox; p.y = oy; p.z = oz; }
+    }
+  }
+
+  // 2. Suavizado HC-Smoothing (Vollmer 1999) con caída coseno geodésica y preservación de volumen
+  ({ topo, seamVerts } = collectSeamData());
+  ({ dist: geoDist } = computeGeodesicDist(filletRadius));
+
+  const V = editableMesh.verts.length;
+  const boundaryVert = new Uint8Array(V);
+  for (let ei = 0; ei < topo.edges.length; ei++) {
+    const e = topo.edges[ei];
+    if (e.faces.length !== 2) {
+      boundaryVert[e.a] = 1;
+      boundaryVert[e.b] = 1;
+    }
+  }
+
+  const smoothWeight = new Float32Array(V);
+  const activeVerts = [];
+  for (let vi = 0; vi < V; vi++) {
+    const d = geoDist[vi];
+    if (boundaryVert[vi] || d >= filletRadius) continue;
+    const w = 0.5 * (1 + Math.cos((Math.PI * d) / filletRadius));
+    if (w > 1e-3) {
+      smoothWeight[vi] = w;
+      activeVerts.push(vi);
+    }
+  }
+
+  if (!activeVerts.length) return { smoothed: refinedFaces > 0, refinedFaces };
+
+  const activeFaceSet = new Set();
+  const nbrSets = new Map();
+  for (let i = 0; i < activeVerts.length; i++) {
+    const vi = activeVerts[i];
+    const incF = topo.vertFaces[vi] || [];
+    for (let k = 0; k < incF.length; k++) activeFaceSet.add(incF[k]);
+    const incE = topo.vertEdges[vi] || [];
+    const sNbr = new Set();
+    for (let k = 0; k < incE.length; k++) {
+      const e = topo.edges[incE[k]];
+      if (e) sNbr.add(e.a === vi ? e.b : e.a);
+    }
+    nbrSets.set(vi, [...sNbr]);
+  }
+  const activeFaces = [...activeFaceSet];
+
+  const verts = editableMesh.verts;
+  const origPos = verts.map((v) => ({ x: v.x, y: v.y, z: v.z }));
+
+  const accumX = new Float64Array(V);
+  const accumY = new Float64Array(V);
+  const accumZ = new Float64Array(V);
+  const accumW = new Float64Array(V);
+
+  const smoothX = new Float64Array(V);
+  const smoothY = new Float64Array(V);
+  const smoothZ = new Float64Array(V);
+  const bX = new Float64Array(V);
+  const bY = new Float64Array(V);
+  const bZ = new Float64Array(V);
+  const nextX = new Float64Array(V);
+  const nextY = new Float64Array(V);
+  const nextZ = new Float64Array(V);
+
+  const addEdgeCot = (u, v, w) => {
+    const pu = verts[u], pv = verts[v];
+    if (smoothWeight[u] > 0) {
+      accumX[u] += pv.x * w; accumY[u] += pv.y * w; accumZ[u] += pv.z * w; accumW[u] += w;
+    }
+    if (smoothWeight[v] > 0) {
+      accumX[v] += pu.x * w; accumY[v] += pu.y * w; accumZ[v] += pu.z * w; accumW[v] += w;
+    }
+  };
+
+  const cotAt = (pa, pb, pc) => {
+    const ax = pa.x - pc.x, ay = pa.y - pc.y, az = pa.z - pc.z;
+    const bx = pb.x - pc.x, by = pb.y - pc.y, bz = pb.z - pc.z;
+    const dot = ax * bx + ay * by + az * bz;
+    const cx = ay * bz - az * by;
+    const cy = az * bx - ax * bz;
+    const cz = ax * by - ay * bx;
+    const area2 = Math.hypot(cx, cy, cz);
+    if (area2 < 1e-12) return 0.25;
+    return Math.max(0.05, Math.min(8.0, dot / area2));
+  };
+
+  const alpha = 0.15;
+  const beta = 0.55;
+  const stepScale = 0.65 * (0.45 + 0.55 * Math.min(1, s / 0.5));
+  const hcIters = Math.max(4, Math.round(5 + 12 * s));
+
+  for (let it = 0; it < hcIters; it++) {
+    // Guardar normales inmediatas previas al paso (nunca permitir pliegue hacia atrás)
+    const preNormals = new Map();
+    for (let i = 0; i < activeFaces.length; i++) {
+      const fi = activeFaces[i];
+      const n = computeFaceUnitNormal(editableMesh.faces[fi], verts);
+      if (n) preNormals.set(fi, n);
+    }
+
+    for (let i = 0; i < activeVerts.length; i++) {
+      const vi = activeVerts[i];
+      accumX[vi] = 0; accumY[vi] = 0; accumZ[vi] = 0; accumW[vi] = 0;
+      bX[vi] = 0; bY[vi] = 0; bZ[vi] = 0;
+    }
+
+    for (let i = 0; i < activeFaces.length; i++) {
+      const f = editableMesh.faces[activeFaces[i]];
+      const n = f.length;
+      if (n === 3) {
+        const i0 = f[0], i1 = f[1], i2 = f[2];
+        const p0 = verts[i0], p1 = verts[i1], p2 = verts[i2];
+        addEdgeCot(i0, i1, cotAt(p0, p1, p2));
+        addEdgeCot(i1, i2, cotAt(p1, p2, p0));
+        addEdgeCot(i2, i0, cotAt(p2, p0, p1));
+      } else {
+        for (let k = 0; k < n; k++) {
+          addEdgeCot(f[k], f[(k + 1) % n], 0.5);
+        }
+      }
+    }
+
+    // Paso 1 HC: promedio Laplaciano cotangente & vector de corrección b[vi]
+    for (let i = 0; i < activeVerts.length; i++) {
+      const vi = activeVerts[i];
+      const p = verts[vi];
+      const op = origPos[vi];
+      const wSum = accumW[vi];
+      if (wSum <= 1e-10) {
+        smoothX[vi] = p.x; smoothY[vi] = p.y; smoothZ[vi] = p.z;
+        continue;
+      }
+      const sx = accumX[vi] / wSum;
+      const sy = accumY[vi] / wSum;
+      const sz = accumZ[vi] / wSum;
+      smoothX[vi] = sx; smoothY[vi] = sy; smoothZ[vi] = sz;
+      bX[vi] = sx - (alpha * op.x + (1 - alpha) * p.x);
+      bY[vi] = sy - (alpha * op.y + (1 - alpha) * p.y);
+      bZ[vi] = sz - (alpha * op.z + (1 - alpha) * p.z);
+    }
+
+    // Paso 2 HC: devolver volumen compensando con promedio vecino de b
+    for (let i = 0; i < activeVerts.length; i++) {
+      const vi = activeVerts[i];
+      const p = verts[vi];
+      const nbrs = nbrSets.get(vi) || [];
+      let nbx = 0, nby = 0, nbz = 0;
+      for (let k = 0; k < nbrs.length; k++) {
+        const j = nbrs[k];
+        nbx += bX[j]; nby += bY[j]; nbz += bZ[j];
+      }
+      const inv = nbrs.length ? 1 / nbrs.length : 0;
+      const targetX = smoothX[vi] - (beta * bX[vi] + (1 - beta) * (nbx * inv));
+      const targetY = smoothY[vi] - (beta * bY[vi] + (1 - beta) * (nby * inv));
+      const targetZ = smoothZ[vi] - (beta * bZ[vi] + (1 - beta) * (nbz * inv));
+
+      const blend = smoothWeight[vi] * stepScale;
+      nextX[vi] = p.x + (targetX - p.x) * blend;
+      nextY[vi] = p.y + (targetY - p.y) * blend;
+      nextZ[vi] = p.z + (targetZ - p.z) * blend;
+    }
+
+    // Aplicar con verificación estricta de no-inversión respecto al estado previo inmediato
+    for (let i = 0; i < activeVerts.length; i++) {
+      const vi = activeVerts[i];
+      const p = verts[vi];
+      const ox = p.x, oy = p.y, oz = p.z;
+      const tx = nextX[vi], ty = nextY[vi], tz = nextZ[vi];
+      if (tx === ox && ty === oy && tz === oz) continue;
+      const incF = topo.vertFaces[vi] || [];
+
+      let accepted = false;
+      for (const frac of [1.0, 0.5]) {
+        p.x = ox + (tx - ox) * frac;
+        p.y = oy + (ty - oy) * frac;
+        p.z = oz + (tz - oz) * frac;
+        let flipped = false;
+        for (let k = 0; k < incF.length; k++) {
+          const fi = incF[k];
+          const refN = preNormals.get(fi);
+          if (!refN) continue;
+          const curN = computeFaceUnitNormal(editableMesh.faces[fi], verts);
+          if (!curN || curN.x * refN.x + curN.y * refN.y + curN.z * refN.z < 0.25) {
+            flipped = true;
+            break;
+          }
+        }
+        if (!flipped) {
+          accepted = true;
+          break;
+        }
+      }
+      if (!accepted) {
+        p.x = ox; p.y = oy; p.z = oz;
+      }
+    }
+  }
+
+  // 3. Limpiar durezas residuales en la costura suavizada para sombreado continuo
+  if (editableMesh.creases && editableMesh.creases.size > 0) {
+    for (const ck of [...editableMesh.creases.keys()]) {
+      const sep = ck.indexOf('_');
+      if (sep < 0) continue;
+      const a = Number(ck.slice(0, sep));
+      const b = Number(ck.slice(sep + 1));
+      if (smoothWeight[a] > 0.25 && smoothWeight[b] > 0.25) {
+        editableMesh.creases.delete(ck);
+      }
+    }
+  }
+
+  editableMesh.invalidateTopology();
+  return { smoothed: true, refinedFaces };
+}
+
+// ============================================================================
+// Unión Orgánica Única (SDF Smooth-Minimum + Surface Nets Disperso Todo-Quads)
+// ============================================================================
+
+function sminPoly(a, b, k) {
+  if (k <= 1e-8) return a < b ? a : b;
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return Math.min(a, b) - h * h * k * 0.25;
+}
+
+export function performOrganicSdfUnion(editableMesh, {
+  shellIds = null,
+  seamSmooth = 0.5,
+  resolution = 60,
+} = {}) {
+  if (!editableMesh || editableMesh.faces.length < 4) return { performed: false };
+
+  let fShells = shellIds;
+  let shellCount = 0;
+  if (!fShells || fShells.length !== editableMesh.faces.length) {
+    const comp = computeFaceShellIds(editableMesh);
+    fShells = comp.shellIds;
+    shellCount = comp.shellCount;
+  } else {
+    let maxId = -1;
+    for (let i = 0; i < fShells.length; i++) {
+      if (fShells[i] > maxId) maxId = fShells[i];
+    }
+    shellCount = maxId + 1;
+  }
+  if (shellCount < 2) return { performed: false };
+
+  const verts = editableMesh.verts;
+  let gMinX = Infinity, gMinY = Infinity, gMinZ = Infinity;
+  let gMaxX = -Infinity, gMaxY = -Infinity, gMaxZ = -Infinity;
+  for (let i = 0; i < verts.length; i++) {
+    const p = verts[i];
+    if (p.x < gMinX) gMinX = p.x; if (p.x > gMaxX) gMaxX = p.x;
+    if (p.y < gMinY) gMinY = p.y; if (p.y > gMaxY) gMaxY = p.y;
+    if (p.z < gMinZ) gMinZ = p.z; if (p.z > gMaxZ) gMaxZ = p.z;
+  }
+  const sizeX = gMaxX - gMinX;
+  const sizeY = gMaxY - gMinY;
+  const sizeZ = gMaxZ - gMinZ;
+  const maxSpan = Math.max(sizeX, sizeY, sizeZ, 1e-4);
+  const diag = Math.hypot(sizeX, sizeY, sizeZ) || 1;
+  const invPosEps = 1 / Math.max(1e-6, diag * 1e-5);
+
+  const trisByShell = Array.from({ length: shellCount }, () => []);
+  const edgeCountByShell = Array.from({ length: shellCount }, () => new Map());
+
+  const countShellEdge = (sId, a, b) => {
+    const pa = verts[a], pb = verts[b];
+    const ka = quantKey(pa.x, pa.y, pa.z, invPosEps);
+    const kb = quantKey(pb.x, pb.y, pb.z, invPosEps);
+    if (ka === kb) return;
+    const map = edgeCountByShell[sId];
+    const k = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+    map.set(k, (map.get(k) || 0) + 1);
+  };
+
+  for (let fi = 0; fi < editableMesh.faces.length; fi++) {
+    const f = editableMesh.faces[fi];
+    if (!f || f.length < 3) continue;
+    const sId = fShells[fi];
+    for (let i = 0; i < f.length; i++) {
+      countShellEdge(sId, f[i], f[(i + 1) % f.length]);
+    }
+    const pushT = (ia, ib, ic) => {
+      const pa = verts[ia], pb = verts[ib], pc = verts[ic];
+      const e1x = pb.x - pa.x, e1y = pb.y - pa.y, e1z = pb.z - pa.z;
+      const e2x = pc.x - pa.x, e2y = pc.y - pa.y, e2z = pc.z - pa.z;
+      const l = Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+      if (l > 1e-11) trisByShell[sId].push({ a: ia, b: ib, c: ic });
+    };
+    if (f.length === 3) {
+      pushT(f[0], f[1], f[2]);
+    } else if (f.length === 4) {
+      pushT(f[0], f[1], f[2]);
+      pushT(f[0], f[2], f[3]);
+    } else {
+      for (let i = 1; i + 1 < f.length; i++) pushT(f[0], f[i], f[i + 1]);
+    }
+  }
+
+  const shellInfos = [];
+  for (let s = 0; s < shellCount; s++) {
+    const sTris = trisByShell[s];
+    if (sTris.length < 4) return { performed: false };
+    let openEdges = 0;
+    for (const c of edgeCountByShell[s].values()) {
+      if (c === 1) { openEdges++; break; }
+    }
+    if (openEdges > 0) {
+      // Requiere shells volumétricos cerrados; si hay planos abiertos, usar ruta booleana estándar
+      return { performed: false };
+    }
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    for (let i = 0; i < sTris.length; i++) {
+      const t = sTris[i];
+      for (const vi of [t.a, t.b, t.c]) {
+        const p = verts[vi];
+        if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x;
+        if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y;
+        if (p.z < minZ) minZ = p.z; if (p.z > maxZ) maxZ = p.z;
+      }
+    }
+    shellInfos.push({
+      tris: sTris,
+      verts,
+      bvh: buildTriBVH(sTris, verts),
+      minX, minY, minZ, maxX, maxY, maxZ,
+    });
+  }
+
+  const sNorm = Math.max(0, Math.min(1, Number(seamSmooth) || 0));
+  const blendK = sNorm <= 0.01 ? 0 : maxSpan * (0.012 + 0.13 * Math.pow(sNorm, 1.15));
+  const res = Math.max(36, Math.min(72, Math.round(resolution)));
+  const h = maxSpan / (res - 6);
+  const pad = h * 3 + blendK * 0.4;
+
+  const ox = gMinX - pad;
+  const oy = gMinY - pad;
+  const oz = gMinZ - pad;
+  const nx = Math.max(12, Math.ceil((sizeX + pad * 2) / h) + 2);
+  const ny = Math.max(12, Math.ceil((sizeY + pad * 2) / h) + 2);
+  const nz = Math.max(12, Math.ceil((sizeZ + pad * 2) / h) + 2);
+
+  // Distancia sin signo para descarte conservador en bloques 8x8x8 y 4x4x4 (0 raycasts!)
+  const minUnsignedDistAnyShell = (px, py, pz, maxCutoff) => {
+    let bestSq = maxCutoff * maxCutoff;
+    for (let i = 0; i < shellInfos.length; i++) {
+      const sh = shellInfos[i];
+      const dx = px < sh.minX ? sh.minX - px : (px > sh.maxX ? px - sh.maxX : 0);
+      const dy = py < sh.minY ? sh.minY - py : (py > sh.maxY ? py - sh.maxY : 0);
+      const dz = pz < sh.minZ ? sh.minZ - pz : (pz > sh.maxZ ? pz - sh.maxZ : 0);
+      if (dx * dx + dy * dy + dz * dz >= bestSq) continue;
+      const r = minDistTriToBVH(px, py, pz, sh.bvh, sh.tris, sh.verts, bestSq);
+      if (r.distSq < bestSq) bestSq = r.distSq;
+    }
+    return Math.sqrt(bestSq);
+  };
+
+  // Signed Distance exacto dentro de la banda estrecha para Surface Nets
+  const bandCutoff = h * 2.2 + blendK * 0.55;
+  const bandCutoffSq = bandCutoff * bandCutoff;
+  const evalShellSDF = (px, py, pz, sh) => {
+    const dx = px < sh.minX ? sh.minX - px : (px > sh.maxX ? px - sh.maxX : 0);
+    const dy = py < sh.minY ? sh.minY - py : (py > sh.maxY ? py - sh.maxY : 0);
+    const dz = pz < sh.minZ ? sh.minZ - pz : (pz > sh.maxZ ? pz - sh.maxZ : 0);
+    const boxSq = dx * dx + dy * dy + dz * dz;
+    if (boxSq > 0) {
+      if (boxSq >= bandCutoffSq) return Math.sqrt(boxSq);
+      const r = minDistTriToBVH(px, py, pz, sh.bvh, sh.tris, sh.verts, bandCutoffSq);
+      return Math.sqrt(r.distSq);
+    }
+    // Dentro de la AABB del shell
+    const r = minDistTriToBVH(px, py, pz, sh.bvh, sh.tris, sh.verts, bandCutoffSq);
+    const dist = Math.sqrt(r.distSq);
+    let odd = 0;
+    for (let ri = 0; ri < 3; ri++) {
+      const dir = _PARITY_DIRS[ri];
+      if ((rayCountBVH(px, py, pz, dir[0], dir[1], dir[2], sh.bvh, sh.tris, sh.verts) & 1) === 1) {
+        odd++;
+      }
+      if (ri === 1 && odd === 0) break;
+      if (ri === 1 && odd === 2) break;
+    }
+    return odd >= 2 ? -dist : dist;
+  };
+
+  const evalCombinedSDF = (px, py, pz) => {
+    let acc = evalShellSDF(px, py, pz, shellInfos[0]);
+    for (let i = 1; i < shellInfos.length; i++) {
+      const d = evalShellSDF(px, py, pz, shellInfos[i]);
+      acc = sminPoly(acc, d, blendK);
+    }
+    return acc;
+  };
+
+  // Paso 1: Descubrimiento jerárquico 8x8x8 -> 4x4x4 -> 1x1x1 sin raycasts en celdas vacías
+  const c8Margin = h * 4 * Math.sqrt(3) + h * 1.6 + blendK * 0.35;
+  const c4Margin = h * 2 * Math.sqrt(3) + h * 1.4 + blendK * 0.35;
+  const activeFineCells = [];
+
+  for (let bx = 0; bx < nx; bx += 8) {
+    const xEnd = Math.min(nx - 1, bx + 8);
+    for (let by = 0; by < ny; by += 8) {
+      const yEnd = Math.min(ny - 1, by + 8);
+      for (let bz = 0; bz < nz; bz += 8) {
+        const zEnd = Math.min(nz - 1, bz + 8);
+        const cx8 = ox + ((bx + xEnd) * 0.5) * h;
+        const cy8 = oy + ((by + yEnd) * 0.5) * h;
+        const cz8 = oz + ((bz + zEnd) * 0.5) * h;
+        if (minUnsignedDistAnyShell(cx8, cy8, cz8, c8Margin + 1e-5) > c8Margin) continue;
+
+        for (let sx = bx; sx < xEnd; sx += 4) {
+          const sxEnd = Math.min(xEnd, sx + 4);
+          for (let sy = by; sy < yEnd; sy += 4) {
+            const syEnd = Math.min(yEnd, sy + 4);
+            for (let sz = bz; sz < zEnd; sz += 4) {
+              const szEnd = Math.min(zEnd, sz + 4);
+              const cx4 = ox + ((sx + sxEnd) * 0.5) * h;
+              const cy4 = oy + ((sy + syEnd) * 0.5) * h;
+              const cz4 = oz + ((sz + szEnd) * 0.5) * h;
+              if (minUnsignedDistAnyShell(cx4, cy4, cz4, c4Margin + 1e-5) > c4Margin) continue;
+
+              for (let ix = sx; ix < sxEnd; ix++) {
+                for (let iy = sy; iy < syEnd; iy++) {
+                  for (let iz = sz; iz < szEnd; iz++) {
+                    activeFineCells.push([ix, iy, iz]);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (!activeFineCells.length) return { performed: false };
+
+  const strideZ = nz + 1;
+  const strideYZ = (ny + 1) * strideZ;
+  const cornerKey = (ix, iy, iz) => ix * strideYZ + iy * strideZ + iz;
+
+  const field = new Map();
+  const sampleCorner = (ix, iy, iz) => {
+    const k = cornerKey(ix, iy, iz);
+    let val = field.get(k);
+    if (val === undefined) {
+      val = evalCombinedSDF(ox + ix * h, oy + iy * h, oz + iz * h);
+      field.set(k, val);
+    }
+    return val;
+  };
+
+  // Paso 2: Extraer vértices duales de Surface Nets
+  const CUBE_EDGES = [
+    [0, 1], [2, 3], [4, 5], [6, 7],
+    [0, 2], [1, 3], [4, 6], [5, 7],
+    [0, 4], [1, 5], [2, 6], [3, 7],
+  ];
+  const CORNER_OFF = [
+    [0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0],
+    [0, 0, 1], [1, 0, 1], [0, 1, 1], [1, 1, 1],
+  ];
+
+  const outVerts = [];
+  const cellVertMap = new Map();
+  const surfaceCells = [];
+
+  for (let ci = 0; ci < activeFineCells.length; ci++) {
+    const [ix, iy, iz] = activeFineCells[ci];
+    const cVals = new Float64Array(8);
+    let mask = 0;
+    for (let c = 0; c < 8; c++) {
+      const off = CORNER_OFF[c];
+      const v = sampleCorner(ix + off[0], iy + off[1], iz + off[2]);
+      cVals[c] = v;
+      if (v <= 0) mask |= (1 << c);
+    }
+    if (mask === 0 || mask === 255) continue;
+
+    let sx = 0, sy = 0, sz = 0, crossCount = 0;
+    for (let ei = 0; ei < 12; ei++) {
+      const [ca, cb] = CUBE_EDGES[ei];
+      const inA = (mask & (1 << ca)) !== 0;
+      const inB = (mask & (1 << cb)) !== 0;
+      if (inA === inB) continue;
+      const va = cVals[ca], vb = cVals[cb];
+      const t = Math.max(0.02, Math.min(0.98, Math.abs(va - vb) > 1e-12 ? -va / (vb - va) : 0.5));
+      const oa = CORNER_OFF[ca], ob = CORNER_OFF[cb];
+      sx += oa[0] + (ob[0] - oa[0]) * t;
+      sy += oa[1] + (ob[1] - oa[1]) * t;
+      sz += oa[2] + (ob[2] - oa[2]) * t;
+      crossCount++;
+    }
+    if (!crossCount) continue;
+    const inv = 1 / crossCount;
+    const vi = outVerts.length;
+    outVerts.push({
+      x: ox + (ix + sx * inv) * h,
+      y: oy + (iy + sy * inv) * h,
+      z: oz + (iz + sz * inv) * h,
+    });
+    cellVertMap.set(cornerKey(ix, iy, iz), vi);
+    surfaceCells.push([ix, iy, iz]);
+  }
+
+  if (outVerts.length < 8) return { performed: false };
+
+  // Paso 3: Emitir quads por cada arista con cambio de signo
+  const outFaces = [];
+  const emittedEdge = new Set();
+  const tryQuad = (v0, v1, v2, v3, flip) => {
+    if (v0 === undefined || v1 === undefined || v2 === undefined || v3 === undefined) return;
+    outFaces.push(flip ? [v0, v3, v2, v1] : [v0, v1, v2, v3]);
+  };
+
+  for (let ci = 0; ci < surfaceCells.length; ci++) {
+    const [ix, iy, iz] = surfaceCells[ci];
+
+    // Aristas en X de esta celda: (iy..iy+1, iz..iz+1)
+    for (let dy = 0; dy <= 1; dy++) {
+      const y = iy + dy;
+      if (y < 1 || y >= ny) continue;
+      for (let dz = 0; dz <= 1; dz++) {
+        const z = iz + dz;
+        if (z < 1 || z >= nz) continue;
+        const ek = `X_${ix}_${y}_${z}`;
+        if (emittedEdge.has(ek)) continue;
+        const v0 = field.get(cornerKey(ix, y, z));
+        const v1 = field.get(cornerKey(ix + 1, y, z));
+        if (v0 === undefined || v1 === undefined) continue;
+        const in0 = v0 <= 0, in1 = v1 <= 0;
+        if (in0 === in1) continue;
+        emittedEdge.add(ek);
+        const c0 = cellVertMap.get(cornerKey(ix, y - 1, z - 1));
+        const c1 = cellVertMap.get(cornerKey(ix, y, z - 1));
+        const c2 = cellVertMap.get(cornerKey(ix, y, z));
+        const c3 = cellVertMap.get(cornerKey(ix, y - 1, z));
+        tryQuad(c0, c1, c2, c3, !in0);
+      }
+    }
+
+    // Aristas en Y de esta celda: (ix..ix+1, iz..iz+1)
+    for (let dx = 0; dx <= 1; dx++) {
+      const x = ix + dx;
+      if (x < 1 || x >= nx) continue;
+      for (let dz = 0; dz <= 1; dz++) {
+        const z = iz + dz;
+        if (z < 1 || z >= nz) continue;
+        const ek = `Y_${x}_${iy}_${z}`;
+        if (emittedEdge.has(ek)) continue;
+        const v0 = field.get(cornerKey(x, iy, z));
+        const v1 = field.get(cornerKey(x, iy + 1, z));
+        if (v0 === undefined || v1 === undefined) continue;
+        const in0 = v0 <= 0, in1 = v1 <= 0;
+        if (in0 === in1) continue;
+        emittedEdge.add(ek);
+        const c0 = cellVertMap.get(cornerKey(x - 1, iy, z - 1));
+        const c1 = cellVertMap.get(cornerKey(x - 1, iy, z));
+        const c2 = cellVertMap.get(cornerKey(x, iy, z));
+        const c3 = cellVertMap.get(cornerKey(x, iy, z - 1));
+        tryQuad(c0, c1, c2, c3, !in0);
+      }
+    }
+
+    // Aristas en Z de esta celda: (ix..ix+1, iy..iy+1)
+    for (let dx = 0; dx <= 1; dx++) {
+      const x = ix + dx;
+      if (x < 1 || x >= nx) continue;
+      for (let dy = 0; dy <= 1; dy++) {
+        const y = iy + dy;
+        if (y < 1 || y >= ny) continue;
+        const ek = `Z_${x}_${y}_${iz}`;
+        if (emittedEdge.has(ek)) continue;
+        const v0 = field.get(cornerKey(x, y, iz));
+        const v1 = field.get(cornerKey(x, y, iz + 1));
+        if (v0 === undefined || v1 === undefined) continue;
+        const in0 = v0 <= 0, in1 = v1 <= 0;
+        if (in0 === in1) continue;
+        emittedEdge.add(ek);
+        const c0 = cellVertMap.get(cornerKey(x - 1, y - 1, iz));
+        const c1 = cellVertMap.get(cornerKey(x, y - 1, iz));
+        const c2 = cellVertMap.get(cornerKey(x, y, iz));
+        const c3 = cellVertMap.get(cornerKey(x - 1, y, iz));
+        tryQuad(c0, c1, c2, c3, !in0);
+      }
+    }
+  }
+
+  if (outFaces.length < 6) return { performed: false };
+
+  // Paso 4: Construir vecindad de vértices y aplicar HC-Smoothing + proyección trilineal cero-BVH
+  const Vout = outVerts.length;
+  const nbrSets = Array.from({ length: Vout }, () => new Set());
+  for (let fi = 0; fi < outFaces.length; fi++) {
+    const f = outFaces[fi];
+    for (let k = 0; k < f.length; k++) {
+      const a = f[k], b = f[(k + 1) % f.length];
+      nbrSets[a].add(b);
+      nbrSets[b].add(a);
+    }
+  }
+  const nbrLists = nbrSets.map((set) => [...set]);
+  const origVerts = outVerts.map((v) => ({ x: v.x, y: v.y, z: v.z }));
+  const smoothX = new Float64Array(Vout);
+  const smoothY = new Float64Array(Vout);
+  const smoothZ = new Float64Array(Vout);
+  const bX = new Float64Array(Vout);
+  const bY = new Float64Array(Vout);
+  const bZ = new Float64Array(Vout);
+
+  const runHCPass = (alpha, beta) => {
+    for (let vi = 0; vi < Vout; vi++) {
+      const nbrs = nbrLists[vi];
+      const p = outVerts[vi], op = origVerts[vi];
+      if (!nbrs.length) {
+        smoothX[vi] = p.x; smoothY[vi] = p.y; smoothZ[vi] = p.z;
+        bX[vi] = 0; bY[vi] = 0; bZ[vi] = 0;
+        continue;
+      }
+      let ax = 0, ay = 0, az = 0;
+      for (let k = 0; k < nbrs.length; k++) {
+        const q = outVerts[nbrs[k]];
+        ax += q.x; ay += q.y; az += q.z;
+      }
+      const inv = 1 / nbrs.length;
+      const sx = ax * inv, sy = ay * inv, sz = az * inv;
+      smoothX[vi] = sx; smoothY[vi] = sy; smoothZ[vi] = sz;
+      bX[vi] = sx - (alpha * op.x + (1 - alpha) * p.x);
+      bY[vi] = sy - (alpha * op.y + (1 - alpha) * p.y);
+      bZ[vi] = sz - (alpha * op.z + (1 - alpha) * p.z);
+    }
+    for (let vi = 0; vi < Vout; vi++) {
+      const nbrs = nbrLists[vi];
+      if (!nbrs.length) continue;
+      let nbx = 0, nby = 0, nbz = 0;
+      for (let k = 0; k < nbrs.length; k++) {
+        const j = nbrs[k];
+        nbx += bX[j]; nby += bY[j]; nbz += bZ[j];
+      }
+      const inv = 1 / nbrs.length;
+      outVerts[vi].x = smoothX[vi] - (beta * bX[vi] + (1 - beta) * (nbx * inv));
+      outVerts[vi].y = smoothY[vi] - (beta * bY[vi] + (1 - beta) * (nby * inv));
+      outVerts[vi].z = smoothZ[vi] - (beta * bZ[vi] + (1 - beta) * (nbz * inv));
+    }
+  };
+
+  for (let p = 0; p < 4; p++) runHCPass(0.2, 0.55);
+
+  // Proyección trilineal rápida a la isosuperficie f = 0 usando el campo cacheado (0 consultas BVH extra)
+  const trilinearSampleAndGrad = (px, py, pz) => {
+    const gx = (px - ox) / h;
+    const gy = (py - oy) / h;
+    const gz = (pz - oz) / h;
+    const ix = Math.max(0, Math.min(nx - 1, Math.floor(gx)));
+    const iy = Math.max(0, Math.min(ny - 1, Math.floor(gy)));
+    const iz = Math.max(0, Math.min(nz - 1, Math.floor(gz)));
+    const tx = Math.max(0, Math.min(1, gx - ix));
+    const ty = Math.max(0, Math.min(1, gy - iy));
+    const tz = Math.max(0, Math.min(1, gz - iz));
+
+    const v000 = sampleCorner(ix, iy, iz);
+    const v100 = sampleCorner(ix + 1, iy, iz);
+    const v010 = sampleCorner(ix, iy + 1, iz);
+    const v110 = sampleCorner(ix + 1, iy + 1, iz);
+    const v001 = sampleCorner(ix, iy, iz + 1);
+    const v101 = sampleCorner(ix + 1, iy, iz + 1);
+    const v011 = sampleCorner(ix, iy + 1, iz + 1);
+    const v111 = sampleCorner(ix + 1, iy + 1, iz + 1);
+
+    const itx = 1 - tx, ity = 1 - ty, itz = 1 - tz;
+    const f =
+      v000 * itx * ity * itz + v100 * tx * ity * itz +
+      v010 * itx * ty * itz + v110 * tx * ty * itz +
+      v001 * itx * ity * tz + v101 * tx * ity * tz +
+      v011 * itx * ty * tz + v111 * tx * ty * tz;
+
+    const dfx = (
+      (v100 - v000) * ity * itz + (v110 - v010) * ty * itz +
+      (v101 - v001) * ity * tz + (v111 - v011) * ty * tz
+    ) / h;
+    const dfy = (
+      (v010 - v000) * itx * itz + (v110 - v100) * tx * itz +
+      (v011 - v001) * itx * tz + (v111 - v101) * tx * tz
+    ) / h;
+    const dfz = (
+      (v001 - v000) * itx * ity + (v101 - v100) * tx * ity +
+      (v011 - v010) * itx * ty + (v111 - v110) * tx * ty
+    ) / h;
+
+    return { f, dfx, dfy, dfz };
+  };
+
+  for (let step = 0; step < 2; step++) {
+    for (let vi = 0; vi < Vout; vi++) {
+      const p = outVerts[vi];
+      const { f, dfx, dfy, dfz } = trilinearSampleAndGrad(p.x, p.y, p.z);
+      const g2 = dfx * dfx + dfy * dfy + dfz * dfz;
+      if (g2 < 1e-12) continue;
+      const dStep = Math.max(-0.35 * h, Math.min(0.35 * h, -f / Math.sqrt(g2)));
+      const invG = 1 / Math.sqrt(g2);
+      p.x += dfx * invG * dStep;
+      p.y += dfy * invG * dStep;
+      p.z += dfz * invG * dStep;
+    }
+  }
+
+  for (let p = 0; p < 2; p++) runHCPass(0.25, 0.5);
+
+  // Verificar volumen con signo positivo (devanado CCW hacia afuera)
+  let signedVol = 0;
+  for (let fi = 0; fi < outFaces.length; fi++) {
+    const f = outFaces[fi];
+    const p0 = outVerts[f[0]];
+    for (let k = 1; k + 1 < f.length; k++) {
+      const p1 = outVerts[f[k]], p2 = outVerts[f[k + 1]];
+      signedVol +=
+        p0.x * (p1.y * p2.z - p1.z * p2.y) -
+        p0.y * (p1.x * p2.z - p1.z * p2.x) +
+        p0.z * (p1.x * p2.y - p1.y * p2.x);
+    }
+  }
+  if (signedVol < 0) {
+    for (let fi = 0; fi < outFaces.length; fi++) outFaces[fi].reverse();
+  }
+
+  // Generar UVs triplanares continuas normalizadas al rango de la malla
+  const outUvs = new Array(outFaces.length);
+  const invSpan = 1 / maxSpan;
+  for (let fi = 0; fi < outFaces.length; fi++) {
+    const f = outFaces[fi];
+    const n = computeFaceUnitNormal(f, outVerts) || { x: 0, y: 1, z: 0 };
+    const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
+    outUvs[fi] = f.map((vi) => {
+      const p = outVerts[vi];
+      if (ax >= ay && ax >= az) {
+        return [(p.z - gMinZ) * invSpan, (p.y - gMinY) * invSpan];
+      }
+      if (ay >= ax && ay >= az) {
+        return [(p.x - gMinX) * invSpan, (p.z - gMinZ) * invSpan];
+      }
+      return [(p.x - gMinX) * invSpan, (p.y - gMinY) * invSpan];
+    });
+  }
+
+  const origFaceCount = editableMesh.faces.length;
+  editableMesh.verts = outVerts;
+  editableMesh.faces = outFaces;
+  editableMesh.faceUvs = outUvs;
+  editableMesh.looseEdges = [];
+  editableMesh.creases = new Map();
+  editableMesh.invalidateTopology();
+
+  return {
+    performed: true,
+    removedInsideCount: origFaceCount,
+    splitFaceCount: outFaces.length,
+  };
 }

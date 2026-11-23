@@ -1163,6 +1163,22 @@ export function bindUI() {
   dom.editWeldSolidityNum?.addEventListener('input', (e) => syncWeldSolidityInputs(e.target.value, dom.editWeldSolidityNum));
   dom.editWeldSolidityNum?.addEventListener('change', (e) => syncWeldSolidityInputs(e.target.value, null));
 
+  const readWeldSeamSmooth = () => {
+    const raw = Number(dom.editWeldSeamSmoothNum?.value ?? dom.editWeldSeamSmooth?.value ?? 50);
+    const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 50;
+    return pct / 100;
+  };
+  const syncWeldSeamSmoothInputs = (val, sourceEl) => {
+    const pct = Number(val);
+    if (!Number.isFinite(pct)) return;
+    const clamped = String(Math.round(Math.max(0, Math.min(100, pct))));
+    if (dom.editWeldSeamSmooth && dom.editWeldSeamSmooth !== sourceEl) dom.editWeldSeamSmooth.value = clamped;
+    if (dom.editWeldSeamSmoothNum && dom.editWeldSeamSmoothNum !== sourceEl) dom.editWeldSeamSmoothNum.value = clamped;
+  };
+  dom.editWeldSeamSmooth?.addEventListener('input', (e) => syncWeldSeamSmoothInputs(e.target.value, dom.editWeldSeamSmooth));
+  dom.editWeldSeamSmoothNum?.addEventListener('input', (e) => syncWeldSeamSmoothInputs(e.target.value, dom.editWeldSeamSmoothNum));
+  dom.editWeldSeamSmoothNum?.addEventListener('change', (e) => syncWeldSeamSmoothInputs(e.target.value, null));
+
   dom.btnEditMerge?.addEventListener('click', runEditMerge);
   dom.btnEditMergeMeshes?.addEventListener('click', () => {
     const targets = getSelectedMergeTargetMeshes();
@@ -1175,7 +1191,9 @@ export function bindUI() {
       threshold: Math.max(0.0001, Number(dom.editMergeDist?.value) || 0.015),
       removeInteriorFaces: dom.editWeldInterior ? dom.editWeldInterior.checked : true,
       stitchTJunctions: dom.editWeldStitch ? dom.editWeldStitch.checked : true,
+      remeshOrganic: dom.editWeldRemesh ? dom.editWeldRemesh.checked : true,
       solidity: readWeldSolidity(),
+      seamSmooth: readWeldSeamSmooth(),
     });
     if (ok) closeEditFlyouts();
   });

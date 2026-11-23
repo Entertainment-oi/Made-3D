@@ -1,7 +1,14 @@
 import { Vec3 } from '../math/Vec3.js';
 import { Mat4 } from '../math/Mat4.js';
 import { Geometry } from '../geometry/Geometry.js';
-import { performVolumetricUnionIfNeeded, simplifyUnionTopology } from './MeshUnion.js';
+import {
+  performVolumetricUnionIfNeeded,
+  performOrganicSdfUnion,
+  simplifyUnionTopology,
+  pruneNonManifoldFlaps,
+  collapseTinySeamSlivers,
+  smoothUnionSeam,
+} from './MeshUnion.js';
 
 const _vA = new Vec3();
 const _vD = new Vec3();
@@ -515,31 +522,51 @@ export class EditableMesh {
       }
     }
 
-    const faceAreaNormals = new Array(this.faces.length);
     const faceNormals = new Array(this.faces.length);
+    const faceCornerAngles = !flatShading ? new Array(this.faces.length) : null;
     const vertNormals = !flatShading && !hasSharpCreases
       ? Array.from({ length: this.verts.length }, () => [0, 0, 0])
       : null;
 
     for (let fi = 0; fi < this.faces.length; fi++) {
       const an = this.computeFaceAreaNormal(fi, _vA);
-      faceAreaNormals[fi] = [an.x, an.y, an.z];
       const len = Math.hypot(an.x, an.y, an.z) || 1;
-      faceNormals[fi] = [an.x / len, an.y / len, an.z / len];
-      if (vertNormals) {
+      const fn = [an.x / len, an.y / len, an.z / len];
+      faceNormals[fi] = fn;
+      if (!flatShading) {
         const f = this.faces[fi];
-        for (let i = 0; i < f.length; i++) {
-          const vn = vertNormals[f[i]];
-          vn[0] += an.x; vn[1] += an.y; vn[2] += an.z;
+        const kLen = f.length;
+        const angles = new Float64Array(kLen);
+        for (let i = 0; i < kLen; i++) {
+          const pCurr = this.verts[f[i]];
+          const pPrev = this.verts[f[(i - 1 + kLen) % kLen]];
+          const pNext = this.verts[f[(i + 1) % kLen]];
+          const ax = pPrev.x - pCurr.x, ay = pPrev.y - pCurr.y, az = pPrev.z - pCurr.z;
+          const bx = pNext.x - pCurr.x, by = pNext.y - pCurr.y, bz = pNext.z - pCurr.z;
+          const la = Math.hypot(ax, ay, az);
+          const lb = Math.hypot(bx, by, bz);
+          const ang = (la > 1e-12 && lb > 1e-12)
+            ? Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by + az * bz) / (la * lb))))
+            : 0;
+          angles[i] = ang;
+          if (vertNormals) {
+            const vn = vertNormals[f[i]];
+            vn[0] += fn[0] * ang; vn[1] += fn[1] * ang; vn[2] += fn[2] * ang;
+          }
         }
+        faceCornerAngles[fi] = angles;
       }
     }
 
     if (vertNormals) {
       for (let i = 0; i < vertNormals.length; i++) {
         const vn = vertNormals[i];
-        const l = Math.hypot(vn[0], vn[1], vn[2]) || 1;
-        vn[0] /= l; vn[1] /= l; vn[2] /= l;
+        const l = Math.hypot(vn[0], vn[1], vn[2]);
+        if (l > 1e-10) {
+          vn[0] /= l; vn[1] /= l; vn[2] /= l;
+        } else {
+          vn[0] = 0; vn[1] = 1; vn[2] = 0;
+        }
       }
     }
 
@@ -578,8 +605,15 @@ export class EditableMesh {
           while (queue.length) {
             const curFi = queue.pop();
             group.push(curFi);
-            const an = faceAreaNormals[curFi];
-            sx += an[0]; sy += an[1]; sz += an[2];
+            const fCur = this.faces[curFi];
+            const angs = faceCornerAngles[curFi];
+            const fn = faceNormals[curFi];
+            let weightSum = 0;
+            for (let k = 0; k < fCur.length; k++) {
+              if (fCur[k] === vi) weightSum += angs[k];
+            }
+            if (weightSum < 1e-8) weightSum = 1e-4;
+            sx += fn[0] * weightSum; sy += fn[1] * weightSum; sz += fn[2] * weightSum;
 
             const fe = topo.faceEdges[curFi] || [];
             for (let eiIdx = 0; eiIdx < fe.length; eiIdx++) {
@@ -596,8 +630,8 @@ export class EditableMesh {
             }
           }
 
-          const len = Math.hypot(sx, sy, sz) || 1;
-          const gn = [sx / len, sy / len, sz / len];
+          const len = Math.hypot(sx, sy, sz);
+          const gn = len > 1e-10 ? [sx / len, sy / len, sz / len] : faceNormals[seed];
           for (let gi = 0; gi < group.length; gi++) {
             const gfi = group[gi];
             const f = this.faces[gfi];
@@ -686,28 +720,90 @@ export class EditableMesh {
           );
         }
       } else {
-        // N-gon (>= 5 vértices): abanico desde centroide para conservar todos los vértices de borde sin grietas
-        let cx = 0, cy = 0, cz = 0, cu = 0, cv = 0;
-        let nx = 0, ny = 0, nz = 0;
-        for (let i = 0; i < f.length; i++) {
-          const p = this.verts[f[i]];
-          cx += p.x; cy += p.y; cz += p.z;
-          const uv = fUv[i] || [0, 0];
-          cu += uv[0]; cv += uv[1];
-          if (!flatShading) {
-            const vn = hasSharpCreases ? (cornerNormals[fi][i] || fn) : vertNormals[f[i]];
-            nx += vn[0]; ny += vn[1]; nz += vn[2];
+        // N-gon (>= 5 vértices): triangulación por ear-clipping en plano local reutilizando esquinas (sin picos de centroide)
+        const n = f.length;
+        const pts = f.map((vi) => this.verts[vi]);
+        const p0 = pts[0];
+        let bestUx = 0, bestUy = 0, bestUz = 0, bestSq = -1;
+        for (let i = 1; i < n; i++) {
+          const rx = pts[i].x - p0.x, ry = pts[i].y - p0.y, rz = pts[i].z - p0.z;
+          const dot = rx * fn[0] + ry * fn[1] + rz * fn[2];
+          const px = rx - dot * fn[0], py = ry - dot * fn[1], pz = rz - dot * fn[2];
+          const sq = px * px + py * py + pz * pz;
+          if (sq > bestSq) { bestSq = sq; bestUx = px; bestUy = py; bestUz = pz; }
+        }
+        let earClipped = false;
+        if (bestSq > 1e-14) {
+          const uLen = Math.sqrt(bestSq);
+          const ux = bestUx / uLen, uy = bestUy / uLen, uz = bestUz / uLen;
+          const vx = fn[1] * uz - fn[2] * uy;
+          const vy = fn[2] * ux - fn[0] * uz;
+          const vz = fn[0] * uy - fn[1] * ux;
+          const pts2D = new Array(n);
+          let signedArea = 0;
+          for (let i = 0; i < n; i++) {
+            const rx = pts[i].x - p0.x, ry = pts[i].y - p0.y, rz = pts[i].z - p0.z;
+            pts2D[i] = { x: rx * ux + ry * uy + rz * uz, y: rx * vx + ry * vy + rz * vz };
+          }
+          for (let i = 0; i < n; i++) {
+            const a = pts2D[i], b = pts2D[(i + 1) % n];
+            signedArea += a.x * b.y - b.x * a.y;
+          }
+          const flipSign = signedArea < 0 ? -1 : 1;
+          if (Math.abs(signedArea) > 1e-12) {
+            const ring = Array.from({ length: n }, (_, idx) => idx);
+            const cross2D = (a, b, c) => ((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) * flipSign;
+            let guard = n * n + 8;
+            while (ring.length > 3 && guard-- > 0) {
+              let bestEarIdx = -1;
+              let bestEarScore = -Infinity;
+              const m = ring.length;
+              for (let i = 0; i < m; i++) {
+                const prev = ring[(i - 1 + m) % m];
+                const curr = ring[i];
+                const next = ring[(i + 1) % m];
+                const a = pts2D[prev], b = pts2D[curr], c = pts2D[next];
+                const area2 = cross2D(a, b, c);
+                if (area2 <= 1e-12) continue;
+                let hasInside = false;
+                for (let j = 0; j < m; j++) {
+                  const idx = ring[j];
+                  if (idx === prev || idx === curr || idx === next) continue;
+                  const q = pts2D[idx];
+                  if (cross2D(a, b, q) >= -1e-11 && cross2D(b, c, q) >= -1e-11 && cross2D(c, a, q) >= -1e-11) {
+                    hasInside = true;
+                    break;
+                  }
+                }
+                if (hasInside) continue;
+                const align = triAlignScore(pts[prev], pts[curr], pts[next], fn);
+                if (align > bestEarScore) {
+                  bestEarScore = align;
+                  bestEarIdx = i;
+                }
+              }
+              if (bestEarIdx < 0) break;
+              const prev = ring[(bestEarIdx - 1 + m) % m];
+              const curr = ring[bestEarIdx];
+              const next = ring[(bestEarIdx + 1) % m];
+              indices.push(cornerIndices[prev], cornerIndices[curr], cornerIndices[next]);
+              ring.splice(bestEarIdx, 1);
+            }
+            if (ring.length === 3) {
+              indices.push(cornerIndices[ring[0]], cornerIndices[ring[1]], cornerIndices[ring[2]]);
+              earClipped = true;
+            } else if (ring.length > 3) {
+              for (let i = 1; i + 1 < ring.length; i++) {
+                indices.push(cornerIndices[ring[0]], cornerIndices[ring[i]], cornerIndices[ring[i + 1]]);
+              }
+              earClipped = true;
+            }
           }
         }
-        const inv = 1 / f.length;
-        let centerNormal = fn;
-        if (!flatShading) {
-          const l = Math.hypot(nx, ny, nz) || 1;
-          centerNormal = [nx / l, ny / l, nz / l];
-        }
-        const centerIdx = emitCustomVertex(cx * inv, cy * inv, cz * inv, [cu * inv, cv * inv], centerNormal);
-        for (let i = 0; i < f.length; i++) {
-          indices.push(cornerIndices[i], cornerIndices[(i + 1) % f.length], centerIdx);
+        if (!earClipped) {
+          for (let i = 1; i + 1 < n; i++) {
+            indices.push(cornerIndices[0], cornerIndices[i], cornerIndices[i + 1]);
+          }
         }
       }
     }
@@ -3426,6 +3522,8 @@ export class EditableMesh {
     removeInteriorFaces = true,
     stitchTJunctions = true,
     solidity = 0.8,
+    seamSmooth = 0,
+    remeshOrganic = false,
     shellIds = null,
   } = {}) {
     const tol = Math.max(1e-6, Number(threshold) || 0.02);
@@ -3434,6 +3532,7 @@ export class EditableMesh {
     let totalRemovedInterior = 0;
     let totalStitchedEdges = 0;
     let didUnion = false;
+    let didOrganicUnion = false;
     let faceOrigins = null;
 
     // Escala de la malla para proteger triángulos finos de corte booleano frente a colapsos
@@ -3447,22 +3546,37 @@ export class EditableMesh {
     }
     const diag = Math.hypot(gMaxX - gMinX, gMaxY - gMinY, gMaxZ - gMinZ) || 1;
 
-    // 0. Unión booleana sólida si existen 2+ shells con intersección volumétrica o penetración interior
+    // 0. Unión orgánica única (SDF + Surface Nets) o unión booleana sólida si existen 2+ shells
     if (removeInteriorFaces && this.faces.length >= 2) {
-      const unionRes = performVolumetricUnionIfNeeded(this, {
-        threshold: tol,
-        shellIds,
-      });
-      if (unionRes && unionRes.performed) {
-        didUnion = true;
-        totalRemovedInterior += unionRes.removedInsideCount || 0;
-        faceOrigins = unionRes.faceOrigins || null;
+      if (remeshOrganic) {
+        const organicRes = performOrganicSdfUnion(this, {
+          shellIds,
+          seamSmooth,
+        });
+        if (organicRes && organicRes.performed) {
+          didUnion = true;
+          didOrganicUnion = true;
+          totalRemovedInterior += organicRes.removedInsideCount || 0;
+        }
+      }
+      if (!didOrganicUnion) {
+        const unionRes = performVolumetricUnionIfNeeded(this, {
+          threshold: tol,
+          shellIds,
+        });
+        if (unionRes && unionRes.performed) {
+          didUnion = true;
+          totalRemovedInterior += unionRes.removedInsideCount || 0;
+          faceOrigins = unionRes.faceOrigins || null;
+        }
       }
     }
 
+    if (!didOrganicUnion) {
+
     // Tras un corte booleano exacto, limitar el soldado posterior a tolerancia de costura fina para
     // no colapsar micro-triángulos legítimos en la curva de intersección (evita aristas de 4 caras).
-    const activeTol = didUnion ? Math.min(tol, Math.max(2e-4, diag * 8e-4)) : tol;
+    const activeTol = didUnion ? Math.min(tol, Math.max(2e-5, diag * 2.5e-4)) : tol;
     const activeTolSq = activeTol * activeTol;
 
     // 1. Soldar vértices cercanos o apilados iterativamente hasta converger (conservando paredes opuestas aún)
@@ -3475,35 +3589,54 @@ export class EditableMesh {
       totalMergedVerts += firstMerge.mergedCount;
     }
 
-    // 2. Costura de uniones en T: si un vértice cae sobre una arista de otra cara, partir esa arista
-    if (stitchTJunctions && this.faces.length >= 2 && this.verts.length <= 20000) {
+    // 1b. Podar pestañas colgantes y triángulos puente no-manifold tras la fusión de costura
+    if (didUnion && this.faces.length >= 3) {
+      const prunedFlaps = pruneNonManifoldFlaps(this, faceOrigins, { sealPinholes: true });
+      totalRemovedInterior += prunedFlaps.removed;
+    }
+
+    // 2. Costura de uniones en T (restringida estrictamente a aristas de borde abiertas c===1 para no dañar mallas cerradas)
+    if (stitchTJunctions && this.faces.length >= 2 && this.verts.length <= 30000) {
       const splitInserts = new Map(); // edgeKey -> Array<{ vi, t }>
       const topo = this.getTopology();
+      const boundaryVerts = new Set();
+      const boundaryEdges = [];
       for (let ei = 0; ei < topo.edges.length; ei++) {
         const e = topo.edges[ei];
-        const pa = this.verts[e.a];
-        const pb = this.verts[e.b];
-        const ex = pb.x - pa.x, ey = pb.y - pa.y, ez = pb.z - pa.z;
-        const lenSq = ex * ex + ey * ey + ez * ez;
-        if (lenSq <= activeTolSq * 4) continue;
-        const edgeLen = Math.sqrt(lenSq);
-        const endMargin = Math.min(0.015, Math.max(1e-4, (activeTol * 1.05) / edgeLen));
-        const minX = Math.min(pa.x, pb.x) - activeTol, maxX = Math.max(pa.x, pb.x) + activeTol;
-        const minY = Math.min(pa.y, pb.y) - activeTol, maxY = Math.max(pa.y, pb.y) + activeTol;
-        const minZ = Math.min(pa.z, pb.z) - activeTol, maxZ = Math.max(pa.z, pb.z) + activeTol;
+        if (e.faces.length === 1) {
+          boundaryEdges.push(e);
+          boundaryVerts.add(e.a);
+          boundaryVerts.add(e.b);
+        }
+      }
 
-        for (let vi = 0; vi < this.verts.length; vi++) {
-          if (vi === e.a || vi === e.b) continue;
-          const p = this.verts[vi];
-          if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY || p.z < minZ || p.z > maxZ) continue;
-          const t = ((p.x - pa.x) * ex + (p.y - pa.y) * ey + (p.z - pa.z) * ez) / lenSq;
-          if (t <= endMargin || t >= 1 - endMargin) continue;
-          const qx = pa.x + ex * t, qy = pa.y + ey * t, qz = pa.z + ez * t;
-          const dSq = (p.x - qx) ** 2 + (p.y - qy) ** 2 + (p.z - qz) ** 2;
-          if (dSq <= activeTolSq) {
-            let arr = splitInserts.get(e.key);
-            if (!arr) { arr = []; splitInserts.set(e.key, arr); }
-            arr.push({ vi, t: e.a < e.b ? t : 1 - t });
+      if (boundaryEdges.length > 0) {
+        for (let ei = 0; ei < boundaryEdges.length; ei++) {
+          const e = boundaryEdges[ei];
+          const pa = this.verts[e.a];
+          const pb = this.verts[e.b];
+          const ex = pb.x - pa.x, ey = pb.y - pa.y, ez = pb.z - pa.z;
+          const lenSq = ex * ex + ey * ey + ez * ez;
+          if (lenSq <= activeTolSq * 4) continue;
+          const edgeLen = Math.sqrt(lenSq);
+          const endMargin = Math.min(0.015, Math.max(1e-4, (activeTol * 1.05) / edgeLen));
+          const minX = Math.min(pa.x, pb.x) - activeTol, maxX = Math.max(pa.x, pb.x) + activeTol;
+          const minY = Math.min(pa.y, pb.y) - activeTol, maxY = Math.max(pa.y, pb.y) + activeTol;
+          const minZ = Math.min(pa.z, pb.z) - activeTol, maxZ = Math.max(pa.z, pb.z) + activeTol;
+
+          for (const vi of boundaryVerts) {
+            if (vi === e.a || vi === e.b) continue;
+            const p = this.verts[vi];
+            if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY || p.z < minZ || p.z > maxZ) continue;
+            const t = ((p.x - pa.x) * ex + (p.y - pa.y) * ey + (p.z - pa.z) * ez) / lenSq;
+            if (t <= endMargin || t >= 1 - endMargin) continue;
+            const qx = pa.x + ex * t, qy = pa.y + ey * t, qz = pa.z + ez * t;
+            const dSq = (p.x - qx) ** 2 + (p.y - qy) ** 2 + (p.z - qz) ** 2;
+            if (dSq <= activeTolSq) {
+              let arr = splitInserts.get(e.key);
+              if (!arr) { arr = []; splitInserts.set(e.key, arr); }
+              arr.push({ vi, t: e.a < e.b ? t : 1 - t });
+            }
           }
         }
       }
@@ -3511,11 +3644,13 @@ export class EditableMesh {
       if (splitInserts.size > 0) {
         const nextFaces = [];
         const nextUvs = [];
+        const nextOrigins = faceOrigins ? [] : null;
         for (let fi = 0; fi < this.faces.length; fi++) {
           const f = this.faces[fi];
           const fUv = this.faceUvs[fi] || f.map(() => [0, 0]);
           const ring = [];
           const ringUv = [];
+          let modified = false;
           for (let i = 0; i < f.length; i++) {
             const a = f[i];
             const b = f[(i + 1) % f.length];
@@ -3541,15 +3676,23 @@ export class EditableMesh {
                     uvA[1] + (uvB[1] - uvA[1]) * ins.frac,
                   ]);
                   totalStitchedEdges++;
+                  modified = true;
                 }
               }
             }
           }
           nextFaces.push(ring);
           nextUvs.push(ringUv);
+          if (nextOrigins) {
+            const orig = faceOrigins[fi];
+            nextOrigins.push(modified ? { origFaceId: orig?.origFaceId ?? -1, shell: orig?.shell ?? -1, wasTouched: true } : orig);
+          }
         }
         this.faces = nextFaces;
         this.faceUvs = nextUvs;
+        if (faceOrigins && nextOrigins) {
+          faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+        }
         this.invalidateTopology();
 
         // Resoldar en caso de que la costura dejara vértices duplicados adyacentes
@@ -3560,6 +3703,10 @@ export class EditableMesh {
         });
         if (postStitchWeld.changed) {
           totalMergedVerts += postStitchWeld.mergedCount;
+          if (didUnion) {
+            const postPrune = pruneNonManifoldFlaps(this, faceOrigins, { sealPinholes: true });
+            totalRemovedInterior += postPrune.removed;
+          }
         }
       }
     }
@@ -3679,7 +3826,21 @@ export class EditableMesh {
         edgeTol: activeTol * 2,
         solidity,
       });
+
+      if (solidity > 0) {
+        collapseTinySeamSlivers(this, faceOrigins, {
+          maxEdgeLen: Math.max(activeTol * 4, diag * 2.5e-3),
+        });
+      }
+
+      const finalPrune = pruneNonManifoldFlaps(this, faceOrigins, { sealPinholes: true });
+      totalRemovedInterior += finalPrune.removed;
+
+      if (seamSmooth > 0) {
+        smoothUnionSeam(this, faceOrigins, seamSmooth);
+      }
     }
+    } // end if (!didOrganicUnion)
 
     // 5. Limpieza final obligatoria: borrar todo vértice interior, suelto o huérfano y fusionar duplicados residuales
     this.pruneUnusedVertices();
@@ -3789,6 +3950,8 @@ export class EditableMesh {
       removeInteriorFaces: opts.removeInteriorFaces !== false,
       stitchTJunctions: opts.stitchTJunctions !== false,
       solidity: opts.solidity ?? 0.8,
+      seamSmooth: opts.seamSmooth ?? 0,
+      remeshOrganic: Boolean(opts.remeshOrganic),
       shellIds: combinedShellIds,
     });
 

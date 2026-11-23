@@ -46,8 +46,11 @@ export const dom = {
   editMergeTargetsList: el('edit-merge-targets-list'),
   editWeldInterior: el('edit-weld-interior'),
   editWeldStitch: el('edit-weld-stitch'),
+  editWeldRemesh: el('edit-weld-remesh'),
   editWeldSolidity: el('edit-weld-solidity'),
   editWeldSolidityNum: el('edit-weld-solidity-num'),
+  editWeldSeamSmooth: el('edit-weld-seam-smooth'),
+  editWeldSeamSmoothNum: el('edit-weld-seam-smooth-num'),
   btnEditMore: el('btn-edit-more'),
   popEditMore: el('pop-edit-more'),
 

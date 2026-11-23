@@ -38,6 +38,9 @@ import {
 } from '../src/modules/rigging.js';
 import {
   EditableMesh,
+  MAX_SUBSURF_FACES,
+  catmullClark,
+  computeFaceShellIds,
   ensureEditableBase,
   setMeshSubsurf,
   snapshotMeshModelingState,
@@ -327,6 +330,8 @@ export function mergeSelectedObjects({
   removeInteriorFaces = true,
   stitchTJunctions = true,
   solidity = 0.8,
+  seamSmooth = 0.5,
+  remeshOrganic = true,
 } = {}) {
   const rawList = Array.isArray(targets) && targets.length
     ? targets
@@ -352,13 +357,23 @@ export function mergeSelectedObjects({
     primary.updateWorldMatrix(true, false);
     const beforeState = snapshotMeshModelingState(primary);
 
+    let anyBakedSubsurf = false;
+    let anySmoothShading = false;
     const items = candidates.map((m) => {
       m.updateWorldMatrix(true, false);
       if (m._subsurfDirtyFromGeometry || (m.geometry && m.geometry._modifiedBySculpt && !m.geometry._isGeneratedSubsurf)) {
         ensureEditableBase(m);
       }
+      let editableMesh = m._subsurf?.baseMesh || null;
+      if (m._subsurf && m._subsurf.level > 0 && editableMesh) {
+        editableMesh = catmullClark(editableMesh, m._subsurf.level, MAX_SUBSURF_FACES, m._subsurf.smoothness ?? 1);
+        anyBakedSubsurf = true;
+        if (m._subsurf.smoothShading !== false) anySmoothShading = true;
+      } else if (m._subsurf?.smoothShading) {
+        anySmoothShading = true;
+      }
       return {
-        editableMesh: m._subsurf?.baseMesh || null,
+        editableMesh,
         geometry: m.geometry,
         matrixWorld: m.matrixWorld,
       };
@@ -370,6 +385,8 @@ export function mergeSelectedObjects({
       removeInteriorFaces,
       stitchTJunctions,
       solidity,
+      seamSmooth,
+      remeshOrganic,
     });
     const merged = mergeRes && mergeRes.mesh ? mergeRes.mesh : null;
     if (!merged || !merged.verts.length) {
@@ -378,9 +395,11 @@ export function mergeSelectedObjects({
     }
 
     const prevMod = primary._subsurf;
-    const prevLevel = prevMod?.level ?? 0;
+    const prevLevel = anyBakedSubsurf ? 0 : (prevMod?.level ?? 0);
     const prevSmoothness = prevMod?.smoothness ?? 1.0;
-    const prevShading = prevMod?.smoothShading ?? Boolean(primary.geometry?.attributes?.normal);
+    const prevShading = anyBakedSubsurf
+      ? (anySmoothShading || prevMod?.smoothShading !== false)
+      : (prevMod?.smoothShading ?? Boolean(primary.geometry?.attributes?.normal));
     const prevShowCage = prevMod ? prevMod.showCage !== false : true;
     const prevAlwaysCage = Boolean(prevMod && prevMod.alwaysShowCage);
 
@@ -436,30 +455,38 @@ export function mergeSelectedObjects({
   if (single._subsurfDirtyFromGeometry || (single.geometry && single.geometry._modifiedBySculpt && !single.geometry._isGeneratedSubsurf)) {
     ensureEditableBase(single);
   }
-  const em = single._subsurf?.baseMesh ? single._subsurf.baseMesh.clone() : EditableMesh.fromGeometry(single.geometry);
+  const prevMod = single._subsurf;
+  let bakedSingleSubsurf = false;
+  let em = single._subsurf?.baseMesh ? single._subsurf.baseMesh.clone() : EditableMesh.fromGeometry(single.geometry);
   if (!em) return false;
+  if (prevMod && prevMod.level > 0 && single._subsurf?.baseMesh && computeFaceShellIds(em).shellCount >= 2) {
+    em = catmullClark(em, prevMod.level, MAX_SUBSURF_FACES, prevMod.smoothness ?? 1);
+    bakedSingleSubsurf = true;
+  }
   const weldRes = em.weldShells({
     threshold,
     removeInteriorFaces,
     stitchTJunctions,
     solidity,
+    seamSmooth,
+    remeshOrganic,
   });
   if (!weldRes.changed) {
     setStatus('No había vértices o costuras cercanas que soldar con esa tolerancia.');
     return false;
   }
 
-  const prevMod = single._subsurf;
+  const nextLevel = bakedSingleSubsurf ? 0 : (prevMod?.level ?? 0);
   single._subsurf = null;
   setMeshSubsurf(single, {
     baseMesh: em,
-    level: prevMod?.level ?? 0,
+    level: nextLevel,
     smoothness: prevMod?.smoothness ?? 1.0,
     smoothShading: prevMod?.smoothShading ?? true,
     showCage: prevMod ? prevMod.showCage !== false : true,
     alwaysShowCage: Boolean(prevMod && prevMod.alwaysShowCage),
   });
-  if (!(prevMod?.level > 0)) {
+  if (!(nextLevel > 0)) {
     const geo = em.toGeometry({ flatShading: prevMod ? !prevMod.smoothShading : false });
     if (typeof single.setGeometry === 'function') single.setGeometry(geo);
     else single.geometry = geo;

@@ -26,4 +26,8 @@ export {
 export {
   computeFaceShellIds,
   performVolumetricUnionIfNeeded,
+  performOrganicSdfUnion,
+  pruneNonManifoldFlaps,
+  collapseTinySeamSlivers,
+  smoothUnionSeam,
 } from '../modeling/MeshUnion.js';

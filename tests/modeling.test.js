@@ -4,6 +4,7 @@ import {
   BoxGeometry,
   SphereGeometry,
   CylinderGeometry,
+  CapsuleGeometry,
   PyramidGeometry,
   ConeGeometry,
   StandardMaterial,
@@ -834,4 +835,180 @@ test('EditableMesh.mergeMeshes genera fusión limpia sin diagonales falsas ni ex
   assert.equal(s80.mesh.faces.length, 6);
   assert.equal(s100.mesh.faces.length, 6);
 });
+
+test('EditableMesh.mergeMeshes mantiene cierre 2-manifold en primitivas curvas/densas y seamSmooth suaviza el pegue', () => {
+  const I = new Mat4();
+  const tx = (x, y = 0, z = 0) => new Mat4().compose(new Vec3(x, y, z), new Quat(), new Vec3(1, 1, 1));
+  const countSharpEdges = (em) => {
+    const topo = em.getTopology();
+    const fn = (fi) => {
+      const f = em.faces[fi];
+      const p0 = em.verts[f[0]], p1 = em.verts[f[1]], p2 = em.verts[f[2]];
+      const e1 = [p1.x - p0.x, p1.y - p0.y, p1.z - p0.z];
+      const e2 = [p2.x - p0.x, p2.y - p0.y, p2.z - p0.z];
+      const n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+      const l = Math.hypot(...n) || 1;
+      return [n[0] / l, n[1] / l, n[2] / l];
+    };
+    let sharp = 0;
+    for (const e of topo.edges) {
+      if (e.faces.length !== 2) continue;
+      const n0 = fn(e.faces[0]);
+      const n1 = fn(e.faces[1]);
+      if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] < 0.7) sharp++;
+    }
+    return sharp;
+  };
+
+  const cases = [
+    ['Esferas 28x20', new SphereGeometry(0.75, 28, 20), I, new SphereGeometry(0.75, 28, 20), tx(0.8)],
+    ['Esferas 16x12', new SphereGeometry(1, 16, 12), I, new SphereGeometry(1, 16, 12), tx(0.7)],
+    ['Esfera + Cilindro', new SphereGeometry(0.75, 28, 20), I, new CylinderGeometry(0.55, 0.55, 1.4, 28, 1), tx(0.65, 0.2)],
+    ['Cápsula + Esfera', new CapsuleGeometry(0.42, 0.85, 8, 24), I, new SphereGeometry(0.75, 28, 20), tx(0.6, 0.1)],
+    ['Esferas Arcilla 64x48', new SphereGeometry(0.95, 64, 48), I, new SphereGeometry(0.95, 64, 48), tx(0.9)],
+  ];
+
+  for (const [label, gA, mA, gB, mB] of cases) {
+    const hard = EditableMesh.mergeMeshes([
+      { geometry: gA, matrixWorld: mA },
+      { geometry: gB, matrixWorld: mB },
+    ], { targetMatrixWorld: mA, seamSmooth: 0 });
+    assert.equal(countNonFlatEdges(hard.mesh), 0, `${label} seamSmooth=0 debe ser 2-manifold cerrado`);
+
+    const smooth = EditableMesh.mergeMeshes([
+      { geometry: gA, matrixWorld: mA },
+      { geometry: gB, matrixWorld: mB },
+    ], { targetMatrixWorld: mA, seamSmooth: 0.5 });
+    assert.equal(countNonFlatEdges(smooth.mesh), 0, `${label} seamSmooth=0.5 debe ser 2-manifold cerrado`);
+
+    const geo = smooth.mesh.toGeometry({ flatShading: false });
+    const nrm = geo.attributes.normal.array;
+    for (let i = 0; i < nrm.length; i++) {
+      assert.ok(Number.isFinite(nrm[i]), `${label} normal[${i}] debe ser finita`);
+    }
+  }
+
+  // Verificar reducción drástica de aristas agudas en costura de esferas con seamSmooth
+  const hardSph = EditableMesh.mergeMeshes([
+    { geometry: new SphereGeometry(0.75, 28, 20), matrixWorld: I },
+    { geometry: new SphereGeometry(0.75, 28, 20), matrixWorld: tx(0.8) },
+  ], { seamSmooth: 0 });
+  const smoothSph = EditableMesh.mergeMeshes([
+    { geometry: new SphereGeometry(0.75, 28, 20), matrixWorld: I },
+    { geometry: new SphereGeometry(0.75, 28, 20), matrixWorld: tx(0.8) },
+  ], { seamSmooth: 0.5 });
+  assert.ok(countSharpEdges(smoothSph.mesh) < countSharpEdges(hardSph.mesh) * 0.5);
+
+  // Cubos subdivididos Catmull-Clark horneados mantienen unión cerrada
+  const subA = catmullClark(EditableMesh.fromGeometry(new BoxGeometry(1.2, 1.2, 1.2)), 2, 10000, 1);
+  const subB = catmullClark(EditableMesh.fromGeometry(new BoxGeometry(1.2, 1.2, 1.2)), 2, 10000, 1);
+  const subMerged = EditableMesh.mergeMeshes([
+    { editableMesh: subA, matrixWorld: I },
+    { editableMesh: subB, matrixWorld: tx(0.7, 0.2) },
+  ], { targetMatrixWorld: I, seamSmooth: 0.5 });
+  assert.equal(countNonFlatEdges(subMerged.mesh), 0);
+
+  // toGeometry sobre N-gonos curvos no debe inyectar vértices sintéticos de centroide
+  const pentagon = new EditableMesh([
+    { x: 0, y: 0, z: 0 },
+    { x: 1, y: 0, z: 0.05 },
+    { x: 1.2, y: 0.9, z: 0 },
+    { x: 0.5, y: 1.4, z: 0.08 },
+    { x: -0.2, y: 0.8, z: 0 },
+  ], [[0, 1, 2, 3, 4]]);
+  const pGeo = pentagon.toGeometry({ flatShading: false });
+  assert.equal(pGeo.attributes.position.count, 5);
+});
+
+test('smoothUnionSeam no pliega triángulos hacia atrás y performOrganicSdfUnion unifica en una sola malla todo-quads natural', () => {
+  const I = new Mat4();
+  const tx = (x, y = 0, z = 0) => new Mat4().compose(new Vec3(x, y, z), new Quat(), new Vec3(1, 1, 1));
+
+  const minDihedralDot = (em) => {
+    const topo = em.getTopology();
+    const fn = (fi) => {
+      const f = em.faces[fi];
+      const p0 = em.verts[f[0]], p1 = em.verts[f[1]], p2 = em.verts[f[2]];
+      const e1x = p1.x - p0.x, e1y = p1.y - p0.y, e1z = p1.z - p0.z;
+      const e2x = p2.x - p0.x, e2y = p2.y - p0.y, e2z = p2.z - p0.z;
+      const nx = e1y * e2z - e1z * e2y;
+      const ny = e1z * e2x - e1x * e2z;
+      const nz = e1x * e2y - e1y * e2x;
+      const l = Math.hypot(nx, ny, nz) || 1;
+      return [nx / l, ny / l, nz / l];
+    };
+    let minD = 1;
+    for (const e of topo.edges) {
+      if (e.faces.length !== 2) continue;
+      const a = fn(e.faces[0]);
+      const b = fn(e.faces[1]);
+      const d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      if (d < minD) minD = d;
+    }
+    return minD;
+  };
+
+  // 1. Ruta booleana con seamSmooth=0.5 y 1.0 no debe plegar caras hacia atrás (minDot > -0.25)
+  const sphCyl = EditableMesh.mergeMeshes([
+    { geometry: new SphereGeometry(0.75, 28, 20), matrixWorld: I },
+    { geometry: new CylinderGeometry(0.55, 0.55, 1.4, 28, 1), matrixWorld: tx(0.65, 0.2) },
+  ], { seamSmooth: 0.5, remeshOrganic: false });
+  assert.equal(countNonFlatEdges(sphCyl.mesh), 0);
+  assert.ok(minDihedralDot(sphCyl.mesh) > -0.25, `Sph+Cyl no debe tener pliegues invertidos (minDot=${minDihedralDot(sphCyl.mesh)})`);
+
+  const boxesSmooth = EditableMesh.mergeMeshes([
+    { geometry: new BoxGeometry(1, 1, 1), matrixWorld: I },
+    { geometry: new BoxGeometry(1, 1, 1), matrixWorld: tx(0.4, 0.4, 0.4) },
+  ], { seamSmooth: 0.8, remeshOrganic: false });
+  assert.equal(countNonFlatEdges(boxesSmooth.mesh), 0);
+  assert.ok(minDihedralDot(boxesSmooth.mesh) > -0.25, `Boxes3D no debe plegarse (minDot=${minDihedralDot(boxesSmooth.mesh)})`);
+
+  // 2. Unión Orgánica SDF (remeshOrganic: true): 100% quads cerrados 2-manifold sin aristas plegadas
+  const orgSpheres = EditableMesh.mergeMeshes([
+    { geometry: new SphereGeometry(0.8, 28, 20), matrixWorld: I },
+    { geometry: new SphereGeometry(0.8, 28, 20), matrixWorld: tx(0.85, 0, 0) },
+  ], { seamSmooth: 0.5, remeshOrganic: true });
+  assert.equal(countNonFlatEdges(orgSpheres.mesh), 0);
+  assert.ok(orgSpheres.mesh.faces.length > 500);
+  assert.ok(orgSpheres.mesh.faces.every((f) => f.length === 4), 'Unión orgánica debe generar malla 100% quads');
+  assert.ok(minDihedralDot(orgSpheres.mesh) > 0.9, `Unión orgánica de esferas debe ser ultra suave (minDot=${minDihedralDot(orgSpheres.mesh)})`);
+
+  const orgGeo = orgSpheres.mesh.toGeometry({ flatShading: false });
+  const orgUv = orgGeo.attributes.uv.array;
+  const orgNrm = orgGeo.attributes.normal.array;
+  for (let i = 0; i < orgUv.length; i++) assert.ok(Number.isFinite(orgUv[i]));
+  for (let i = 0; i < orgNrm.length; i++) assert.ok(Number.isFinite(orgNrm[i]));
+
+  const orgSphCyl = EditableMesh.mergeMeshes([
+    { geometry: new SphereGeometry(0.75, 28, 20), matrixWorld: I },
+    { geometry: new CylinderGeometry(0.55, 0.55, 1.4, 28, 1), matrixWorld: tx(0.65, 0.2) },
+  ], { seamSmooth: 0.5, remeshOrganic: true });
+  assert.equal(countNonFlatEdges(orgSphCyl.mesh), 0);
+  assert.ok(orgSphCyl.mesh.faces.every((f) => f.length === 4));
+  assert.ok(minDihedralDot(orgSphCyl.mesh) > 0.2, `Sph+Cyl orgánica sin pliegues (minDot=${minDihedralDot(orgSphCyl.mesh)})`);
+
+  const orgCap = EditableMesh.mergeMeshes([
+    { geometry: new CapsuleGeometry(0.42, 0.85, 8, 24), matrixWorld: I },
+    { geometry: new SphereGeometry(0.75, 28, 20), matrixWorld: tx(0.6, 0.1) },
+  ], { seamSmooth: 0.6, remeshOrganic: true });
+  assert.equal(countNonFlatEdges(orgCap.mesh), 0);
+  assert.ok(orgCap.mesh.faces.every((f) => f.length === 4));
+
+  // 3. Planos abiertos con remeshOrganic=true hacen fallback seguro sin fallar ni vaciar la malla
+  const openPlaneA = new EditableMesh(
+    [{ x: -1, y: 0, z: -1 }, { x: 1, y: 0, z: -1 }, { x: 1, y: 0, z: 1 }, { x: -1, y: 0, z: 1 }],
+    [[0, 1, 2, 3]]
+  );
+  const openPlaneB = new EditableMesh(
+    [{ x: 0.5, y: 0, z: -1 }, { x: 2.5, y: 0, z: -1 }, { x: 2.5, y: 0, z: 1 }, { x: 0.5, y: 0, z: 1 }],
+    [[0, 1, 2, 3]]
+  );
+  const fallbackRes = EditableMesh.mergeMeshes([
+    { editableMesh: openPlaneA, matrixWorld: I },
+    { editableMesh: openPlaneB, matrixWorld: I },
+  ], { seamSmooth: 0.5, remeshOrganic: true });
+  assert.ok(fallbackRes.mesh.faces.length >= 2);
+});
+
+
 

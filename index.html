@@ -311,6 +311,12 @@
                   <input type="range" id="edit-weld-solidity" min="0" max="100" step="5" value="80" />
                   <input type="number" id="edit-weld-solidity-num" class="num-mini" min="0" max="100" step="5" value="80" />
                 </div>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label" title="Suaviza la costura entre piezas con un collar de transición para evitar marcas duras o cuadradas (0% unión dura, 100% fusión orgánica)">Suavizar pegue</span>
+                  <input type="range" id="edit-weld-seam-smooth" min="0" max="100" step="5" value="50" />
+                  <input type="number" id="edit-weld-seam-smooth-num" class="num-mini" min="0" max="100" step="5" value="50" />
+                </div>
+                <label class="check-row-compact" title="Reconstruye la unión como una sola malla orgánica continua todo-quads sin costuras ni marcas de pegue"><input type="checkbox" id="edit-weld-remesh" checked /> Malla única (orgánica)</label>
                 <label class="check-row-compact"><input type="checkbox" id="edit-weld-interior" checked /> Quitar caras internas</label>
                 <label class="check-row-compact"><input type="checkbox" id="edit-weld-stitch" checked /> Coser costuras (T)</label>
               </div>

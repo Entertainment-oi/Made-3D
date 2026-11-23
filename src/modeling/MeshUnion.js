@@ -3421,10 +3421,861 @@ function sminPoly(a, b, k) {
   return Math.min(a, b) - h * h * k * 0.25;
 }
 
+/**
+ * Simplifica un EditableMesh hasta `targetVerts` usando QEM (Quadric Error Metrics) adaptativo por curvatura,
+ * protección diédrica 1-ring + bordes abiertos (Garland-Heckbert), balanceo de valencia multietapa,
+ * relajación tangencial respetando filos y re-emparejamiento a quads convexos planos.
+ */
+export function decimateMeshQEM(editableMesh, targetVerts, {
+  preserveUvs = true,
+  preserveCreases = true,
+  protectBoundaries = true,
+} = {}) {
+  if (!editableMesh || !editableMesh.verts.length || !editableMesh.faces.length) {
+    return { changed: false };
+  }
+  const origVertCount = editableMesh.verts.length;
+  const clampedTarget = Math.max(4, Math.min(origVertCount - 1, Math.round(targetVerts)));
+  if (origVertCount <= clampedTarget || origVertCount <= 5) {
+    return { changed: false };
+  }
+
+  const outVerts = editableMesh.verts.map((v) => ({ x: v.x, y: v.y, z: v.z }));
+
+  // 1. Triangular quads (diagonal más corta) y polígonos conservando UVs por esquina
+  const qTris = [];
+  const triUvs = [];
+  const hasSourceUvs = preserveUvs && Array.isArray(editableMesh.faceUvs) && editableMesh.faceUvs.length === editableMesh.faces.length;
+
+  for (let fi = 0; fi < editableMesh.faces.length; fi++) {
+    const f = editableMesh.faces[fi];
+    if (!f || f.length < 3) continue;
+    const fUv = hasSourceUvs && Array.isArray(editableMesh.faceUvs[fi])
+      ? editableMesh.faceUvs[fi]
+      : f.map(() => [0, 0]);
+    const uvAt = (idx) => {
+      const u = fUv[idx];
+      return u && Number.isFinite(u[0]) && Number.isFinite(u[1]) ? [u[0], u[1]] : [0, 0];
+    };
+
+    if (f.length === 3) {
+      qTris.push([f[0], f[1], f[2]]);
+      triUvs.push([uvAt(0), uvAt(1), uvAt(2)]);
+    } else if (f.length === 4) {
+      const p0 = outVerts[f[0]], p1 = outVerts[f[1]], p2 = outVerts[f[2]], p3 = outVerts[f[3]];
+      const d02 = (p0.x - p2.x) ** 2 + (p0.y - p2.y) ** 2 + (p0.z - p2.z) ** 2;
+      const d13 = (p1.x - p3.x) ** 2 + (p1.y - p3.y) ** 2 + (p1.z - p3.z) ** 2;
+      if (d02 <= d13) {
+        qTris.push([f[0], f[1], f[2]], [f[0], f[2], f[3]]);
+        triUvs.push([uvAt(0), uvAt(1), uvAt(2)], [uvAt(0), uvAt(2), uvAt(3)]);
+      } else {
+        qTris.push([f[1], f[2], f[3]], [f[1], f[3], f[0]]);
+        triUvs.push([uvAt(1), uvAt(2), uvAt(3)], [uvAt(1), uvAt(3), uvAt(0)]);
+      }
+    } else {
+      for (let i = 1; i + 1 < f.length; i++) {
+        qTris.push([f[0], f[i], f[i + 1]]);
+        triUvs.push([uvAt(0), uvAt(i), uvAt(i + 1)]);
+      }
+    }
+  }
+
+  if (qTris.length < 4) return { changed: false };
+
+  // 2. Mapear durezas de arista (creases) si existen
+  const edgeCreases = new Map();
+  if (preserveCreases && editableMesh.creases && editableMesh.creases.size > 0) {
+    for (const [k, val] of editableMesh.creases.entries()) {
+      if (val > 0.001) edgeCreases.set(k, val);
+    }
+  }
+  const getCrease = (a, b) => (edgeCreases.size ? (edgeCreases.get(edgeKey(a, b)) || 0) : 0);
+
+  // 3. Construir cuádricas Q (10 coeficientes simétricos por vértice) ponderadas por área
+  const Vq = outVerts.length;
+  const Q = new Float64Array(Vq * 10);
+  const vertFaces = Array.from({ length: Vq }, () => new Set());
+  const vertNbrs = Array.from({ length: Vq }, () => new Set());
+  const aliveVert = new Uint8Array(Vq);
+  aliveVert.fill(1);
+  const aliveFace = new Uint8Array(qTris.length);
+  aliveFace.fill(1);
+  const vertStamp = new Int32Array(Vq);
+  const edgeFaceCounts = new Map();
+
+  let totalArea = 0;
+  let totalEdgeLen = 0;
+  let edgeSampleCount = 0;
+
+  for (let ti = 0; ti < qTris.length; ti++) {
+    const [a, b, c] = qTris[ti];
+    if (a === b || b === c || c === a) {
+      aliveFace[ti] = 0;
+      continue;
+    }
+    vertFaces[a].add(ti); vertFaces[b].add(ti); vertFaces[c].add(ti);
+    vertNbrs[a].add(b); vertNbrs[a].add(c);
+    vertNbrs[b].add(a); vertNbrs[b].add(c);
+    vertNbrs[c].add(a); vertNbrs[c].add(b);
+
+    for (const [ea, eb] of [[a, b], [b, c], [c, a]]) {
+      const ek = ea < eb ? `${ea}_${eb}` : `${eb}_${ea}`;
+      const prev = edgeFaceCounts.get(ek);
+      if (prev) prev.push(ti);
+      else edgeFaceCounts.set(ek, [ti]);
+    }
+
+    const pa = outVerts[a], pb = outVerts[b], pc = outVerts[c];
+    const e1x = pb.x - pa.x, e1y = pb.y - pa.y, e1z = pb.z - pa.z;
+    const e2x = pc.x - pa.x, e2y = pc.y - pa.y, e2z = pc.z - pa.z;
+    totalEdgeLen += Math.hypot(e1x, e1y, e1z) + Math.hypot(e2x, e2y, e2z);
+    edgeSampleCount += 2;
+
+    const nx = e1y * e2z - e1z * e2y;
+    const ny = e1z * e2x - e1x * e2z;
+    const nz = e1x * e2y - e1y * e2x;
+    const area2 = Math.hypot(nx, ny, nz);
+    if (area2 < 1e-14) continue;
+    const area = area2 * 0.5;
+    totalArea += area;
+    const ux = nx / area2, uy = ny / area2, uz = nz / area2;
+    const d = -(ux * pa.x + uy * pa.y + uz * pa.z);
+
+    const q00 = ux * ux * area, q01 = ux * uy * area, q02 = ux * uz * area, q03 = ux * d * area;
+    const q11 = uy * uy * area, q12 = uy * uz * area, q13 = uy * d * area;
+    const q22 = uz * uz * area, q23 = uz * d * area, q33 = d * d * area;
+
+    for (const vi of [a, b, c]) {
+      const base = vi * 10;
+      Q[base] += q00; Q[base + 1] += q01; Q[base + 2] += q02; Q[base + 3] += q03;
+      Q[base + 4] += q11; Q[base + 5] += q12; Q[base + 6] += q13;
+      Q[base + 7] += q22; Q[base + 8] += q23; Q[base + 9] += q33;
+    }
+  }
+
+  // Marcar vértices en borde abierto y añadir planos de restricción perpendicular Garland-Heckbert
+  const isBoundaryVert = new Uint8Array(Vq);
+  if (protectBoundaries) {
+    for (const [ek, fis] of edgeFaceCounts.entries()) {
+      if (fis.length !== 1) continue;
+      const fi = fis[0];
+      const f = qTris[fi];
+      const sep = ek.indexOf('_');
+      const a = Number(ek.slice(0, sep));
+      const b = Number(ek.slice(sep + 1));
+      isBoundaryVert[a] = 1;
+      isBoundaryVert[b] = 1;
+
+      const pa = outVerts[a], pb = outVerts[b];
+      const f0 = outVerts[f[0]], f1 = outVerts[f[1]], f2 = outVerts[f[2]];
+      const fnx = (f1.y - f0.y) * (f2.z - f0.z) - (f1.z - f0.z) * (f2.y - f0.y);
+      const fny = (f1.z - f0.z) * (f2.x - f0.x) - (f1.x - f0.x) * (f2.z - f0.z);
+      const fnz = (f1.x - f0.x) * (f2.y - f0.y) - (f1.y - f0.y) * (f2.x - f0.x);
+      const ex = pb.x - pa.x, ey = pb.y - pa.y, ez = pb.z - pa.z;
+      const eLenSq = ex * ex + ey * ey + ez * ez;
+      if (eLenSq < 1e-14) continue;
+      let bx = ey * fnz - ez * fny;
+      let by = ez * fnx - ex * fnz;
+      let bz = ex * fny - ey * fnx;
+      const bLen = Math.hypot(bx, by, bz);
+      if (bLen < 1e-14) continue;
+      bx /= bLen; by /= bLen; bz /= bLen;
+      const bd = -(bx * pa.x + by * pa.y + bz * pa.z);
+      const w = eLenSq * 4.0;
+      for (const vi of [a, b]) {
+        const base = vi * 10;
+        Q[base] += bx * bx * w; Q[base + 1] += bx * by * w; Q[base + 2] += bx * bz * w; Q[base + 3] += bx * bd * w;
+        Q[base + 4] += by * by * w; Q[base + 5] += by * bz * w; Q[base + 6] += by * bd * w;
+        Q[base + 7] += bz * bz * w; Q[base + 8] += bz * bd * w; Q[base + 9] += bd * bd * w;
+      }
+    }
+  }
+
+  const avgEdgeLen = totalEdgeLen / Math.max(1, edgeSampleCount);
+  const avgTriArea = totalArea / Math.max(1, qTris.length);
+  const lenTieWeight = avgTriArea * 4e-3;
+  const stepBoundSq = Math.max(1e-8, avgEdgeLen * avgEdgeLen * 4.0);
+
+  const evalQArr = (q00, q01, q02, q03, q11, q12, q13, q22, q23, q33, x, y, z) => (
+    q00 * x * x + 2 * q01 * x * y + 2 * q02 * x * z + 2 * q03 * x +
+    q11 * y * y + 2 * q12 * y * z + 2 * q13 * y +
+    q22 * z * z + 2 * q23 * z + q33
+  );
+
+  const computePairCost = (u, v) => {
+    const bu = u * 10, bv = v * 10;
+    const q00 = Q[bu] + Q[bv], q01 = Q[bu + 1] + Q[bv + 1], q02 = Q[bu + 2] + Q[bv + 2], q03 = Q[bu + 3] + Q[bv + 3];
+    const q11 = Q[bu + 4] + Q[bv + 4], q12 = Q[bu + 5] + Q[bv + 5], q13 = Q[bu + 6] + Q[bv + 6];
+    const q22 = Q[bu + 7] + Q[bv + 7], q23 = Q[bu + 8] + Q[bv + 8], q33 = Q[bu + 9] + Q[bv + 9];
+
+    const pu = outVerts[u], pv = outVerts[v];
+    const mx = (pu.x + pv.x) * 0.5, my = (pu.y + pv.y) * 0.5, mz = (pu.z + pv.z) * 0.5;
+    const edgeLenSq = (pv.x - pu.x) ** 2 + (pv.y - pu.y) ** 2 + (pv.z - pu.z) ** 2;
+
+    let bx = mx, by = my, bz = mz;
+    let bestErr = evalQArr(q00, q01, q02, q03, q11, q12, q13, q22, q23, q33, mx, my, mz);
+
+    const det =
+      q00 * (q11 * q22 - q12 * q12) -
+      q01 * (q01 * q22 - q12 * q02) +
+      q02 * (q01 * q12 - q11 * q02);
+
+    const tr = q00 + q11 + q22;
+    if (Math.abs(det) > 1e-10 * tr * tr * tr) {
+      const invDet = 1 / det;
+      const sx = -(
+        q03 * (q11 * q22 - q12 * q12) -
+        q01 * (q13 * q22 - q12 * q23) +
+        q02 * (q13 * q12 - q11 * q23)
+      ) * invDet;
+      const sy = -(
+        q00 * (q13 * q22 - q12 * q23) -
+        q03 * (q01 * q22 - q12 * q02) +
+        q02 * (q01 * q23 - q13 * q02)
+      ) * invDet;
+      const sz = -(
+        q00 * (q11 * q23 - q13 * q12) -
+        q01 * (q01 * q23 - q13 * q02) +
+        q03 * (q01 * q12 - q11 * q02)
+      ) * invDet;
+
+      const dMidSq = (sx - mx) ** 2 + (sy - my) ** 2 + (sz - mz) ** 2;
+      if (dMidSq <= Math.max(edgeLenSq * 1.2, stepBoundSq)) {
+        const sErr = evalQArr(q00, q01, q02, q03, q11, q12, q13, q22, q23, q33, sx, sy, sz);
+        if (sErr < bestErr) {
+          bestErr = sErr;
+          bx = sx; by = sy; bz = sz;
+        }
+      }
+    }
+
+    const euErr = evalQArr(q00, q01, q02, q03, q11, q12, q13, q22, q23, q33, pu.x, pu.y, pu.z);
+    if (euErr < bestErr) { bestErr = euErr; bx = pu.x; by = pu.y; bz = pu.z; }
+    const evErr = evalQArr(q00, q01, q02, q03, q11, q12, q13, q22, q23, q33, pv.x, pv.y, pv.z);
+    if (evErr < bestErr) { bestErr = evErr; bx = pv.x; by = pv.y; bz = pv.z; }
+
+    // Si solo uno de los extremos está en borde abierto, anclar al vértice de borde para no encoger siluetas
+    if (isBoundaryVert[u] && !isBoundaryVert[v]) {
+      bx = pu.x; by = pu.y; bz = pu.z;
+      bestErr = euErr;
+    } else if (!isBoundaryVert[u] && isBoundaryVert[v]) {
+      bx = pv.x; by = pv.y; bz = pv.z;
+      bestErr = evErr;
+    }
+
+    const degPenalty = 1 + 0.12 * Math.max(0, vertNbrs[u].size + vertNbrs[v].size - 10);
+    const cost = Math.max(0, bestErr) + lenTieWeight * edgeLenSq * degPenalty;
+    return { cost, x: bx, y: by, z: bz };
+  };
+
+  const heap = [];
+  const pushHeap = (item) => {
+    heap.push(item);
+    let idx = heap.length - 1;
+    while (idx > 0) {
+      const p = (idx - 1) >> 1;
+      if (heap[p].cost <= heap[idx].cost) break;
+      const tmp = heap[p]; heap[p] = heap[idx]; heap[idx] = tmp;
+      idx = p;
+    }
+  };
+  const popHeap = () => {
+    const top = heap[0];
+    const last = heap.pop();
+    if (heap.length) {
+      heap[0] = last;
+      let idx = 0;
+      const len = heap.length;
+      while (true) {
+        let best = idx;
+        const l = idx * 2 + 1, r = idx * 2 + 2;
+        if (l < len && heap[l].cost < heap[best].cost) best = l;
+        if (r < len && heap[r].cost < heap[best].cost) best = r;
+        if (best === idx) break;
+        const tmp = heap[idx]; heap[idx] = heap[best]; heap[best] = tmp;
+        idx = best;
+      }
+    }
+    return top;
+  };
+
+  let curVertCount = 0;
+  for (let vi = 0; vi < Vq; vi++) {
+    if (vertFaces[vi].size > 0) curVertCount++;
+    else aliveVert[vi] = 0;
+  }
+
+  const triUnitNormalAndQual = (pa, pb, pc) => {
+    const e1x = pb.x - pa.x, e1y = pb.y - pa.y, e1z = pb.z - pa.z;
+    const e2x = pc.x - pa.x, e2y = pc.y - pa.y, e2z = pc.z - pa.z;
+    const nx = e1y * e2z - e1z * e2y;
+    const ny = e1z * e2x - e1x * e2z;
+    const nz = e1x * e2y - e1y * e2x;
+    const area2 = Math.hypot(nx, ny, nz);
+    if (area2 < 1e-12) return null;
+    const sumSq =
+      (e1x * e1x + e1y * e1y + e1z * e1z) +
+      (e2x * e2x + e2y * e2y + e2z * e2z) +
+      ((pc.x - pb.x) ** 2 + (pc.y - pb.y) ** 2 + (pc.z - pb.z) ** 2);
+    return { x: nx / area2, y: ny / area2, z: nz / area2, q: area2 / (sumSq || 1e-12) };
+  };
+
+  // Helper para voltear arista (a,b) cuando reduce estrellas de alta valencia o mejora aspecto en zonas planas
+  const tryActiveEdgeFlip = (a, b) => {
+    if (!aliveVert[a] || !aliveVert[b] || !vertNbrs[a].has(b)) return false;
+    if (getCrease(a, b) > 0.1) return false;
+    const shared = [];
+    for (const fi of vertFaces[a]) {
+      if (aliveFace[fi] && vertFaces[b].has(fi)) shared.push(fi);
+    }
+    if (shared.length !== 2) return false;
+    const [fi0, fi1] = shared;
+    const f0 = qTris[fi0], f1 = qTris[fi1];
+    const ia0 = f0.indexOf(a), ib0 = f0.indexOf(b);
+    if (ia0 < 0 || ib0 < 0) return false;
+    const aFirst = ((ia0 + 1) % 3) === ib0;
+    const va = aFirst ? a : b;
+    const vb = aFirst ? b : a;
+    const vc = f0[3 - f0.indexOf(va) - f0.indexOf(vb)];
+    const vd = f1[3 - f1.indexOf(va) - f1.indexOf(vb)];
+    if (vc === vd || vertNbrs[vc].has(vd)) return false;
+    if (vertNbrs[va].size <= 3 || vertNbrs[vb].size <= 3) return false;
+
+    const t0 = triUnitNormalAndQual(outVerts[va], outVerts[vb], outVerts[vc]);
+    const t1 = triUnitNormalAndQual(outVerts[vb], outVerts[va], outVerts[vd]);
+    if (!t0 || !t1 || t0.x * t1.x + t0.y * t1.y + t0.z * t1.z < 0.90) return false;
+
+    const n0 = triUnitNormalAndQual(outVerts[va], outVerts[vd], outVerts[vc]);
+    const n1 = triUnitNormalAndQual(outVerts[vd], outVerts[vb], outVerts[vc]);
+    if (!n0 || !n1) return false;
+    if (
+      n0.x * t0.x + n0.y * t0.y + n0.z * t0.z < 0.72 ||
+      n1.x * t1.x + n1.y * t1.y + n1.z * t1.z < 0.72 ||
+      n0.x * n1.x + n0.y * n1.y + n0.z * n1.z < 0.08
+    ) return false;
+
+    const da = vertNbrs[va].size, db = vertNbrs[vb].size, dc = vertNbrs[vc].size, dd = vertNbrs[vd].size;
+    const errBefore = (da - 6) ** 2 + (db - 6) ** 2 + (dc - 6) ** 2 + (dd - 6) ** 2;
+    const errAfter = (da - 7) ** 2 + (db - 7) ** 2 + (dc - 5) ** 2 + (dd - 5) ** 2;
+    const qBefore = Math.min(t0.q, t1.q);
+    const qAfter = Math.min(n0.q, n1.q);
+    if (qAfter < qBefore * 0.75) return false;
+    if (!(errAfter < errBefore || (errAfter === errBefore && qAfter > qBefore * 1.06))) return false;
+
+    const uv0 = triUvs[fi0], uv1 = triUvs[fi1];
+    const getUv = (f, uvArr, vi) => {
+      const idx = f.indexOf(vi);
+      return idx >= 0 ? uvArr[idx] : [0, 0];
+    };
+    const uvA = getUv(f0, uv0, va);
+    const uvB = getUv(f0, uv0, vb);
+    const uvC = getUv(f0, uv0, vc);
+    const uvD = getUv(f1, uv1, vd);
+
+    qTris[fi0] = [va, vd, vc];
+    triUvs[fi0] = [uvA.slice(), uvD.slice(), uvC.slice()];
+    qTris[fi1] = [vd, vb, vc];
+    triUvs[fi1] = [uvD.slice(), uvB.slice(), uvC.slice()];
+
+    vertFaces[vb].delete(fi0);
+    vertFaces[vd].add(fi0);
+    vertFaces[va].delete(fi1);
+    vertFaces[vc].add(fi1);
+    vertNbrs[va].delete(vb); vertNbrs[vb].delete(va);
+    vertNbrs[vc].add(vd); vertNbrs[vd].add(vc);
+    vertStamp[va]++; vertStamp[vb]++; vertStamp[vc]++; vertStamp[vd]++;
+    return true;
+  };
+
+  const runGlobalActiveEdgeFlips = (passes = 2) => {
+    for (let fPass = 0; fPass < passes; fPass++) {
+      for (let a = 0; a < Vq; a++) {
+        if (!aliveVert[a]) continue;
+        for (const b of [...vertNbrs[a]]) {
+          if (a < b && aliveVert[b]) tryActiveEdgeFlip(a, b);
+        }
+      }
+    }
+  };
+
+  const rebuildHeap = () => {
+    heap.length = 0;
+    for (let u = 0; u < Vq; u++) {
+      if (!aliveVert[u]) continue;
+      for (const v of vertNbrs[u]) {
+        if (u < v && aliveVert[v]) {
+          const c = computePairCost(u, v);
+          pushHeap({ u, v, su: vertStamp[u], sv: vertStamp[v], ...c });
+        }
+      }
+    }
+  };
+
+  // Ejecutar colapsos en hasta 3 etapas alternando Edge Flips globales
+  const stageCount = 3;
+  const startVerts = curVertCount;
+  for (let stage = 0; stage < stageCount && curVertCount > clampedTarget; stage++) {
+    rebuildHeap();
+    const stageRatio = (stage + 1) / stageCount;
+    const stageTarget = stage === stageCount - 1
+      ? clampedTarget
+      : Math.max(clampedTarget, Math.round(startVerts - (startVerts - clampedTarget) * stageRatio));
+    const maxCombinedDeg = stage === 2 ? 10 : 9;
+
+    while (heap.length && curVertCount > stageTarget) {
+      const item = popHeap();
+      const { u, v, su, sv, x, y, z } = item;
+      if (!aliveVert[u] || !aliveVert[v]) continue;
+      if (vertStamp[u] !== su || vertStamp[v] !== sv) continue;
+      if (!vertNbrs[u].has(v)) continue;
+
+      const sharedFaces = [];
+      for (const fi of vertFaces[u]) {
+        if (aliveFace[fi] && vertFaces[v].has(fi)) sharedFaces.push(fi);
+      }
+      if (sharedFaces.length !== 2 && sharedFaces.length !== 1) continue;
+
+      const nu = vertNbrs[u], nv = vertNbrs[v];
+      const common = [];
+      for (const w of nu) {
+        if (nv.has(w)) common.push(w);
+      }
+      if (sharedFaces.length === 2) {
+        if (common.length !== 2) continue;
+        if (vertNbrs[common[0]].size < 4 || vertNbrs[common[1]].size < 4) continue;
+        if (isBoundaryVert[u] && isBoundaryVert[v]) continue;
+      } else {
+        if (common.length !== 1 || !isBoundaryVert[u] || !isBoundaryVert[v]) continue;
+        if (vertNbrs[common[0]].size < 3) continue;
+      }
+      if (nu.size + nv.size - 4 > maxCombinedDeg) continue;
+
+      const targetPos = { x, y, z };
+      let valid = true;
+      const ringNorms = [];
+      const checkRingFace = (fi, collapsedVert) => {
+        const f = qTris[fi];
+        const oldInfo = triUnitNormalAndQual(outVerts[f[0]], outVerts[f[1]], outVerts[f[2]]);
+        if (!oldInfo) return false;
+        const newInfo = triUnitNormalAndQual(
+          f[0] === collapsedVert ? targetPos : outVerts[f[0]],
+          f[1] === collapsedVert ? targetPos : outVerts[f[1]],
+          f[2] === collapsedVert ? targetPos : outVerts[f[2]]
+        );
+        if (!newInfo || newInfo.q < 0.08 || oldInfo.x * newInfo.x + oldInfo.y * newInfo.y + oldInfo.z * newInfo.z < 0.72) {
+          return false;
+        }
+        let r0 = -1, r1 = -1;
+        for (let k = 0; k < 3; k++) {
+          if (f[k] !== collapsedVert) {
+            if (r0 < 0) r0 = f[k];
+            else r1 = f[k];
+          }
+        }
+        // Proteger el ángulo diédrico contra la cara vecina al borde exterior (r0, r1) del 1-ring
+        for (const extFi of vertFaces[r0]) {
+          if (extFi === fi || !aliveFace[extFi] || !vertFaces[r1].has(extFi)) continue;
+          const ef = qTris[extFi];
+          const extN = triUnitNormalAndQual(outVerts[ef[0]], outVerts[ef[1]], outVerts[ef[2]]);
+          if (extN) {
+            const oldRimDot = oldInfo.x * extN.x + oldInfo.y * extN.y + oldInfo.z * extN.z;
+            const newRimDot = newInfo.x * extN.x + newInfo.y * extN.y + newInfo.z * extN.z;
+            if (newRimDot < Math.min(0.05, oldRimDot - 0.05)) return false;
+          }
+          break;
+        }
+        ringNorms.push({ r0, r1, oldInfo, newInfo });
+        return true;
+      };
+
+      const s0 = sharedFaces[0];
+      const s1 = sharedFaces.length > 1 ? sharedFaces[1] : -1;
+      for (const fi of vertFaces[u]) {
+        if (!aliveFace[fi] || fi === s0 || fi === s1) continue;
+        if (!checkRingFace(fi, u)) { valid = false; break; }
+      }
+      if (!valid) continue;
+      for (const fi of vertFaces[v]) {
+        if (!aliveFace[fi] || fi === s0 || fi === s1) continue;
+        if (!checkRingFace(fi, v)) { valid = false; break; }
+      }
+      if (!valid) continue;
+
+      for (let a = 0; a < ringNorms.length && valid; a++) {
+        const ra = ringNorms[a];
+        for (let b = a + 1; b < ringNorms.length; b++) {
+          const rb = ringNorms[b];
+          const shareSpoke = ra.r0 === rb.r0 || ra.r0 === rb.r1 || ra.r1 === rb.r0 || ra.r1 === rb.r1;
+          if (!shareSpoke) continue;
+          const newDot = ra.newInfo.x * rb.newInfo.x + ra.newInfo.y * rb.newInfo.y + ra.newInfo.z * rb.newInfo.z;
+          if (newDot < 0.05) {
+            const oldDot = ra.oldInfo.x * rb.oldInfo.x + ra.oldInfo.y * rb.oldInfo.y + ra.oldInfo.z * rb.oldInfo.z;
+            if (newDot < Math.min(0.05, oldDot - 0.05)) { valid = false; break; }
+          }
+        }
+      }
+      if (!valid) continue;
+
+      // Interpolar UVs continuas a lo largo del segmento pu -> pv antes de mover u
+      if (preserveUvs) {
+        const pu = outVerts[u], pv = outVerts[v];
+        const edx = pv.x - pu.x, edy = pv.y - pu.y, edz = pv.z - pu.z;
+        const eLenSq = edx * edx + edy * edy + edz * edz;
+        const t = eLenSq > 1e-12
+          ? Math.max(0, Math.min(1, ((x - pu.x) * edx + (y - pu.y) * edy + (z - pu.z) * edz) / eLenSq))
+          : 0.5;
+        const chartSamples = [];
+        for (const sfi of sharedFaces) {
+          const sf = qTris[sfi], suv = triUvs[sfi];
+          const iu = sf.indexOf(u), iv = sf.indexOf(v);
+          if (iu >= 0 && iv >= 0) {
+            const uvU = suv[iu], uvV = suv[iv];
+            chartSamples.push({
+              uvU,
+              uvV,
+              blend: [uvU[0] + (uvV[0] - uvU[0]) * t, uvU[1] + (uvV[1] - uvU[1]) * t],
+            });
+          }
+        }
+        if (chartSamples.length) {
+          for (const fi of vertFaces[u]) {
+            if (!aliveFace[fi] || fi === s0 || fi === s1) continue;
+            const iu = qTris[fi].indexOf(u);
+            if (iu < 0) continue;
+            const curUv = triUvs[fi][iu];
+            for (const ch of chartSamples) {
+              if (Math.hypot(curUv[0] - ch.uvU[0], curUv[1] - ch.uvU[1]) < 0.18) {
+                triUvs[fi][iu] = ch.blend.slice();
+                break;
+              }
+            }
+          }
+          for (const fi of vertFaces[v]) {
+            if (!aliveFace[fi] || fi === s0 || fi === s1) continue;
+            const iv = qTris[fi].indexOf(v);
+            if (iv < 0) continue;
+            const curUv = triUvs[fi][iv];
+            for (const ch of chartSamples) {
+              if (Math.hypot(curUv[0] - ch.uvV[0], curUv[1] - ch.uvV[1]) < 0.18) {
+                triUvs[fi][iv] = ch.blend.slice();
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      outVerts[u].x = x; outVerts[u].y = y; outVerts[u].z = z;
+      isBoundaryVert[u] = isBoundaryVert[u] | isBoundaryVert[v];
+      aliveVert[v] = 0;
+      const bu = u * 10, bv = v * 10;
+      for (let k = 0; k < 10; k++) Q[bu + k] += Q[bv + k];
+
+      for (const sfi of sharedFaces) {
+        aliveFace[sfi] = 0;
+        const sf = qTris[sfi];
+        for (let k = 0; k < 3; k++) vertFaces[sf[k]].delete(sfi);
+      }
+
+      for (const fi of vertFaces[v]) {
+        if (!aliveFace[fi]) continue;
+        const f = qTris[fi];
+        for (let k = 0; k < 3; k++) {
+          if (f[k] === v) f[k] = u;
+        }
+        vertFaces[u].add(fi);
+      }
+
+      if (edgeCreases.size) {
+        edgeCreases.delete(edgeKey(u, v));
+        for (const w of vertNbrs[v]) {
+          const kv = edgeKey(v, w);
+          const cr = edgeCreases.get(kv);
+          if (cr !== undefined) {
+            edgeCreases.delete(kv);
+            if (w !== u) {
+              const ku = edgeKey(u, w);
+              edgeCreases.set(ku, Math.max(edgeCreases.get(ku) || 0, cr));
+            }
+          }
+        }
+      }
+
+      vertNbrs[u].delete(v);
+      for (const w of vertNbrs[v]) {
+        vertNbrs[w].delete(v);
+        if (w !== u) {
+          vertNbrs[w].add(u);
+          vertNbrs[u].add(w);
+        }
+      }
+      vertNbrs[v].clear();
+      vertFaces[v].clear();
+
+      if (vertNbrs[u].size >= 8) {
+        for (const w of [...vertNbrs[u]]) {
+          tryActiveEdgeFlip(u, w);
+        }
+      }
+
+      vertStamp[u]++;
+      for (const w of vertNbrs[u]) vertStamp[w]++;
+      for (const w of vertNbrs[u]) {
+        const c = computePairCost(u, w);
+        pushHeap({ u: Math.min(u, w), v: Math.max(u, w), su: vertStamp[Math.min(u, w)], sv: vertStamp[Math.max(u, w)], ...c });
+      }
+      curVertCount--;
+    }
+
+    runGlobalActiveEdgeFlips(2);
+  }
+
+  // 4. Compactar vértices y triángulos vivos
+  const vRemap = new Int32Array(Vq);
+  vRemap.fill(-1);
+  const decVerts = [];
+  const decBound = [];
+  for (let vi = 0; vi < Vq; vi++) {
+    if (!aliveVert[vi]) continue;
+    vRemap[vi] = decVerts.length;
+    decVerts.push(outVerts[vi]);
+    decBound.push(isBoundaryVert[vi]);
+  }
+  const decTris = [];
+  const decTriUvs = [];
+  for (let ti = 0; ti < qTris.length; ti++) {
+    if (!aliveFace[ti]) continue;
+    const f = qTris[ti];
+    decTris.push([vRemap[f[0]], vRemap[f[1]], vRemap[f[2]]]);
+    decTriUvs.push(triUvs[ti]);
+  }
+  const decCreases = new Map();
+  if (edgeCreases.size) {
+    for (const [k, cr] of edgeCreases.entries()) {
+      const sep = k.indexOf('_');
+      const oa = Number(k.slice(0, sep));
+      const ob = Number(k.slice(sep + 1));
+      const na = vRemap[oa], nb = vRemap[ob];
+      if (na >= 0 && nb >= 0 && na !== nb) {
+        decCreases.set(edgeKey(na, nb), cr);
+      }
+    }
+  }
+
+  const Vd = decVerts.length;
+  const dNbrs = Array.from({ length: Vd }, () => new Set());
+  const dVFaces = Array.from({ length: Vd }, () => new Set());
+  const dCreaseVert = new Uint8Array(Vd);
+  for (let ti = 0; ti < decTris.length; ti++) {
+    const f = decTris[ti];
+    for (let k = 0; k < 3; k++) {
+      const a = f[k], b = f[(k + 1) % 3];
+      dNbrs[a].add(b); dNbrs[b].add(a);
+      dVFaces[a].add(ti);
+      if (decCreases.size && (decCreases.get(edgeKey(a, b)) || 0) > 0.1) {
+        dCreaseVert[a] = 1; dCreaseVert[b] = 1;
+      }
+    }
+  }
+
+  // 5. Relajación tangencial ligera bloqueando bordes abiertos, creases y aristas agudas
+  for (let rPass = 0; rPass < 2; rPass++) {
+    const fNorms = decTris.map((f) => computeFaceUnitNormal(f, decVerts));
+    for (let vi = 0; vi < Vd; vi++) {
+      if (decBound[vi] || dCreaseVert[vi]) continue;
+      const nbrs = dNbrs[vi];
+      const incSet = dVFaces[vi];
+      if (!nbrs.size || !incSet.size) continue;
+      const incF = [...incSet];
+
+      let minLocalDot = 1;
+      for (let a = 0; a < incF.length && minLocalDot >= 0.80; a++) {
+        const na = fNorms[incF[a]];
+        if (!na) continue;
+        for (let b = a + 1; b < incF.length; b++) {
+          const nb = fNorms[incF[b]];
+          if (!nb) continue;
+          const d = na.x * nb.x + na.y * nb.y + na.z * nb.z;
+          if (d < minLocalDot) minLocalDot = d;
+        }
+      }
+      if (minLocalDot < 0.80) continue;
+
+      let ax = 0, ay = 0, az = 0;
+      for (const w of nbrs) {
+        const q = decVerts[w];
+        ax += q.x; ay += q.y; az += q.z;
+      }
+      const inv = 1 / nbrs.size;
+      const p = decVerts[vi];
+      let dx = ax * inv - p.x, dy = ay * inv - p.y, dz = az * inv - p.z;
+      let vnx = 0, vny = 0, vnz = 0;
+      for (let k = 0; k < incF.length; k++) {
+        const fn = fNorms[incF[k]];
+        if (fn) { vnx += fn.x; vny += fn.y; vnz += fn.z; }
+      }
+      const vnl = Math.hypot(vnx, vny, vnz);
+      if (vnl > 1e-6) {
+        vnx /= vnl; vny /= vnl; vnz /= vnl;
+        const proj = dx * vnx + dy * vny + dz * vnz;
+        dx -= proj * vnx; dy -= proj * vny; dz -= proj * vnz;
+      }
+      const oxP = p.x, oyP = p.y, ozP = p.z;
+      p.x = oxP + dx * 0.25; p.y = oyP + dy * 0.25; p.z = ozP + dz * 0.25;
+      let flipped = false;
+      for (let k = 0; k < incF.length; k++) {
+        const fi = incF[k];
+        const refN = fNorms[fi];
+        if (!refN) continue;
+        const cur = triUnitNormalAndQual(decVerts[decTris[fi][0]], decVerts[decTris[fi][1]], decVerts[decTris[fi][2]]);
+        if (!cur || cur.q < 0.08 || cur.x * refN.x + cur.y * refN.y + cur.z * refN.z < 0.85) {
+          flipped = true; break;
+        }
+      }
+      if (flipped) { p.x = oxP; p.y = oyP; p.z = ozP; }
+    }
+  }
+
+  // 6. Re-emparejar pares de triángulos coplanares/suaves en quads limpios
+  const edgeAdj = new Map();
+  for (let ti = 0; ti < decTris.length; ti++) {
+    const f = decTris[ti];
+    for (let k = 0; k < 3; k++) {
+      const a = f[k], b = f[(k + 1) % 3];
+      const ek = a < b ? `${a}_${b}` : `${b}_${a}`;
+      let arr = edgeAdj.get(ek);
+      if (!arr) { arr = []; edgeAdj.set(ek, arr); }
+      arr.push(ti);
+    }
+  }
+
+  const tNorms = decTris.map((f) => computeFaceUnitNormal(f, decVerts));
+  const pairs = [];
+  for (const arr of edgeAdj.values()) {
+    if (arr.length !== 2) continue;
+    const [t0, t1] = arr;
+    const n0 = tNorms[t0], n1 = tNorms[t1];
+    if (!n0 || !n1) continue;
+    const dot = n0.x * n1.x + n0.y * n1.y + n0.z * n1.z;
+    if (dot < 0.94) continue;
+
+    const f0 = decTris[t0], f1 = decTris[t1];
+    let sharedA = -1, sharedB = -1, opp0 = -1, opp1 = -1;
+    let idxA0 = -1, idxB0 = -1, idxO0 = -1;
+    for (let k = 0; k < 3; k++) {
+      const va = f0[k], vb = f0[(k + 1) % 3], vc = f0[(k + 2) % 3];
+      if (f1.includes(va) && f1.includes(vb)) {
+        sharedA = va; sharedB = vb; opp0 = vc;
+        idxA0 = k; idxB0 = (k + 1) % 3; idxO0 = (k + 2) % 3;
+        break;
+      }
+    }
+    if (sharedA < 0) continue;
+    if (decCreases.size && (decCreases.get(edgeKey(sharedA, sharedB)) || 0) > 0.1) continue;
+    const idxO1 = f1.findIndex((v) => v !== sharedA && v !== sharedB);
+    if (idxO1 < 0) continue;
+    opp1 = f1[idxO1];
+    if (opp1 === opp0) continue;
+
+    const quad = [sharedA, opp1, sharedB, opp0];
+    const pts = quad.map((vi) => decVerts[vi]);
+    const avgNx = n0.x + n1.x, avgNy = n0.y + n1.y, avgNz = n0.z + n1.z;
+    const nl = Math.hypot(avgNx, avgNy, avgNz) || 1;
+    const ax = avgNx / nl, ay = avgNy / nl, az = avgNz / nl;
+
+    let convexOk = true;
+    for (let k = 0; k < 4; k++) {
+      const p0 = pts[k], p1 = pts[(k + 1) % 4], p2 = pts[(k + 2) % 4];
+      const u1x = p1.x - p0.x, u1y = p1.y - p0.y, u1z = p1.z - p0.z;
+      const u2x = p2.x - p1.x, u2y = p2.y - p1.y, u2z = p2.z - p1.z;
+      const cx = u1y * u2z - u1z * u2y;
+      const cy = u1z * u2x - u1x * u2z;
+      const cz = u1x * u2y - u1y * u2x;
+      if (cx * ax + cy * ay + cz * az <= 1e-10) {
+        convexOk = false; break;
+      }
+    }
+    if (!convexOk) continue;
+
+    const qAlt0 = triUnitNormalAndQual(pts[0], pts[1], pts[2]);
+    const qAlt1 = triUnitNormalAndQual(pts[0], pts[2], pts[3]);
+    if (
+      !qAlt0 || !qAlt1 || qAlt0.q < 0.08 || qAlt1.q < 0.08 ||
+      qAlt0.x * ax + qAlt0.y * ay + qAlt0.z * az < 0.78 ||
+      qAlt1.x * ax + qAlt1.y * ay + qAlt1.z * az < 0.78
+    ) continue;
+
+    const diagShared = Math.hypot(
+      decVerts[sharedA].x - decVerts[sharedB].x,
+      decVerts[sharedA].y - decVerts[sharedB].y,
+      decVerts[sharedA].z - decVerts[sharedB].z
+    );
+    const diagCross = Math.hypot(
+      decVerts[opp0].x - decVerts[opp1].x,
+      decVerts[opp0].y - decVerts[opp1].y,
+      decVerts[opp0].z - decVerts[opp1].z
+    );
+    const ratio = Math.min(diagShared, diagCross) / (Math.max(diagShared, diagCross) || 1);
+    if (ratio < 0.45) continue;
+
+    const quadUv = [
+      decTriUvs[t0][idxA0].slice(),
+      decTriUvs[t1][idxO1].slice(),
+      decTriUvs[t0][idxB0].slice(),
+      decTriUvs[t0][idxO0].slice(),
+    ];
+    pairs.push({ t0, t1, quad, quadUv, score: dot * 2 + ratio });
+  }
+
+  pairs.sort((a, b) => b.score - a.score);
+  const pairedTri = new Uint8Array(decTris.length);
+  const finalFaces = [];
+  const finalUvs = [];
+  for (let i = 0; i < pairs.length; i++) {
+    const p = pairs[i];
+    if (pairedTri[p.t0] || pairedTri[p.t1]) continue;
+    pairedTri[p.t0] = 1;
+    pairedTri[p.t1] = 1;
+    finalFaces.push(p.quad);
+    finalUvs.push(p.quadUv);
+  }
+  for (let ti = 0; ti < decTris.length; ti++) {
+    if (!pairedTri[ti]) {
+      finalFaces.push(decTris[ti]);
+      finalUvs.push(decTriUvs[ti]);
+    }
+  }
+
+  if (decVerts.length >= origVertCount) {
+    return {
+      changed: false,
+      beforeVerts: origVertCount,
+      afterVerts: origVertCount,
+      faceCount: editableMesh.faces.length,
+    };
+  }
+
+  editableMesh.verts = decVerts;
+  editableMesh.faces = finalFaces;
+  if (preserveUvs) editableMesh.faceUvs = finalUvs;
+  if (preserveCreases) editableMesh.creases = decCreases;
+  editableMesh.looseEdges = [];
+  editableMesh.pruneUnusedVertices();
+  editableMesh.invalidateTopology();
+
+  return {
+    changed: editableMesh.verts.length < origVertCount,
+    beforeVerts: origVertCount,
+    afterVerts: editableMesh.verts.length,
+    faceCount: editableMesh.faces.length,
+  };
+}
+
 export function performOrganicSdfUnion(editableMesh, {
   shellIds = null,
   seamSmooth = 0.5,
-  resolution = 60,
+  solidity = 0.8,
+  resolution = 48,
 } = {}) {
   if (!editableMesh || editableMesh.faces.length < 4) return { performed: false };
 
@@ -3505,7 +4356,6 @@ export function performOrganicSdfUnion(editableMesh, {
       if (c === 1) { openEdges++; break; }
     }
     if (openEdges > 0) {
-      // Requiere shells volumétricos cerrados; si hay planos abiertos, usar ruta booleana estándar
       return { performed: false };
     }
     let minX = Infinity, minY = Infinity, minZ = Infinity;
@@ -3540,7 +4390,6 @@ export function performOrganicSdfUnion(editableMesh, {
   const ny = Math.max(12, Math.ceil((sizeY + pad * 2) / h) + 2);
   const nz = Math.max(12, Math.ceil((sizeZ + pad * 2) / h) + 2);
 
-  // Distancia sin signo para descarte conservador en bloques 8x8x8 y 4x4x4 (0 raycasts!)
   const minUnsignedDistAnyShell = (px, py, pz, maxCutoff) => {
     let bestSq = maxCutoff * maxCutoff;
     for (let i = 0; i < shellInfos.length; i++) {
@@ -3555,7 +4404,6 @@ export function performOrganicSdfUnion(editableMesh, {
     return Math.sqrt(bestSq);
   };
 
-  // Signed Distance exacto dentro de la banda estrecha para Surface Nets
   const bandCutoff = h * 2.2 + blendK * 0.55;
   const bandCutoffSq = bandCutoff * bandCutoff;
   const evalShellSDF = (px, py, pz, sh) => {
@@ -3568,7 +4416,6 @@ export function performOrganicSdfUnion(editableMesh, {
       const r = minDistTriToBVH(px, py, pz, sh.bvh, sh.tris, sh.verts, bandCutoffSq);
       return Math.sqrt(r.distSq);
     }
-    // Dentro de la AABB del shell
     const r = minDistTriToBVH(px, py, pz, sh.bvh, sh.tris, sh.verts, bandCutoffSq);
     const dist = Math.sqrt(r.distSq);
     let odd = 0;
@@ -3592,7 +4439,6 @@ export function performOrganicSdfUnion(editableMesh, {
     return acc;
   };
 
-  // Paso 1: Descubrimiento jerárquico 8x8x8 -> 4x4x4 -> 1x1x1 sin raycasts en celdas vacías
   const c8Margin = h * 4 * Math.sqrt(3) + h * 1.6 + blendK * 0.35;
   const c4Margin = h * 2 * Math.sqrt(3) + h * 1.4 + blendK * 0.35;
   const activeFineCells = [];
@@ -3650,7 +4496,6 @@ export function performOrganicSdfUnion(editableMesh, {
     return val;
   };
 
-  // Paso 2: Extraer vértices duales de Surface Nets
   const CUBE_EDGES = [
     [0, 1], [2, 3], [4, 5], [6, 7],
     [0, 2], [1, 3], [4, 6], [5, 7],
@@ -3705,7 +4550,6 @@ export function performOrganicSdfUnion(editableMesh, {
 
   if (outVerts.length < 8) return { performed: false };
 
-  // Paso 3: Emitir quads por cada arista con cambio de signo
   const outFaces = [];
   const emittedEdge = new Set();
   const tryQuad = (v0, v1, v2, v3, flip) => {
@@ -3716,7 +4560,6 @@ export function performOrganicSdfUnion(editableMesh, {
   for (let ci = 0; ci < surfaceCells.length; ci++) {
     const [ix, iy, iz] = surfaceCells[ci];
 
-    // Aristas en X de esta celda: (iy..iy+1, iz..iz+1)
     for (let dy = 0; dy <= 1; dy++) {
       const y = iy + dy;
       if (y < 1 || y >= ny) continue;
@@ -3739,7 +4582,6 @@ export function performOrganicSdfUnion(editableMesh, {
       }
     }
 
-    // Aristas en Y de esta celda: (ix..ix+1, iz..iz+1)
     for (let dx = 0; dx <= 1; dx++) {
       const x = ix + dx;
       if (x < 1 || x >= nx) continue;
@@ -3762,7 +4604,6 @@ export function performOrganicSdfUnion(editableMesh, {
       }
     }
 
-    // Aristas en Z de esta celda: (ix..ix+1, iy..iy+1)
     for (let dx = 0; dx <= 1; dx++) {
       const x = ix + dx;
       if (x < 1 || x >= nx) continue;
@@ -3788,7 +4629,6 @@ export function performOrganicSdfUnion(editableMesh, {
 
   if (outFaces.length < 6) return { performed: false };
 
-  // Paso 4: Construir vecindad de vértices y aplicar HC-Smoothing + proyección trilineal cero-BVH
   const Vout = outVerts.length;
   const nbrSets = Array.from({ length: Vout }, () => new Set());
   for (let fi = 0; fi < outFaces.length; fi++) {
@@ -3846,7 +4686,6 @@ export function performOrganicSdfUnion(editableMesh, {
 
   for (let p = 0; p < 4; p++) runHCPass(0.2, 0.55);
 
-  // Proyección trilineal rápida a la isosuperficie f = 0 usando el campo cacheado (0 consultas BVH extra)
   const trilinearSampleAndGrad = (px, py, pz) => {
     const gx = (px - ox) / h;
     const gy = (py - oy) / h;
@@ -3906,13 +4745,40 @@ export function performOrganicSdfUnion(editableMesh, {
 
   for (let p = 0; p < 2; p++) runHCPass(0.25, 0.5);
 
+  const origFaceCount = editableMesh.faces.length;
+  const origVertCount = verts.length;
+  editableMesh.verts = outVerts;
+  editableMesh.faces = outFaces;
+  editableMesh.faceUvs = [];
+  editableMesh.looseEdges = [];
+  editableMesh.creases = new Map();
+  editableMesh.invalidateTopology();
+
+  // Paso 5: Simplificación QEM adaptativa por curvatura (reutilizando decimateMeshQEM)
+  const sol = Math.max(0, Math.min(1, Number(solidity ?? 0.8)));
+  if (sol > 0 && outVerts.length > 280) {
+    const baseTarget = Math.min(2000, Math.max(750, Math.round(origVertCount * 0.95)));
+    const solFactor = Math.max(0.45, 1.7 - 1.15 * sol);
+    const targetVerts = Math.max(240, Math.min(outVerts.length - 1, Math.round(baseTarget * solFactor)));
+    if (outVerts.length > targetVerts) {
+      decimateMeshQEM(editableMesh, targetVerts, {
+        preserveUvs: false,
+        preserveCreases: false,
+        protectBoundaries: false,
+      });
+    }
+  }
+
+  const finalVerts = editableMesh.verts;
+  const finalFaces = editableMesh.faces;
+
   // Verificar volumen con signo positivo (devanado CCW hacia afuera)
   let signedVol = 0;
-  for (let fi = 0; fi < outFaces.length; fi++) {
-    const f = outFaces[fi];
-    const p0 = outVerts[f[0]];
+  for (let fi = 0; fi < finalFaces.length; fi++) {
+    const f = finalFaces[fi];
+    const p0 = finalVerts[f[0]];
     for (let k = 1; k + 1 < f.length; k++) {
-      const p1 = outVerts[f[k]], p2 = outVerts[f[k + 1]];
+      const p1 = finalVerts[f[k]], p2 = finalVerts[f[k + 1]];
       signedVol +=
         p0.x * (p1.y * p2.z - p1.z * p2.y) -
         p0.y * (p1.x * p2.z - p1.z * p2.x) +
@@ -3920,18 +4786,18 @@ export function performOrganicSdfUnion(editableMesh, {
     }
   }
   if (signedVol < 0) {
-    for (let fi = 0; fi < outFaces.length; fi++) outFaces[fi].reverse();
+    for (let fi = 0; fi < finalFaces.length; fi++) finalFaces[fi].reverse();
   }
 
   // Generar UVs triplanares continuas normalizadas al rango de la malla
-  const outUvs = new Array(outFaces.length);
+  const outUvs = new Array(finalFaces.length);
   const invSpan = 1 / maxSpan;
-  for (let fi = 0; fi < outFaces.length; fi++) {
-    const f = outFaces[fi];
-    const n = computeFaceUnitNormal(f, outVerts) || { x: 0, y: 1, z: 0 };
+  for (let fi = 0; fi < finalFaces.length; fi++) {
+    const f = finalFaces[fi];
+    const n = computeFaceUnitNormal(f, finalVerts) || { x: 0, y: 1, z: 0 };
     const ax = Math.abs(n.x), ay = Math.abs(n.y), az = Math.abs(n.z);
     outUvs[fi] = f.map((vi) => {
-      const p = outVerts[vi];
+      const p = finalVerts[vi];
       if (ax >= ay && ax >= az) {
         return [(p.z - gMinZ) * invSpan, (p.y - gMinY) * invSpan];
       }
@@ -3942,9 +4808,6 @@ export function performOrganicSdfUnion(editableMesh, {
     });
   }
 
-  const origFaceCount = editableMesh.faces.length;
-  editableMesh.verts = outVerts;
-  editableMesh.faces = outFaces;
   editableMesh.faceUvs = outUvs;
   editableMesh.looseEdges = [];
   editableMesh.creases = new Map();
@@ -3953,6 +4816,6 @@ export function performOrganicSdfUnion(editableMesh, {
   return {
     performed: true,
     removedInsideCount: origFaceCount,
-    splitFaceCount: outFaces.length,
+    splitFaceCount: finalFaces.length,
   };
 }

@@ -168,6 +168,13 @@ export const dom = {
   editSubsurfSmoothnessNum: el('edit-subsurf-smoothness-num'),
   editSubsurfCage: el('edit-subsurf-cage'),
   editSubsurfAlwaysCage: el('edit-subsurf-always-cage'),
+  editDensityBadge: el('edit-density-badge'),
+  btnEditDensityDec: el('btn-edit-density-dec'),
+  editDensityVal: el('edit-density-val'),
+  btnEditDensityInc: el('btn-edit-density-inc'),
+  editDensityScale: el('edit-density-scale'),
+  editDensityScaleNum: el('edit-density-scale-num'),
+  btnEditDensityApply: el('btn-edit-density-apply'),
 
   textGroup: el('text-group'),
   textContent: el('text-content'),

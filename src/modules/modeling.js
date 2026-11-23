@@ -1,9 +1,15 @@
 export { EditableMesh, edgeKey } from '../modeling/EditableMesh.js';
 export {
   MAX_SUBSURF_FACES,
+  MIN_DENSITY_VERTS,
+  MAX_DENSITY_FACES,
+  MAX_DENSITY_VERTS,
   estimateCatmullClarkFaces,
   getMaxAllowedSubsurfLevel,
   canIncrementSubsurf,
+  canIncreaseMeshDensity,
+  canDecreaseMeshDensity,
+  adjustMeshVertexDensity,
   catmullClarkStep,
   catmullClark,
   getMeshSubsurf,
@@ -27,6 +33,7 @@ export {
   computeFaceShellIds,
   performVolumetricUnionIfNeeded,
   performOrganicSdfUnion,
+  decimateMeshQEM,
   pruneNonManifoldFlaps,
   collapseTinySeamSlivers,
   smoothUnionSeam,

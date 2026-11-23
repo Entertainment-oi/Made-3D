@@ -11,6 +11,7 @@ import {
   snapshotMeshModelingState,
   restoreMeshModelingState,
   isSubsurfSupported,
+  adjustMeshVertexDensity,
 } from './SubdivisionSurface.js';
 
 export const EDIT_SELECTION_MODES = ['vertex', 'edge', 'face'];
@@ -515,6 +516,35 @@ export class MeshEditor {
     const base = this.baseMesh;
     if (!base) return 0;
     return base.getSelectionAverageCrease(this.selectionMode, this.getActiveSelectionSet());
+  }
+
+  adjustVertexDensity(opts = {}) {
+    const mesh = this.mesh;
+    const base = this.baseMesh;
+    if (!mesh || !base) return { changed: false, error: 'No hay malla activa para editar.' };
+
+    const beforeState = snapshotMeshModelingState(mesh);
+    const res = adjustMeshVertexDensity(base, opts);
+    if (!res.changed) return res;
+
+    this.clearSelection({ exitMultiSelect: false });
+    syncMeshSubsurf(mesh);
+    const afterState = snapshotMeshModelingState(mesh);
+
+    this._attached?.onEditCommit?.({
+      mesh,
+      beforeState,
+      afterState,
+      label: `Ajustar densidad (${res.beforeVerts} → ${res.afterVerts} V)`,
+    });
+    this._attached?.onSelectionChange?.(this.getStats());
+    return {
+      changed: true,
+      beforeVerts: res.beforeVerts,
+      afterVerts: res.afterVerts,
+      faceCount: res.faceCount,
+      stats: this.getStats(),
+    };
   }
 
   getSelectionCentroidLocal(out = new Vec3()) {

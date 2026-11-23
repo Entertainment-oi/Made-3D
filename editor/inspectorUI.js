@@ -86,6 +86,9 @@ import {
   runEditBridgeFill,
   runEditMerge,
   runEditCrease,
+  updateEditDensityPreview,
+  runEditDensityStep,
+  runEditDensityScale,
   getSelectedMergeTargetMeshes,
 } from './editController.js';
 import {
@@ -1213,6 +1216,27 @@ export function bindUI() {
   document.querySelectorAll('[data-edit-crease]').forEach((btn) => {
     btn.addEventListener('click', () => runEditCrease(Number(btn.dataset.editCrease)));
   });
+
+  // ---- Densidad de vértices (Agrandar / Disminuir / %) ----
+  dom.btnEditDensityDec?.addEventListener('click', () => runEditDensityStep(-1));
+  dom.btnEditDensityInc?.addEventListener('click', () => runEditDensityStep(1));
+  {
+    const syncDensityInputs = (val, sourceEl) => {
+      const num = Number(val);
+      if (!Number.isFinite(num)) return;
+      const clamped = String(Math.round(Math.max(20, Math.min(300, num))));
+      if (dom.editDensityScale && dom.editDensityScale !== sourceEl) dom.editDensityScale.value = clamped;
+      if (dom.editDensityScaleNum && dom.editDensityScaleNum !== sourceEl) dom.editDensityScaleNum.value = clamped;
+      updateEditDensityPreview();
+    };
+    dom.editDensityScale?.addEventListener('input', (e) => syncDensityInputs(e.target.value, dom.editDensityScale));
+    dom.editDensityScaleNum?.addEventListener('input', (e) => syncDensityInputs(e.target.value, dom.editDensityScaleNum));
+    dom.editDensityScaleNum?.addEventListener('change', (e) => syncDensityInputs(e.target.value, null));
+    dom.btnEditDensityApply?.addEventListener('click', () => {
+      const pct = dom.editDensityScaleNum?.value ?? dom.editDensityScale?.value ?? 100;
+      runEditDensityScale(pct);
+    });
+  }
 
   // ---- Alisar (Subdivisión suave) compartido Objeto & Edición ----
   dom.btnSubsurfDec?.addEventListener('click', () => stepSelectedSubsurf(-1));

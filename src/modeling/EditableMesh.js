@@ -3552,6 +3552,7 @@ export class EditableMesh {
         const organicRes = performOrganicSdfUnion(this, {
           shellIds,
           seamSmooth,
+          solidity,
         });
         if (organicRes && organicRes.performed) {
           didUnion = true;

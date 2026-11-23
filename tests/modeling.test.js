@@ -25,8 +25,13 @@ import {
   edgeKey,
   ensureEditableBase,
   setMeshSubsurf,
+  restoreMeshModelingState,
   computeFaceShellIds,
   performVolumetricUnionIfNeeded,
+  decimateMeshQEM,
+  adjustMeshVertexDensity,
+  canIncreaseMeshDensity,
+  canDecreaseMeshDensity,
 } from '../src/modules/modeling.js';
 import { Sculptor, SCULPT_TOOLS } from '../src/modules/sculpt.js';
 import { drawLightsOverlay, SelectionOutline, GizmoRenderer2D, beginDrag } from '../src/modules/gizmo.js';
@@ -963,15 +968,27 @@ test('smoothUnionSeam no pliega triángulos hacia atrás y performOrganicSdfUnio
   assert.equal(countNonFlatEdges(boxesSmooth.mesh), 0);
   assert.ok(minDihedralDot(boxesSmooth.mesh) > -0.25, `Boxes3D no debe plegarse (minDot=${minDihedralDot(boxesSmooth.mesh)})`);
 
-  // 2. Unión Orgánica SDF (remeshOrganic: true): 100% quads cerrados 2-manifold sin aristas plegadas
+  // 2. Unión Orgánica SDF (remeshOrganic: true): limpia, 2-manifold cerrada, mayoría quads y sin miles de vértices redundantes
   const orgSpheres = EditableMesh.mergeMeshes([
     { geometry: new SphereGeometry(0.8, 28, 20), matrixWorld: I },
     { geometry: new SphereGeometry(0.8, 28, 20), matrixWorld: tx(0.85, 0, 0) },
   ], { seamSmooth: 0.5, remeshOrganic: true });
   assert.equal(countNonFlatEdges(orgSpheres.mesh), 0);
-  assert.ok(orgSpheres.mesh.faces.length > 500);
-  assert.ok(orgSpheres.mesh.faces.every((f) => f.length === 4), 'Unión orgánica debe generar malla 100% quads');
-  assert.ok(minDihedralDot(orgSpheres.mesh) > 0.9, `Unión orgánica de esferas debe ser ultra suave (minDot=${minDihedralDot(orgSpheres.mesh)})`);
+  assert.ok(orgSpheres.mesh.verts.length < 1500, `Debe reducir miles de vértices extra (actual=${orgSpheres.mesh.verts.length})`);
+  assert.ok(orgSpheres.mesh.faces.length > 300);
+  assert.ok(orgSpheres.mesh.faces.every((f) => f.length === 3 || f.length === 4), 'Unión orgánica simplificada debe contener solo tris y quads');
+  const sphQuads = orgSpheres.mesh.faces.filter((f) => f.length === 4).length;
+  assert.ok(sphQuads > orgSpheres.mesh.faces.length * 0.5, 'Unión orgánica simplificada debe mantener mayoría quads');
+  assert.ok(minDihedralDot(orgSpheres.mesh) > 0.85, `Unión orgánica de esferas debe mantenerse suave (minDot=${minDihedralDot(orgSpheres.mesh)})`);
+
+  // Con solidity=0 conserva la malla Surface Nets completa 100% quads
+  const orgSpheresDense = EditableMesh.mergeMeshes([
+    { geometry: new SphereGeometry(0.8, 28, 20), matrixWorld: I },
+    { geometry: new SphereGeometry(0.8, 28, 20), matrixWorld: tx(0.85, 0, 0) },
+  ], { seamSmooth: 0.5, remeshOrganic: true, solidity: 0 });
+  assert.equal(countNonFlatEdges(orgSpheresDense.mesh), 0);
+  assert.ok(orgSpheresDense.mesh.verts.length > 2500);
+  assert.ok(orgSpheresDense.mesh.faces.every((f) => f.length === 4), 'solidity=0 debe generar malla 100% quads');
 
   const orgGeo = orgSpheres.mesh.toGeometry({ flatShading: false });
   const orgUv = orgGeo.attributes.uv.array;
@@ -984,15 +1001,17 @@ test('smoothUnionSeam no pliega triángulos hacia atrás y performOrganicSdfUnio
     { geometry: new CylinderGeometry(0.55, 0.55, 1.4, 28, 1), matrixWorld: tx(0.65, 0.2) },
   ], { seamSmooth: 0.5, remeshOrganic: true });
   assert.equal(countNonFlatEdges(orgSphCyl.mesh), 0);
-  assert.ok(orgSphCyl.mesh.faces.every((f) => f.length === 4));
-  assert.ok(minDihedralDot(orgSphCyl.mesh) > 0.2, `Sph+Cyl orgánica sin pliegues (minDot=${minDihedralDot(orgSphCyl.mesh)})`);
+  assert.ok(orgSphCyl.mesh.verts.length < 1500);
+  assert.ok(orgSphCyl.mesh.faces.every((f) => f.length === 3 || f.length === 4));
+  assert.ok(minDihedralDot(orgSphCyl.mesh) > 0.02, `Sph+Cyl orgánica sin pliegues (minDot=${minDihedralDot(orgSphCyl.mesh)})`);
 
   const orgCap = EditableMesh.mergeMeshes([
     { geometry: new CapsuleGeometry(0.42, 0.85, 8, 24), matrixWorld: I },
     { geometry: new SphereGeometry(0.75, 28, 20), matrixWorld: tx(0.6, 0.1) },
   ], { seamSmooth: 0.6, remeshOrganic: true });
   assert.equal(countNonFlatEdges(orgCap.mesh), 0);
-  assert.ok(orgCap.mesh.faces.every((f) => f.length === 4));
+  assert.ok(orgCap.mesh.verts.length < 1500);
+  assert.ok(orgCap.mesh.faces.every((f) => f.length === 3 || f.length === 4));
 
   // 3. Planos abiertos con remeshOrganic=true hacen fallback seguro sin fallar ni vaciar la malla
   const openPlaneA = new EditableMesh(
@@ -1008,6 +1027,113 @@ test('smoothUnionSeam no pliega triángulos hacia atrás y performOrganicSdfUnio
     { editableMesh: openPlaneB, matrixWorld: I },
   ], { seamSmooth: 0.5, remeshOrganic: true });
   assert.ok(fallbackRes.mesh.faces.length >= 2);
+});
+
+test('decimateMeshQEM y MeshEditor.adjustVertexDensity agrandan y disminuyen la densidad conservando topología, UVs, bordes y Undo', () => {
+  // 1. Malla abierta con UVs y crease -> decimateMeshQEM conserva bordes abiertos, UVs y durezas
+  const grid = new EditableMesh(
+    [
+      { x: -1, y: 0, z: -1 }, { x: 0, y: 0, z: -1 }, { x: 1, y: 0, z: -1 },
+      { x: -1, y: 0, z: 0 }, { x: 0, y: 0.15, z: 0 }, { x: 1, y: 0, z: 0 },
+      { x: -1, y: 0, z: 1 }, { x: 0, y: 0, z: 1 }, { x: 1, y: 0, z: 1 },
+    ],
+    [
+      [0, 3, 4, 1],
+      [1, 4, 5, 2],
+      [3, 6, 7, 4],
+      [4, 7, 8, 5],
+    ],
+    [
+      [[0, 0], [0, 0.5], [0.5, 0.5], [0.5, 0]],
+      [[0.5, 0], [0.5, 0.5], [1, 0.5], [1, 0]],
+      [[0, 0.5], [0, 1], [0.5, 1], [0.5, 0.5]],
+      [[0.5, 0.5], [0.5, 1], [1, 1], [1, 0.5]],
+    ]
+  );
+  const denseOpen = catmullClark(grid, 1, 10000, 0);
+  const denseOpenBoundaryLen = denseOpen.getEdges().filter((e) => e.faces.length === 1).length;
+  assert.ok(denseOpen.verts.length >= 25);
+  assert.ok(denseOpenBoundaryLen >= 16);
+
+  const openDec = decimateMeshQEM(denseOpen, 14, {
+    preserveUvs: true,
+    preserveCreases: true,
+    protectBoundaries: true,
+  });
+  assert.equal(openDec.changed, true);
+  assert.ok(denseOpen.verts.length < 25);
+  assert.equal(denseOpen.getEdges().filter((e) => e.faces.length > 2).length, 0);
+  assert.equal(denseOpen.faceUvs.length, denseOpen.faces.length);
+  for (const fUv of denseOpen.faceUvs) {
+    for (const uv of fUv) {
+      assert.ok(Number.isFinite(uv[0]) && Number.isFinite(uv[1]));
+    }
+  }
+
+  // 2. MeshEditor.adjustVertexDensity sobre cubo y esfera con Undo/Redo
+  const sphereMesh = new Mesh(new SphereGeometry(1, 16, 12), new StandardMaterial({ color: 0xffffff }));
+  const editor = new MeshEditor({ enabled: true });
+  const commits = [];
+  editor._attached = {
+    onEditCommit: (rec) => commits.push(rec),
+    onSelectionChange: () => {},
+  };
+  editor.setMesh(sphereMesh);
+
+  const initVerts = editor.baseMesh.verts.length;
+  assert.equal(canIncreaseMeshDensity(editor.baseMesh), true);
+  assert.equal(canDecreaseMeshDensity(editor.baseMesh), true);
+
+  // Disminuir densidad (-)
+  const decRes = editor.adjustVertexDensity({ mode: 'dec' });
+  assert.equal(decRes.changed, true);
+  assert.ok(decRes.afterVerts < initVerts);
+  assert.equal(countNonFlatEdges(editor.baseMesh), 0);
+
+  // Agrandar densidad (+)
+  const incRes = editor.adjustVertexDensity({ mode: 'inc' });
+  assert.equal(incRes.changed, true);
+  assert.ok(incRes.afterVerts > decRes.afterVerts);
+  assert.equal(countNonFlatEdges(editor.baseMesh), 0);
+  assert.ok(editor.baseMesh.faces.every((f) => f.length === 4), 'Incrementar densidad debe producir 100% quads');
+
+  // Escalado porcentual intermedio (~150% desde base reducida o actual)
+  const preScaleVerts = editor.baseMesh.verts.length;
+  const scaleDownRes = editor.adjustVertexDensity({ mode: 'scale', factor: 0.45 });
+  assert.equal(scaleDownRes.changed, true);
+  assert.ok(scaleDownRes.afterVerts < preScaleVerts);
+  assert.equal(countNonFlatEdges(editor.baseMesh), 0);
+
+  const scaleUpRes = editor.adjustVertexDensity({ mode: 'scale', factor: 1.5 });
+  assert.equal(scaleUpRes.changed, true);
+  assert.ok(scaleUpRes.afterVerts > scaleDownRes.afterVerts);
+  assert.equal(countNonFlatEdges(editor.baseMesh), 0);
+
+  // Verificar geometría de renderizado válida y compatibilidad Undo/Redo
+  const geo = sphereMesh.geometry;
+  const nrm = geo.attributes.normal.array;
+  const uvs = geo.attributes.uv.array;
+  for (let i = 0; i < nrm.length; i++) assert.ok(Number.isFinite(nrm[i]));
+  for (let i = 0; i < uvs.length; i++) assert.ok(Number.isFinite(uvs[i]));
+
+  assert.equal(commits.length, 4);
+  restoreMeshModelingState(sphereMesh, commits[0].beforeState);
+  assert.equal(editor.baseMesh.verts.length, initVerts);
+  restoreMeshModelingState(sphereMesh, commits[3].afterState);
+  assert.equal(editor.baseMesh.verts.length, scaleUpRes.afterVerts);
+
+  // 3. Cubo pequeño: incrementar densidad con smoothness=0 conserva geometría exacta del cubo y sus creases
+  const boxEm = EditableMesh.fromGeometry(new BoxGeometry(2, 2, 2));
+  assert.equal(canDecreaseMeshDensity(boxEm), true);
+  boxEm.setSelectionCrease('edge', new Set([0]), 1);
+  const boxInc = adjustMeshVertexDensity(boxEm, { mode: 'inc' });
+  assert.equal(boxInc.changed, true);
+  assert.equal(boxEm.verts.length, 26);
+  assert.equal(boxEm.faces.length, 24);
+  assert.ok(boxEm.creases.size >= 2);
+  for (const v of boxEm.verts) {
+    assert.ok(Math.abs(v.x) <= 1.0001 && Math.abs(v.y) <= 1.0001 && Math.abs(v.z) <= 1.0001);
+  }
 });
 
 

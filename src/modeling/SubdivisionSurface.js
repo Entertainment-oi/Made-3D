@@ -1,6 +1,10 @@
 import { EditableMesh, edgeKey } from './EditableMesh.js';
+import { decimateMeshQEM } from './MeshUnion.js';
 
 export const MAX_SUBSURF_FACES = 80000;
+export const MIN_DENSITY_VERTS = 4;
+export const MAX_DENSITY_FACES = 45000;
+export const MAX_DENSITY_VERTS = 45000;
 
 /**
  * Ejecuta un paso de subdivisión Catmull-Clark sobre un EditableMesh,
@@ -515,4 +519,145 @@ export function cloneSubsurfState(srcMesh, dstMesh) {
   if (dstMesh._subsurf.baseMesh && dstMesh._subsurf.level > 0) {
     syncMeshSubsurf(dstMesh);
   }
+}
+
+function estimateLinearSubdivCounts(editableMesh) {
+  if (!editableMesh || !editableMesh.faces.length) {
+    return { verts: 0, faces: 0 };
+  }
+  const topo = editableMesh.getTopology();
+  let nextFaces = 0;
+  for (let i = 0; i < editableMesh.faces.length; i++) {
+    nextFaces += editableMesh.faces[i].length;
+  }
+  const nextVerts = editableMesh.verts.length + editableMesh.faces.length + topo.edges.length;
+  return { verts: nextVerts, faces: nextFaces };
+}
+
+export function canIncreaseMeshDensity(editableMesh, maxFaces = MAX_DENSITY_FACES, maxVerts = MAX_DENSITY_VERTS) {
+  if (!editableMesh || !editableMesh.faces.length || !editableMesh.verts.length) return false;
+  const est = estimateLinearSubdivCounts(editableMesh);
+  return est.faces <= maxFaces && est.verts <= maxVerts;
+}
+
+export function canDecreaseMeshDensity(editableMesh) {
+  if (!editableMesh || !editableMesh.faces.length || !editableMesh.verts.length) return false;
+  return editableMesh.verts.length > 5 && editableMesh.faces.length > 4;
+}
+
+/**
+ * Aumenta o disminuye la densidad de vértices de un EditableMesh conservando la forma, UVs y durezas.
+ * - mode: 'inc' | 'dec' | 'scale' | 'target'
+ */
+export function adjustMeshVertexDensity(editableMesh, {
+  mode = 'target',
+  factor = 1,
+  targetVerts = null,
+  maxFaces = MAX_DENSITY_FACES,
+  maxVerts = MAX_DENSITY_VERTS,
+} = {}) {
+  if (!editableMesh || !editableMesh.verts.length || !editableMesh.faces.length) {
+    return { changed: false, error: 'No hay geometría editable activa.' };
+  }
+
+  const beforeVerts = editableMesh.verts.length;
+
+  const applyFromEditable = (nextMesh) => {
+    editableMesh.verts = nextMesh.verts;
+    editableMesh.faces = nextMesh.faces;
+    editableMesh.faceUvs = nextMesh.faceUvs;
+    editableMesh.looseEdges = nextMesh.looseEdges;
+    editableMesh.creases = nextMesh.creases;
+    editableMesh.invalidateTopology();
+  };
+
+  if (mode === 'inc') {
+    if (!canIncreaseMeshDensity(editableMesh, maxFaces, maxVerts)) {
+      return { changed: false, error: 'Se alcanzó el límite seguro de densidad de vértices.' };
+    }
+    const next = catmullClarkStep(editableMesh, 0);
+    if (next.verts.length <= beforeVerts) {
+      return { changed: false, error: 'No se pudo aumentar más la densidad.' };
+    }
+    applyFromEditable(next);
+    return {
+      changed: true,
+      beforeVerts,
+      afterVerts: editableMesh.verts.length,
+      faceCount: editableMesh.faces.length,
+    };
+  }
+
+  if (mode === 'dec') {
+    if (!canDecreaseMeshDensity(editableMesh)) {
+      return { changed: false, error: 'La malla ya tiene la densidad mínima posible.' };
+    }
+    const ratio = Number(factor) > 0 && Number(factor) < 1 ? Number(factor) : 0.65;
+    const goal = Math.max(MIN_DENSITY_VERTS, Math.min(beforeVerts - 1, Math.round(beforeVerts * ratio)));
+    const res = decimateMeshQEM(editableMesh, goal, {
+      preserveUvs: true,
+      preserveCreases: true,
+      protectBoundaries: true,
+    });
+    if (!res.changed) {
+      return { changed: false, error: 'No se pudo reducir más sin deformar la malla.' };
+    }
+    return res;
+  }
+
+  // mode === 'scale' o 'target'
+  const rawGoal = targetVerts !== null && targetVerts !== undefined
+    ? Math.round(Number(targetVerts))
+    : Math.round(beforeVerts * (Number(factor) || 1));
+  if (!Number.isFinite(rawGoal)) {
+    return { changed: false, error: 'Cantidad de vértices inválida.' };
+  }
+  const goal = Math.max(MIN_DENSITY_VERTS, Math.min(maxVerts, rawGoal));
+
+  if (goal === beforeVerts) {
+    return { changed: false, error: 'La densidad solicitada ya coincide con la actual.' };
+  }
+
+  if (goal < beforeVerts) {
+    if (!canDecreaseMeshDensity(editableMesh)) {
+      return { changed: false, error: 'La malla ya tiene la densidad mínima posible.' };
+    }
+    const res = decimateMeshQEM(editableMesh, goal, {
+      preserveUvs: true,
+      preserveCreases: true,
+      protectBoundaries: true,
+    });
+    if (!res.changed) {
+      return { changed: false, error: 'No se pudo reducir más sin deformar la silueta.' };
+    }
+    return res;
+  }
+
+  // goal > beforeVerts: subdividir linealmente (smoothness = 0) y ajustar con QEM si sobra densidad
+  let current = editableMesh.clone();
+  for (let pass = 0; pass < 2; pass++) {
+    if (!canIncreaseMeshDensity(current, maxFaces, maxVerts)) break;
+    current = catmullClarkStep(current, 0);
+    if (current.verts.length >= goal) break;
+  }
+
+  if (current.verts.length <= beforeVerts) {
+    return { changed: false, error: 'Se alcanzó el límite seguro de densidad de vértices.' };
+  }
+
+  if (current.verts.length > goal && goal > beforeVerts && current.verts.length * 0.88 > goal) {
+    decimateMeshQEM(current, goal, {
+      preserveUvs: true,
+      preserveCreases: true,
+      protectBoundaries: true,
+    });
+  }
+
+  applyFromEditable(current);
+  return {
+    changed: editableMesh.verts.length !== beforeVerts,
+    beforeVerts,
+    afterVerts: editableMesh.verts.length,
+    faceCount: editableMesh.faces.length,
+  };
 }

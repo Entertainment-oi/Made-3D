@@ -360,6 +360,21 @@
                   <button type="button" class="mini-btn" data-edit-crease="0.5">Medio</button>
                   <button type="button" class="mini-btn" data-edit-crease="1">Filo duro</button>
                 </div>
+                <div class="flyout-divider"></div>
+                <div class="flyout-header">
+                  <span class="flyout-title">Densidad</span>
+                  <span id="edit-density-badge" class="flyout-badge">0 V</span>
+                </div>
+                <div class="subsurf-stepper-row">
+                  <button type="button" id="btn-edit-density-dec" class="stepper-btn" aria-label="Disminuir densidad de vértices" title="Disminuir vértices manteniendo la forma">−</button>
+                  <span id="edit-density-val" class="stepper-value">0 V</span>
+                  <button type="button" id="btn-edit-density-inc" class="stepper-btn" aria-label="Agrandar densidad de vértices" title="Agrandar densidad de vértices">+</button>
+                </div>
+                <div class="flyout-slider-row">
+                  <input type="range" id="edit-density-scale" min="20" max="300" step="5" value="100" title="Porcentaje objetivo de vértices (20% a 300%)" />
+                  <input type="number" id="edit-density-scale-num" class="num-mini" min="20" max="300" step="5" value="100" title="Porcentaje de densidad" />
+                  <button type="button" id="btn-edit-density-apply" class="mini-accent-btn">Aplicar</button>
+                </div>
                 <div id="edit-mesh-info" class="flyout-info"></div>
               </div>
             </div>

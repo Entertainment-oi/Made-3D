@@ -20,8 +20,10 @@ export function estimateCommandBytes(cmd) {
   let bytes = 512;
 
   if (cmd.type === 'sculpt' && cmd.diff) {
-    const { indices, beforePos, afterPos, beforeNor, afterNor } = cmd.diff;
+    const { indices, before, after, beforePos, afterPos, beforeNor, afterNor } = cmd.diff;
     if (indices) bytes += indices.byteLength || indices.length * 4;
+    if (before) bytes += before.byteLength || before.length * 4;
+    if (after) bytes += after.byteLength || after.length * 4;
     if (beforePos) bytes += beforePos.byteLength || beforePos.length * 4;
     if (afterPos) bytes += afterPos.byteLength || afterPos.length * 4;
     if (beforeNor) bytes += beforeNor.byteLength || beforeNor.length * 4;
@@ -71,6 +73,27 @@ function syncPrimaryLightRefs() {
     let foundPoint = null;
     viewport.scene.traverse((n) => { if (!foundPoint && n.isPointLight) foundPoint = n; });
     lighting.pointLight = foundPoint;
+  }
+}
+
+function restoreSubsurfSnapshot(mesh, snap, fallbackGeo = null) {
+  if (!mesh || !snap) return;
+  const s = snap.subsurf;
+  mesh._subsurf = s
+    ? {
+        level: s.level | 0,
+        smoothness: s.smoothness ?? 1,
+        smoothShading: Boolean(s.smoothShading),
+        showCage: Boolean(s.showCage),
+        alwaysShowCage: Boolean(s.alwaysShowCage),
+        baseMesh: s.baseMesh ? s.baseMesh.clone() : null,
+      }
+    : null;
+  mesh._subsurfDirtyFromGeometry = Boolean(snap.dirty);
+  const geo = fallbackGeo || mesh.geometry;
+  if (geo) {
+    geo._modifiedBySculpt = Boolean(snap.modFlag);
+    geo._isGeneratedSubsurf = Boolean(snap.genFlag);
   }
 }
 
@@ -242,6 +265,12 @@ export class HistoryManager {
     if (edit.active && edit.editor.mesh && isDescendantOrSelf(edit.editor.mesh, target)) {
       this._hooks.setEditMode?.(false);
     }
+    if (sculpt.sculptor?._stroke?.mesh && isDescendantOrSelf(sculpt.sculptor._stroke.mesh, target)) {
+      sculpt.sculptor.cancelStroke();
+    }
+    if (sculpt.sculptor?.hover?.mesh && isDescendantOrSelf(sculpt.sculptor.hover.mesh, target)) {
+      sculpt.sculptor.hover = null;
+    }
     if (viewport.gizmo && viewport.gizmo.objects.some((item) => isDescendantOrSelf(item, target))) {
       viewport.gizmo.detach();
     }
@@ -354,7 +383,16 @@ export class HistoryManager {
       }
       setStatus('Creación deshecha.');
     } else if (cmd.type === 'sculpt') {
-      Sculptor.applyDiff(cmd.geo, cmd.diff, false, cmd.mesh);
+      if (cmd.beforeState) {
+        Sculptor.applyDiff(cmd.geo, cmd.diff, false, null);
+        if (cmd.mesh && cmd.mesh.geometry !== cmd.geo) {
+          if (typeof cmd.mesh.setGeometry === 'function') cmd.mesh.setGeometry(cmd.geo);
+          else cmd.mesh.geometry = cmd.geo;
+        }
+        restoreSubsurfSnapshot(cmd.mesh, cmd.beforeState, cmd.geo);
+      } else {
+        Sculptor.applyDiff(cmd.geo, cmd.diff, false, cmd.mesh);
+      }
       sculpt.sculptor.hover = null;
       if (edit.active && edit.editor.mesh === cmd.mesh) edit.editor.setMesh(cmd.mesh);
       if (cmd.mesh && isInScene(cmd.mesh)) this._hooks.selectObject?.(cmd.mesh);
@@ -363,8 +401,13 @@ export class HistoryManager {
       if (cmd.mesh) {
         if (cmd.mesh.setGeometry) cmd.mesh.setGeometry(cmd.beforeGeo);
         else cmd.mesh.geometry = cmd.beforeGeo;
-        if (cmd.mesh._subsurf) syncEditableBaseFromGeometry(cmd.mesh);
-        else cmd.mesh._subsurfDirtyFromGeometry = false;
+        if ('beforeSubsurf' in cmd) {
+          restoreSubsurfSnapshot(cmd.mesh, cmd.beforeSubsurf, cmd.beforeGeo);
+        } else if (cmd.mesh._subsurf) {
+          syncEditableBaseFromGeometry(cmd.mesh);
+        } else {
+          cmd.mesh._subsurfDirtyFromGeometry = false;
+        }
         if (edit.active && edit.editor.mesh === cmd.mesh) edit.editor.setMesh(cmd.mesh);
         if (cmd.beforeName !== undefined) cmd.mesh.name = cmd.beforeName;
         if (isInScene(cmd.mesh)) this._hooks.selectObject?.(cmd.mesh);
@@ -467,7 +510,16 @@ export class HistoryManager {
       if (isInScene(cmd.obj)) this._hooks.selectObject?.(cmd.obj);
       setStatus('Creación rehecha.');
     } else if (cmd.type === 'sculpt') {
-      Sculptor.applyDiff(cmd.geo, cmd.diff, true, cmd.mesh);
+      if (cmd.afterState) {
+        Sculptor.applyDiff(cmd.geo, cmd.diff, true, null);
+        if (cmd.mesh && cmd.mesh.geometry !== cmd.geo) {
+          if (typeof cmd.mesh.setGeometry === 'function') cmd.mesh.setGeometry(cmd.geo);
+          else cmd.mesh.geometry = cmd.geo;
+        }
+        restoreSubsurfSnapshot(cmd.mesh, cmd.afterState, cmd.geo);
+      } else {
+        Sculptor.applyDiff(cmd.geo, cmd.diff, true, cmd.mesh);
+      }
       sculpt.sculptor.hover = null;
       if (edit.active && edit.editor.mesh === cmd.mesh) edit.editor.setMesh(cmd.mesh);
       if (cmd.mesh && isInScene(cmd.mesh)) this._hooks.selectObject?.(cmd.mesh);
@@ -476,8 +528,14 @@ export class HistoryManager {
       if (cmd.mesh) {
         if (cmd.mesh.setGeometry) cmd.mesh.setGeometry(cmd.afterGeo);
         else cmd.mesh.geometry = cmd.afterGeo;
-        if (cmd.mesh._subsurf) syncEditableBaseFromGeometry(cmd.mesh);
-        else cmd.mesh._subsurfDirtyFromGeometry = false;
+        if ('beforeSubsurf' in cmd) {
+          cmd.mesh._subsurf = null;
+          cmd.mesh._subsurfDirtyFromGeometry = false;
+        } else if (cmd.mesh._subsurf) {
+          syncEditableBaseFromGeometry(cmd.mesh);
+        } else {
+          cmd.mesh._subsurfDirtyFromGeometry = false;
+        }
         if (edit.active && edit.editor.mesh === cmd.mesh) edit.editor.setMesh(cmd.mesh);
         if (cmd.afterName !== undefined) cmd.mesh.name = cmd.afterName;
         if (isInScene(cmd.mesh)) this._hooks.selectObject?.(cmd.mesh);

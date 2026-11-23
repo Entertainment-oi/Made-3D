@@ -87,6 +87,8 @@ export class MeshEditor {
     this._W = 1;
     this._H = 1;
     this._dpr = 1;
+    this._normalMat3 = new Float32Array(9);
+    this._lastSpaceTap = 0;
   }
 
   static isEditable(obj) {
@@ -581,20 +583,185 @@ export class MeshEditor {
     return out;
   }
 
+  _localDirToWorld(lx, ly, lz, out = new Vec3()) {
+    const e = this.mesh.matrixWorld.elements;
+    out.set(
+      e[0] * lx + e[4] * ly + e[8] * lz,
+      e[1] * lx + e[5] * ly + e[9] * lz,
+      e[2] * lx + e[6] * ly + e[10] * lz
+    );
+    const len = out.length();
+    return len > 1e-8 ? out.multiplyScalar(1 / len) : null;
+  }
+
+  _localNormalToWorld(lx, ly, lz, out = new Vec3()) {
+    const m = this._normalMat3;
+    out.set(
+      m[0] * lx + m[3] * ly + m[6] * lz,
+      m[1] * lx + m[4] * ly + m[7] * lz,
+      m[2] * lx + m[5] * ly + m[8] * lz
+    );
+    const len = out.length();
+    return len > 1e-8 ? out.multiplyScalar(1 / len) : null;
+  }
+
+  getGizmoAxes() {
+    if (!this.mesh) {
+      return {
+        x: new Vec3(1, 0, 0),
+        y: new Vec3(0, 1, 0),
+        z: new Vec3(0, 0, 1),
+      };
+    }
+
+    this.mesh.updateWorldMatrix(true, false);
+    const bq = new Quat();
+    this.mesh.matrixWorld.decompose(_tmpPos, bq, _tmpScale);
+    const objX = new Vec3(1, 0, 0).applyQuaternion(bq).normalize();
+    const objY = new Vec3(0, 1, 0).applyQuaternion(bq).normalize();
+    const objZ = new Vec3(0, 0, 1).applyQuaternion(bq).normalize();
+
+    if (this.space !== 'local') {
+      return {
+        x: new Vec3(1, 0, 0),
+        y: new Vec3(0, 1, 0),
+        z: new Vec3(0, 0, 1),
+      };
+    }
+
+    const base = this.baseMesh;
+    if (!base) {
+      return { x: objX, y: objY, z: objZ };
+    }
+
+    this.mesh.matrixWorld.normalMatrix(this._normalMat3);
+
+    const orthoFrameFromNZ = (zAxis, tangentHint) => {
+      const z = zAxis.clone().normalize();
+      const x = new Vec3();
+      const candidates = [];
+      if (tangentHint) candidates.push(tangentHint);
+      candidates.push(objX, objZ, new Vec3(1, 0, 0), new Vec3(0, 0, 1), new Vec3(0, 1, 0));
+      let found = false;
+      for (let i = 0; i < candidates.length; i++) {
+        const c = candidates[i];
+        if (!c) continue;
+        x.copy(c).addScaledVector(z, -c.dot(z));
+        if (x.lengthSq() > 1e-8) {
+          x.normalize();
+          found = true;
+          break;
+        }
+      }
+      if (!found) x.set(1, 0, 0);
+      const y = new Vec3().crossVectors(z, x).normalize();
+      return { x, y, z };
+    };
+
+    if (this.selectionMode === 'face' && this.selectedFaces.size > 0) {
+      const sumN = new Vec3();
+      let lastFi = -1;
+      for (const fi of this.selectedFaces) {
+        if (fi < 0 || fi >= base.faces.length) continue;
+        base.computeFaceAreaNormal(fi, _tmpVec);
+        sumN.add(_tmpVec);
+        lastFi = fi;
+      }
+      const zAxis = sumN.lengthSq() > 1e-10
+        ? this._localNormalToWorld(sumN.x, sumN.y, sumN.z, new Vec3())
+        : null;
+      if (zAxis) {
+        let tanW = null;
+        if (lastFi >= 0) {
+          const f = base.faces[lastFi];
+          if (f && f.length >= 2) {
+            const va = base.verts[f[0]];
+            const vb = base.verts[f[1]];
+            tanW = this._localDirToWorld(vb.x - va.x, vb.y - va.y, vb.z - va.z, new Vec3());
+          }
+        }
+        return orthoFrameFromNZ(zAxis, tanW);
+      }
+    } else if (this.selectionMode === 'edge' && this.selectedEdges.size > 0) {
+      const edges = base.getEdges();
+      const sumN = new Vec3();
+      const faceSeen = new Set();
+      let lastEdge = null;
+      let edgeCount = 0;
+      for (const ei of this.selectedEdges) {
+        const edge = edges[ei];
+        if (!edge) continue;
+        lastEdge = edge;
+        edgeCount++;
+        if (edge.faces && edge.faces.length) {
+          for (let i = 0; i < edge.faces.length; i++) {
+            const fi = edge.faces[i];
+            if (faceSeen.has(fi)) continue;
+            faceSeen.add(fi);
+            base.computeFaceAreaNormal(fi, _tmpVec);
+            sumN.add(_tmpVec);
+          }
+        } else {
+          base.computeVertexNormal(edge.a, _tmpVec);
+          sumN.add(_tmpVec);
+          base.computeVertexNormal(edge.b, _tmpVec);
+          sumN.add(_tmpVec);
+        }
+      }
+
+      const nWorld = sumN.lengthSq() > 1e-10
+        ? this._localNormalToWorld(sumN.x, sumN.y, sumN.z, new Vec3())
+        : null;
+      const edgeDir = lastEdge
+        ? this._localDirToWorld(
+            base.verts[lastEdge.b].x - base.verts[lastEdge.a].x,
+            base.verts[lastEdge.b].y - base.verts[lastEdge.a].y,
+            base.verts[lastEdge.b].z - base.verts[lastEdge.a].z,
+            new Vec3()
+          )
+        : null;
+
+      if (edgeCount === 1 && edgeDir) {
+        const x = edgeDir;
+        const z = new Vec3();
+        const refList = [nWorld, objZ, objY, new Vec3(0, 1, 0), new Vec3(0, 0, 1)];
+        for (let i = 0; i < refList.length; i++) {
+          const ref = refList[i];
+          if (!ref) continue;
+          z.copy(ref).addScaledVector(x, -ref.dot(x));
+          if (z.lengthSq() > 1e-8) {
+            z.normalize();
+            const y = new Vec3().crossVectors(z, x).normalize();
+            return { x, y, z };
+          }
+        }
+      }
+      if (nWorld) {
+        return orthoFrameFromNZ(nWorld, edgeDir);
+      }
+    } else if (this.selectionMode === 'vertex' && this.selectedVertices.size > 0) {
+      const sumN = new Vec3();
+      for (const vi of this.selectedVertices) {
+        if (vi < 0 || vi >= base.verts.length) continue;
+        base.computeVertexNormal(vi, _tmpVec);
+        sumN.add(_tmpVec);
+      }
+      const zAxis = sumN.lengthSq() > 1e-10
+        ? this._localNormalToWorld(sumN.x, sumN.y, sumN.z, new Vec3())
+        : null;
+      if (zAxis) {
+        return orthoFrameFromNZ(zAxis, null);
+      }
+    }
+
+    return { x: objX, y: objY, z: objZ };
+  }
+
   _buildProxyGizmoState(camera, W, H) {
     const P = this._getSelectionCentroidWorld(new Vec3());
     if (!P || !camera) return null;
 
-    const bq = new Quat();
-    if (this.space === 'local' || this.transformMode === 'scale') {
-      this.mesh.matrixWorld.decompose(_tmpPos, bq, _tmpScale);
-    }
-
-    const ax = {
-      x: new Vec3(1, 0, 0).applyQuaternion(bq),
-      y: new Vec3(0, 1, 0).applyQuaternion(bq),
-      z: new Vec3(0, 0, 1).applyQuaternion(bq),
-    };
+    const ax = this.getGizmoAxes();
 
     camera.updateWorldMatrix(true, false);
     if (camera.updateViewMatrix) camera.updateViewMatrix();
@@ -1979,6 +2146,16 @@ export class MeshEditor {
             afterState,
             label: `${LABEL[d.type] || d.type} ${this.selectionMode === 'vertex' ? 'vértices' : this.selectionMode === 'edge' ? 'aristas' : 'caras'}`,
           });
+        } else if (d.key === 'free' || d.key === 'uni') {
+          const now = performance.now();
+          if (now - this._lastSpaceTap < 350) {
+            const nextSpace = this.space === 'world' ? 'local' : 'world';
+            this.setSpace(nextSpace);
+            this._attached?.onSpaceChange?.(nextSpace);
+            this._lastSpaceTap = 0;
+          } else {
+            this._lastSpaceTap = now;
+          }
         }
         return;
       }

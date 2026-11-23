@@ -306,6 +306,11 @@
                   <span class="flyout-label">Distancia</span>
                   <input type="number" id="edit-merge-dist" class="num-mini" min="0.0001" step="0.005" value="0.015" />
                 </div>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label" title="Qué tan consolidada y simplificada queda la unión (0% sin simplificar, 100% máxima unión)">Solidez</span>
+                  <input type="range" id="edit-weld-solidity" min="0" max="100" step="5" value="80" />
+                  <input type="number" id="edit-weld-solidity-num" class="num-mini" min="0" max="100" step="5" value="80" />
+                </div>
                 <label class="check-row-compact"><input type="checkbox" id="edit-weld-interior" checked /> Quitar caras internas</label>
                 <label class="check-row-compact"><input type="checkbox" id="edit-weld-stitch" checked /> Coser costuras (T)</label>
               </div>
@@ -360,9 +365,17 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/></svg>
               <span>Dibujar</span>
             </button>
+            <button type="button" class="brush-btn" data-sculpt-tool="carve" title="Hundir o excavar superficie">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 3v9m0 0l-3.5-3.5M12 12l3.5-3.5"/><path d="M3 15c2.5 0 4.5 4 9 4s6.5-4 9-4"/></svg>
+              <span>Hundir</span>
+            </button>
             <button type="button" class="brush-btn" data-sculpt-tool="clay" title="Añadir arcilla">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><ellipse cx="12" cy="14" rx="8" ry="5"/><path d="M6 12c0-3 2.5-6 6-6s6 3 6 6"/></svg>
               <span>Arcilla</span>
+            </button>
+            <button type="button" class="brush-btn" data-sculpt-tool="crease" title="Hundir surco o hendidura marcada">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M3 10l9 8 9-8"/><path d="M12 3v10"/></svg>
+              <span>Surco</span>
             </button>
             <button type="button" class="brush-btn" data-sculpt-tool="grab" title="Agarrar y estirar">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M18 11V6a2 2 0 0 0-4 0v4"/><path d="M14 10V4a2 2 0 0 0-4 0v6"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8l-1.5-1.5a2 2 0 0 0-2.8 2.8l5 5.2A4 4 0 0 0 9.5 22H16a4 4 0 0 0 4-4v-7a2 2 0 0 0-2-2z"/></svg>
@@ -375,6 +388,10 @@
             <button type="button" class="brush-btn" data-sculpt-tool="inflate" title="Inflar volumen">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
               <span>Inflar</span>
+            </button>
+            <button type="button" class="brush-btn" data-sculpt-tool="deflate" title="Desinflar / contraer hacia dentro">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><circle cx="12" cy="12" r="5"/><path d="M12 2v4m0 0l-2-2m2 2l2-2M12 22v-4m0 0l-2 2m2-2l2 2M2 12h4m0 0L4 10m2 2l-2 2M22 12h-4m0 0l2-2m-2 2l2 2"/></svg>
+              <span>Desinflar</span>
             </button>
             <button type="button" class="brush-btn" data-sculpt-tool="flatten" title="Aplanar superficie">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M4 18h16"/><path d="M7 10h10l-2 4H9z"/></svg>

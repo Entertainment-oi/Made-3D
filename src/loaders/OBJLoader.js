@@ -107,7 +107,7 @@ export class OBJLoader {
     const builder = () => {
       const key = obj + '\u0001' + grp + '\u0001' + mat;
       let b = groups.get(key);
-      if (!b) { b = { name: obj || grp || mat, mat, pos: [], nor: [], uv: [], idx: [], lookup: new Map(), hasN: false, missN: false, hasT: false }; groups.set(key, b); }
+      if (!b) { b = { name: obj || grp || mat, mat, pos: [], nor: [], vertHasN: [], uv: [], idx: [], lookup: new Map(), hasN: false, missN: false, hasT: false }; groups.set(key, b); }
       return b;
     };
     const corner = (b, tok) => {
@@ -123,8 +123,8 @@ export class OBJLoader {
       const vy = vi >= 0 && vi * 3 + 2 < V.length ? V[vi * 3 + 1] : 0;
       const vz = vi >= 0 && vi * 3 + 2 < V.length ? V[vi * 3 + 2] : 0;
       b.pos.push(vx, vy, vz);
-      if (ni >= 0 && ni * 3 + 2 < VN.length) { b.nor.push(VN[ni * 3], VN[ni * 3 + 1], VN[ni * 3 + 2]); b.hasN = true; }
-      else { b.nor.push(0, 0, 0); b.missN = true; }
+      if (ni >= 0 && ni * 3 + 2 < VN.length) { b.nor.push(VN[ni * 3], VN[ni * 3 + 1], VN[ni * 3 + 2]); b.vertHasN.push(1); b.hasN = true; }
+      else { b.nor.push(0, 0, 0); b.vertHasN.push(0); b.missN = true; }
       if (ti >= 0 && ti * 2 + 1 < VT.length) { b.uv.push(VT[ti * 2], VT[ti * 2 + 1]); b.hasT = true; }
       else b.uv.push(0, 0);
       if (!list) { list = []; b.lookup.set(vi, list); }
@@ -161,7 +161,30 @@ export class OBJLoader {
       if (!b.idx.length) continue;
       const g = new Geometry();
       g.setAttribute('position', Float32Array.from(b.pos), 3);
-      if (b.hasN && !b.missN) g.setAttribute('normal', Float32Array.from(b.nor), 3);
+      if (b.hasN) {
+        if (b.missN) {
+          for (let t = 0; t + 2 < b.idx.length; t += 3) {
+            const ia = b.idx[t], ib = b.idx[t + 1], ic = b.idx[t + 2];
+            const ax = b.pos[ia * 3], ay = b.pos[ia * 3 + 1], az = b.pos[ia * 3 + 2];
+            const e1x = b.pos[ib * 3] - ax, e1y = b.pos[ib * 3 + 1] - ay, e1z = b.pos[ib * 3 + 2] - az;
+            const e2x = b.pos[ic * 3] - ax, e2y = b.pos[ic * 3 + 1] - ay, e2z = b.pos[ic * 3 + 2] - az;
+            const nx = e1y * e2z - e1z * e2y;
+            const ny = e1z * e2x - e1x * e2z;
+            const nz = e1x * e2y - e1y * e2x;
+            if (!b.vertHasN[ia]) { b.nor[ia * 3] += nx; b.nor[ia * 3 + 1] += ny; b.nor[ia * 3 + 2] += nz; }
+            if (!b.vertHasN[ib]) { b.nor[ib * 3] += nx; b.nor[ib * 3 + 1] += ny; b.nor[ib * 3 + 2] += nz; }
+            if (!b.vertHasN[ic]) { b.nor[ic * 3] += nx; b.nor[ic * 3 + 1] += ny; b.nor[ic * 3 + 2] += nz; }
+          }
+          for (let vi = 0; vi < b.vertHasN.length; vi++) {
+            if (!b.vertHasN[vi]) {
+              const o = vi * 3;
+              const l = Math.hypot(b.nor[o], b.nor[o + 1], b.nor[o + 2]) || 1;
+              b.nor[o] /= l; b.nor[o + 1] /= l; b.nor[o + 2] /= l;
+            }
+          }
+        }
+        g.setAttribute('normal', Float32Array.from(b.nor), 3);
+      }
       if (b.hasT) g.setAttribute('uv', Float32Array.from(b.uv), 2);
       g.setIndex(b.idx);
       if (!g.attributes.normal) g.computeNormals();

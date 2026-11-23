@@ -321,7 +321,7 @@ export class GizmoBase extends Object3D {
     return this;
   }
 
-  setSpace(s) { if (s !== this._space) { this._space = s; this._fire('change'); } return this; }
+  setSpace(s) { if (s !== this._space) { this._space = s; this._fire('spaceChange', { value: s }); this._fire('change'); } return this; }
   setSize(s) { this.size = s; return this; }
 
   setSnap(on, { translation = SNAP_DEFAULT.translation, rotation = SNAP_DEFAULT.rotation, scale = SNAP_DEFAULT.scale } = {}) {

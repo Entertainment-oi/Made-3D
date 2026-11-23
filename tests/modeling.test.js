@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   BoxGeometry,
   SphereGeometry,
+  CylinderGeometry,
   PyramidGeometry,
   ConeGeometry,
   StandardMaterial,
@@ -23,9 +24,11 @@ import {
   edgeKey,
   ensureEditableBase,
   setMeshSubsurf,
+  computeFaceShellIds,
+  performVolumetricUnionIfNeeded,
 } from '../src/modules/modeling.js';
-import { Sculptor } from '../src/modules/sculpt.js';
-import { drawLightsOverlay, SelectionOutline } from '../src/modules/gizmo.js';
+import { Sculptor, SCULPT_TOOLS } from '../src/modules/sculpt.js';
+import { drawLightsOverlay, SelectionOutline, GizmoRenderer2D, beginDrag } from '../src/modules/gizmo.js';
 
 function countNonFlatEdges(em) {
   return em.getEdges().filter((e) => e.faces.length !== 2).length;
@@ -573,6 +576,262 @@ test('SelectionOutline.drawCanvas dibuja únicamente aristas de silueta exterior
   assert.ok(ctxSphere.strokes[0].lines >= 12 && ctxSphere.strokes[0].lines < 120);
 });
 
+test('bevelSelection vertex remapea índices tras podar vértices y extrudeSelection no duplica looseEdges puenteadas', () => {
+  const emBevel = EditableMesh.fromGeometry(new BoxGeometry(2, 2, 2));
+  const bv = emBevel.bevelSelection('vertex', new Set([0, 3]), 0.25, 1);
+  assert.equal(bv.changed, true);
+  assert.equal(bv.selected.size, 6);
+  for (const vi of bv.selected) {
+    assert.ok(vi >= 0 && vi < emBevel.verts.length);
+  }
+  assert.equal(countNonFlatEdges(emBevel), 0);
 
+  const emExtrude = new EditableMesh(
+    [
+      { x: 0, y: 0, z: 0 },
+      { x: 1, y: 0, z: 0 },
+      { x: 1, y: 1, z: 0 },
+      { x: 0, y: 1, z: 0 },
+    ],
+    [[0, 1, 2, 3]]
+  );
+  // 0-1 forman arista puente; comprobar que no quedan en looseEdges
+  const ex1 = emExtrude.extrudeSelection('vertex', new Set([0, 1]), 0.5);
+  assert.equal(ex1.changed, true);
+  assert.equal(emExtrude.faces.length, 2);
+  assert.equal(emExtrude.looseEdges.length, 0);
 
+  // Vértice aislado sin arista compartida con otro seleccionado sí genera arista suelta
+  const ex2 = emExtrude.extrudeSelection('vertex', new Set([2]), 0.5);
+  assert.equal(ex2.changed, true);
+  assert.equal(emExtrude.looseEdges.length, 1);
+});
+
+test('catmullClarkStep escala smoothness linealmente en vértices con 2 aristas crease y Sculptor guarda snapshot subsurf', () => {
+  const base = EditableMesh.fromGeometry(new BoxGeometry(2, 2, 2));
+  const edges = base.getEdges();
+  // Seleccionar exactamente 2 aristas crease incidentes en el vértice 0
+  const inc = [];
+  for (const e of edges) {
+    if (e.a === 0 || e.b === 0) inc.push(e);
+    if (inc.length === 2) break;
+  }
+  base.setEdgeCrease(inc[0].a, inc[0].b, 1.0);
+  base.setEdgeCrease(inc[1].a, inc[1].b, 1.0);
+
+  const s0 = catmullClarkStep(base, 0.0).verts[0];
+  const sHalf = catmullClarkStep(base, 0.5).verts[0];
+  const s1 = catmullClarkStep(base, 1.0).verts[0];
+  assert.ok(Math.abs(sHalf.x - (s0.x + s1.x) * 0.5) < 1e-6);
+  assert.ok(Math.abs(sHalf.y - (s0.y + s1.y) * 0.5) < 1e-6);
+  assert.ok(Math.abs(sHalf.z - (s0.z + s1.z) * 0.5) < 1e-6);
+
+  // Verificar snapshot beforeState / afterState en Sculptor
+  const mesh = new Mesh(new SphereGeometry(1, 10, 6), new StandardMaterial({ color: 0xffffff }));
+  mesh.updateMatrixWorld();
+  setMeshSubsurf(mesh, { level: 1 });
+  const sculptor = new Sculptor({ tool: 'draw', radius: 0.6, strength: 0.8, frontFacesOnly: false });
+  const cam = new PerspectiveCamera(50, 1, 0.1, 100);
+  cam.position.set(0, 0, 5);
+  cam.lookAt(0, 0, 0);
+  cam.updateMatrixWorld();
+  const hit = sculptor.pickSurface(cam, 0, 0, mesh);
+  assert.ok(sculptor.beginStroke(mesh, hit, cam));
+  const strokeRes = sculptor.endStroke();
+  assert.equal(strokeRes.beforeState.subsurf.level, 1);
+  assert.equal(strokeRes.afterState.subsurf.level, 0);
+
+  // Verificar re-exportaciones en modules/modeling.js y modules/gizmo.js
+  assert.equal(typeof computeFaceShellIds, 'function');
+  assert.equal(typeof performVolumetricUnionIfNeeded, 'function');
+  assert.equal(typeof GizmoRenderer2D, 'function');
+  assert.equal(typeof beginDrag, 'function');
+});
+
+test('MeshEditor alinea el gizmo en espacio local a caras, aristas y vértices frente al modo mundo', () => {
+  const mesh = new Mesh(new BoxGeometry(2, 2, 2), new StandardMaterial({ color: 0xffffff }));
+  mesh.updateMatrixWorld();
+
+  const editor = new MeshEditor();
+  editor.setMesh(mesh);
+  const base = editor.baseMesh;
+
+  // Buscar la cara +X del cubo (normal (1, 0, 0))
+  const facePosX = base.faces.findIndex((_, fi) => base.computeFaceNormal(fi).x > 0.9);
+  assert.ok(facePosX >= 0);
+
+  editor.setSelectionMode('face');
+  editor.setActiveSelectionSet(new Set([facePosX]));
+
+  // En modo mundo, los ejes coinciden con (1,0,0), (0,1,0), (0,0,1)
+  editor.setSpace('world');
+  const worldAx = editor.getGizmoAxes();
+  assert.ok(worldAx.x.distanceTo(new Vec3(1, 0, 0)) < 1e-5);
+  assert.ok(worldAx.y.distanceTo(new Vec3(0, 1, 0)) < 1e-5);
+  assert.ok(worldAx.z.distanceTo(new Vec3(0, 0, 1)) < 1e-5);
+
+  // En modo local sin rotar el objeto, el eje Z del gizmo debe apuntar a la normal de la cara (+X)
+  editor.setSpace('local');
+  const localFaceAx = editor.getGizmoAxes();
+  assert.ok(localFaceAx.z.distanceTo(new Vec3(1, 0, 0)) < 1e-5);
+  assert.ok(Math.abs(localFaceAx.x.dot(localFaceAx.y)) < 1e-5);
+  assert.ok(Math.abs(localFaceAx.x.dot(localFaceAx.z)) < 1e-5);
+  assert.ok(new Vec3().crossVectors(localFaceAx.x, localFaceAx.y).distanceTo(localFaceAx.z) < 1e-5);
+
+  // Con el objeto rotado 90° en Y, la normal +X pasa a apuntar a -Z en mundo
+  mesh.rotation.y = Math.PI / 2;
+  mesh.updateMatrixWorld();
+  const rotFaceAx = editor.getGizmoAxes();
+  assert.ok(rotFaceAx.z.distanceTo(new Vec3(0, 0, -1)) < 1e-5);
+
+  // Arista individual: X debe seguir la dirección de la arista en mundo
+  mesh.rotation.y = 0;
+  mesh.updateMatrixWorld();
+  const edges = base.getEdges();
+  const edgeYIdx = edges.findIndex((e) => {
+    const a = base.verts[e.a];
+    const b = base.verts[e.b];
+    return Math.abs(a.x - b.x) < 1e-4 && Math.abs(a.z - b.z) < 1e-4 && Math.abs(a.y - b.y) > 1.5;
+  });
+  assert.ok(edgeYIdx >= 0);
+  editor.setSelectionMode('edge');
+  editor.setActiveSelectionSet(new Set([edgeYIdx]));
+  const localEdgeAx = editor.getGizmoAxes();
+  assert.ok(Math.abs(Math.abs(localEdgeAx.x.y) - 1) < 1e-5);
+  assert.ok(Math.abs(localEdgeAx.x.dot(localEdgeAx.z)) < 1e-5);
+  assert.ok(new Vec3().crossVectors(localEdgeAx.x, localEdgeAx.y).distanceTo(localEdgeAx.z) < 1e-5);
+
+  // Vértice individual: Z apunta a la normal del vértice en esquina (+1,+1,+1)/sqrt(3)
+  const cornerIdx = base.verts.findIndex((v) => v.x > 0.5 && v.y > 0.5 && v.z > 0.5);
+  assert.ok(cornerIdx >= 0);
+  editor.setSelectionMode('vertex');
+  editor.setActiveSelectionSet(new Set([cornerIdx]));
+  const localVertAx = editor.getGizmoAxes();
+  const expectedCornerN = new Vec3(1, 1, 1).normalize();
+  assert.ok(localVertAx.z.distanceTo(expectedCornerN) < 1e-5);
+});
+
+test('Sculptor incluye pinceles dedicados para hundir la malla (carve, crease, deflate) e inversión Alt', () => {
+  assert.ok(SCULPT_TOOLS.includes('carve'));
+  assert.ok(SCULPT_TOOLS.includes('crease'));
+  assert.ok(SCULPT_TOOLS.includes('deflate'));
+
+  const cam = new PerspectiveCamera(50, 1, 0.1, 100);
+  cam.position.set(0, 0, 5);
+  cam.lookAt(0, 0, 0);
+  cam.updateMatrixWorld();
+
+  for (const tool of ['carve', 'crease', 'deflate']) {
+    const mesh = new Mesh(new SphereGeometry(1, 16, 12), new StandardMaterial({ color: 0xffffff }));
+    mesh.updateMatrixWorld();
+    const sculptor = new Sculptor({ tool, radius: 0.65, strength: 0.9, symmetry: 'none', frontFacesOnly: false });
+
+    const hit = sculptor.pickSurface(cam, 0, 0, mesh);
+    assert.ok(hit, `${tool}: debe impactar la esfera`);
+    assert.equal(sculptor.beginStroke(mesh, hit, cam), true);
+    sculptor.stepStroke(cam, 0.03, 0.02);
+    const res = sculptor.endStroke();
+    assert.ok(res && res.diff.indices.length > 0, `${tool}: debe modificar vértices`);
+
+    const pos = mesh.geometry.attributes.position.array;
+    let minFrontR = Infinity;
+    for (let i = 0; i < pos.length; i += 3) {
+      if (pos[i + 2] > 0.4) {
+        minFrontR = Math.min(minFrontR, Math.hypot(pos[i], pos[i + 1], pos[i + 2]));
+      }
+    }
+    assert.ok(minFrontR < 0.95, `${tool}: debe hundir la malla hacia el interior (minR=${minFrontR})`);
+
+    // Con invert=true debe empujar hacia afuera en sentido opuesto
+    const meshInv = new Mesh(new SphereGeometry(1, 16, 12), new StandardMaterial({ color: 0xffffff }));
+    meshInv.updateMatrixWorld();
+    const scInv = new Sculptor({ tool, radius: 0.65, strength: 0.9, invert: true, symmetry: 'none', frontFacesOnly: false });
+    const hitInv = scInv.pickSurface(cam, 0, 0, meshInv);
+    assert.ok(scInv.beginStroke(meshInv, hitInv, cam));
+    scInv.stepStroke(cam, 0.03, 0.02);
+    scInv.endStroke();
+    const posInv = meshInv.geometry.attributes.position.array;
+    let maxFrontR = 0;
+    for (let i = 0; i < posInv.length; i += 3) {
+      if (posInv[i + 2] > 0.4) {
+        maxFrontR = Math.max(maxFrontR, Math.hypot(posInv[i], posInv[i + 1], posInv[i + 2]));
+      }
+    }
+    assert.ok(maxFrontR > 1.04, `${tool} invertido: debe elevar la malla hacia afuera (maxR=${maxFrontR})`);
+  }
+});
+
+test('EditableMesh.mergeMeshes genera fusión limpia sin diagonales falsas ni exceso de vértices/aristas', () => {
+  // 1. Cubos coplanares alineados solapados -> un único prisma rectangular limpio (8 vértices, 12 aristas, 6 quads)
+  const aligned = EditableMesh.mergeMeshes([
+    { geometry: new BoxGeometry(1, 1, 1), matrixWorld: new Mat4() },
+    { geometry: new BoxGeometry(1, 1, 1), matrixWorld: new Mat4().compose(new Vec3(0.5, 0, 0), new Quat(), new Vec3(1, 1, 1)) },
+  ], { threshold: 0.015 });
+  assert.equal(countNonFlatEdges(aligned.mesh), 0);
+  assert.equal(aligned.mesh.verts.length, 8);
+  assert.equal(aligned.mesh.getTopology().edges.length, 12);
+  assert.equal(aligned.mesh.faces.length, 6);
+  assert.ok(aligned.mesh.faces.every((f) => f.length === 4));
+
+  // 2. Cubos solapados en XY con tapas coplanares -> conserva quads sin cortes en X ni triángulos redundantes
+  const offsetXY = EditableMesh.mergeMeshes([
+    { geometry: new BoxGeometry(1, 1, 1), matrixWorld: new Mat4() },
+    { geometry: new BoxGeometry(1, 1, 1), matrixWorld: new Mat4().compose(new Vec3(0.4, 0.25, 0), new Quat(), new Vec3(1, 1, 1)) },
+  ], { threshold: 0.015 });
+  assert.equal(countNonFlatEdges(offsetXY.mesh), 0);
+  assert.ok(offsetXY.mesh.verts.length <= 18);
+  assert.ok(offsetXY.mesh.getTopology().edges.length <= 32);
+  assert.equal(offsetXY.mesh.faces.filter((f) => f.length === 3).length, 0);
+
+  // 3. Cubos solapados en los 3 ejes -> 20 vértices exactos y 18 quads limpios
+  const cross3D = EditableMesh.mergeMeshes([
+    { geometry: new BoxGeometry(1, 1, 1), matrixWorld: new Mat4() },
+    { geometry: new BoxGeometry(1, 1, 1), matrixWorld: new Mat4().compose(new Vec3(0.4, 0.4, 0.4), new Quat(), new Vec3(1, 1, 1)) },
+  ], { threshold: 0.015 });
+  assert.equal(countNonFlatEdges(cross3D.mesh), 0);
+  assert.equal(cross3D.mesh.verts.length, 20);
+  assert.equal(cross3D.mesh.getTopology().edges.length, 36);
+  assert.equal(cross3D.mesh.faces.length, 18);
+  assert.ok(cross3D.mesh.faces.every((f) => f.length === 4));
+
+  // 4. Cilindro atravesando caja -> sin cortes en las diagonales de pared y compatible con Catmull-Clark
+  const cylBox = EditableMesh.mergeMeshes([
+    { geometry: new BoxGeometry(1.2, 0.6, 1.2), matrixWorld: new Mat4() },
+    { geometry: new CylinderGeometry(0.4, 0.4, 1.6, 16), matrixWorld: new Mat4().compose(new Vec3(0, 0.3, 0), new Quat(), new Vec3(1, 1, 1)) },
+  ], { threshold: 0.015 });
+  assert.equal(countNonFlatEdges(cylBox.mesh), 0);
+  assert.ok(cylBox.mesh.verts.length <= 76);
+  assert.ok(cylBox.mesh.getTopology().edges.length <= 160);
+  assert.ok(cylBox.mesh.faces.filter((f) => f.length === 4).length >= 56);
+  const cylSub = catmullClarkStep(cylBox.mesh, 1.0);
+  assert.equal(countNonFlatEdges(cylSub), 0);
+
+  // 5. Esferas solapadas -> conserva quads intactos fuera del anillo de intersección
+  const spheres = EditableMesh.mergeMeshes([
+    { geometry: new SphereGeometry(1, 10, 8), matrixWorld: new Mat4() },
+    { geometry: new SphereGeometry(1, 10, 8), matrixWorld: new Mat4().compose(new Vec3(0.75, 0, 0), new Quat(), new Vec3(1, 1, 1)) },
+  ], { threshold: 0.015 });
+  assert.equal(countNonFlatEdges(spheres.mesh), 0);
+  assert.ok(spheres.mesh.faces.filter((f) => f.length === 4).length >= 80);
+
+  // 6. Control de solidez (0 = sin simplificación post-unión, 0.25 = conserva costuras entre mallas, 0.8/1 = fusión total)
+  const solidPair = [
+    { geometry: new BoxGeometry(1, 1, 1), matrixWorld: new Mat4() },
+    { geometry: new BoxGeometry(1, 1, 1), matrixWorld: new Mat4().compose(new Vec3(0.5, 0, 0), new Quat(), new Vec3(1, 1, 1)) },
+  ];
+  const s0 = EditableMesh.mergeMeshes(solidPair, { threshold: 0.015, solidity: 0 });
+  const s25 = EditableMesh.mergeMeshes(solidPair, { threshold: 0.015, solidity: 0.25 });
+  const s80 = EditableMesh.mergeMeshes(solidPair, { threshold: 0.015, solidity: 0.8 });
+  const s100 = EditableMesh.mergeMeshes(solidPair, { threshold: 0.015, solidity: 1.0 });
+
+  assert.equal(countNonFlatEdges(s0.mesh), 0);
+  assert.equal(countNonFlatEdges(s25.mesh), 0);
+  assert.equal(countNonFlatEdges(s80.mesh), 0);
+  assert.equal(countNonFlatEdges(s100.mesh), 0);
+
+  assert.ok(s0.mesh.faces.length > s25.mesh.faces.length);
+  assert.ok(s25.mesh.faces.length > s80.mesh.faces.length);
+  assert.equal(s80.mesh.faces.length, 6);
+  assert.equal(s100.mesh.faces.length, 6);
+});
 

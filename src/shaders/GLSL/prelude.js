@@ -20,6 +20,7 @@ uniform int uMorphCount;
 uniform int uMorphVertexCount;
 uniform int uMorphTexWidth;
 uniform int uMorphHasNormals;
+uniform int uMorphRelative;
 uniform float uMorphWeights[32];
 vec3 m3dPos;
 vec3 m3dNormal;
@@ -33,10 +34,12 @@ void m3dComputeMorph() {
     if (abs(w) < 1e-5) continue;
     int idx = i * uMorphVertexCount + gl_VertexID;
     int pIdx = uMorphHasNormals != 0 ? idx * 2 : idx;
-    m3dPos += texelFetch(uMorphTexture, ivec2(pIdx % uMorphTexWidth, pIdx / uMorphTexWidth), 0).xyz * w;
+    vec3 tp = texelFetch(uMorphTexture, ivec2(pIdx % uMorphTexWidth, pIdx / uMorphTexWidth), 0).xyz;
+    m3dPos += (uMorphRelative != 0 ? tp : (tp - aPosition)) * w;
     if (uMorphHasNormals != 0) {
       int nIdx = pIdx + 1;
-      m3dNormal += texelFetch(uMorphTexture, ivec2(nIdx % uMorphTexWidth, nIdx / uMorphTexWidth), 0).xyz * w;
+      vec3 tn = texelFetch(uMorphTexture, ivec2(nIdx % uMorphTexWidth, nIdx / uMorphTexWidth), 0).xyz;
+      m3dNormal += (uMorphRelative != 0 ? tn : (tn - aNormal)) * w;
     }
   }
 }

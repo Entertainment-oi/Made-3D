@@ -3,6 +3,7 @@ import { Mesh } from '../objects/Mesh.js';
 import { InstancedMesh } from '../objects/InstancedMesh.js';
 import { Geometry } from '../geometry/Geometry.js';
 import { StandardMaterial, BasicMaterial } from '../materials/BuiltinMaterials.js';
+import { convertMaterial } from '../materials/convertMaterial.js';
 import { Texture } from '../textures/Texture.js';
 import { Mat4 } from '../math/Mat4.js';
 import { Vec3 } from '../math/Vec3.js';
@@ -619,6 +620,32 @@ class GLTFParser {
       skeletons.push(s);
     }
     // mallas (incluye EXT_mesh_gpu_instancing y morph targets)
+    const matColorUsage = new Map();
+    const matVariants = new Map();
+    const resolvePrimitiveMat = (baseMat, hasColor) => {
+      if (!baseMat) return baseMat;
+      if (!matColorUsage.has(baseMat)) {
+        matColorUsage.set(baseMat, hasColor);
+        if (hasColor) baseMat.vertexColors = true;
+        return baseMat;
+      }
+      if (matColorUsage.get(baseMat) === hasColor) return baseMat;
+      let variants = matVariants.get(baseMat);
+      if (!variants) {
+        variants = new Map();
+        matVariants.set(baseMat, variants);
+      }
+      let cloned = variants.get(hasColor);
+      if (!cloned) {
+        cloned = typeof baseMat.clone === 'function'
+          ? baseMat.clone({ vertexColors: hasColor })
+          : convertMaterial(baseMat);
+        cloned.vertexColors = hasColor;
+        variants.set(hasColor, cloned);
+      }
+      return cloned;
+    };
+
     for (const [i, d] of (j.nodes || []).entries()) {
       if (d.mesh === undefined) continue;
       const md = j.meshes[d.mesh];
@@ -643,8 +670,8 @@ class GLTFParser {
       for (let p = 0; p < md.primitives.length; p++) {
         const geo = await this.primitive(d.mesh, p);
         if (!geo) continue;
-        const mat = await this.material(md.primitives[p].material);
-        if (geo.attributes.color) mat.vertexColors = true;
+        const baseMat = await this.material(md.primitives[p].material);
+        const mat = resolvePrimitiveMat(baseMat, Boolean(geo.attributes.color));
 
         let mesh;
         if (instData) {

@@ -40,7 +40,16 @@ export function cloneSkinned(source, opts = {}) {
   const cloneNode = (o) => {
     let c;
     if (o.isSkinnedMesh) c = new SkinnedMesh(geo(o), mat(o.material));
-    else if (o.isMesh && !o.isInstancedMesh) c = new Mesh(geo(o), mat(o.material));
+    else if (o.isInstancedMesh) {
+      const maxCount = o.instanceMatrix ? ((o.instanceMatrix.array.length / 16) | 0) : (o.count || 0);
+      c = new InstancedMesh(geo(o), mat(o.material), Math.max(maxCount, o.count || 0));
+      c.count = o.count;
+      c.cullInstances = o.cullInstances !== false;
+      if (o.instanceMatrix) c.instanceMatrix.array.set(o.instanceMatrix.array.subarray(0, c.instanceMatrix.array.length));
+      c.instanceMatrix.needsUpdate = true;
+      if (o.boundingSphere) c.boundingSphere = { center: o.boundingSphere.center.clone(), radius: o.boundingSphere.radius };
+    }
+    else if (o.isMesh) c = new Mesh(geo(o), mat(o.material));
     else if (o.isBone) { c = new Bone(); c.length = o.length; }
     else c = new Object3D();
     c.name = o.name; c.visible = o.visible; c.castShadow = o.castShadow; c.receiveShadow = o.receiveShadow;

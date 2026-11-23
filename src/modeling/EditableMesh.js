@@ -1,7 +1,7 @@
 import { Vec3 } from '../math/Vec3.js';
 import { Mat4 } from '../math/Mat4.js';
 import { Geometry } from '../geometry/Geometry.js';
-import { performVolumetricUnionIfNeeded } from './MeshUnion.js';
+import { performVolumetricUnionIfNeeded, simplifyUnionTopology } from './MeshUnion.js';
 
 const _vA = new Vec3();
 const _vD = new Vec3();
@@ -831,7 +831,7 @@ export class EditableMesh {
     }
     if (nextVerts.length === this.verts.length) {
       this.invalidateTopology();
-      return;
+      return null;
     }
 
     this.verts = nextVerts;
@@ -844,6 +844,7 @@ export class EditableMesh {
       .filter(([a, b]) => a >= 0 && b >= 0 && a !== b);
     this._remapCreases(remap);
     this.invalidateTopology();
+    return remap;
   }
 
   /**
@@ -1433,10 +1434,10 @@ export class EditableMesh {
       });
       copyMap.set(vi, nv);
       nextVerts.add(nv);
-      this.looseEdges.push([vi, nv]);
     }
     // Si dos vértices seleccionados formaban una arista, crear también cara puente
     const topo = this.getTopology();
+    const bridgedVerts = new Set();
     for (let i = 0; i < topo.edges.length; i++) {
       const e = topo.edges[i];
       if (copyMap.has(e.a) && copyMap.has(e.b)) {
@@ -1444,6 +1445,13 @@ export class EditableMesh {
         const bNew = copyMap.get(e.b);
         this.faces.push([e.a, e.b, bNew, aNew]);
         this.faceUvs.push([[0, 0], [1, 0], [1, 1], [0, 1]]);
+        bridgedVerts.add(e.a);
+        bridgedVerts.add(e.b);
+      }
+    }
+    for (const [vi, nv] of copyMap.entries()) {
+      if (!bridgedVerts.has(vi)) {
+        this.looseEdges.push([vi, nv]);
       }
     }
 
@@ -2404,7 +2412,7 @@ export class EditableMesh {
    * Fusiona vértices cercanos o apilados repetidamente dentro de `threshold` (iterando hasta converger).
    * Elimina aristas y caras colapsadas y remapea UVs/durezas manteniendo topología válida.
    */
-  mergeByDistance(threshold = 0.005, onlyVertices = null, { dedupeFaces = true, iterative = true } = {}) {
+  mergeByDistance(threshold = 0.005, onlyVertices = null, { dedupeFaces = true, iterative = true, faceTags = null } = {}) {
     const distTol = Math.max(1e-7, Number(threshold) || 0.005);
     const tolSq = distTol * distTol;
     const cell = distTol;
@@ -2519,6 +2527,7 @@ export class EditableMesh {
 
       const nextFaces = [];
       const nextFaceUvs = [];
+      const nextFaceTags = Array.isArray(faceTags) ? [] : null;
       const seenFaces = new Set();
 
       for (let fi = 0; fi < this.faces.length; fi++) {
@@ -2546,6 +2555,7 @@ export class EditableMesh {
         }
         nextFaces.push(ring);
         nextFaceUvs.push(ringUv);
+        if (nextFaceTags) nextFaceTags.push(faceTags[fi]);
       }
 
       const looseSet = new Set();
@@ -2565,6 +2575,9 @@ export class EditableMesh {
 
       this.faces = nextFaces;
       this.faceUvs = nextFaceUvs;
+      if (nextFaceTags) {
+        faceTags.splice(0, faceTags.length, ...nextFaceTags);
+      }
       this.looseEdges = nextLoose;
       this._remapCreases(rawRemap);
       this.pruneUnusedVertices();
@@ -3043,9 +3056,14 @@ export class EditableMesh {
 
       this.faces = nextFaces;
       this.faceUvs = nextUvs;
-      this.pruneUnusedVertices();
+      const remap = this.pruneUnusedVertices();
       const newSel = new Set();
-      for (const list of vertexCapList.values()) list.forEach((v) => { if (v < this.verts.length) newSel.add(v); });
+      for (const list of vertexCapList.values()) {
+        list.forEach((v) => {
+          const rv = remap ? remap[v] : v;
+          if (rv >= 0 && rv < this.verts.length) newSel.add(rv);
+        });
+      }
       return { changed: true, selected: newSel };
     }
 
@@ -3407,6 +3425,7 @@ export class EditableMesh {
     threshold = 0.02,
     removeInteriorFaces = true,
     stitchTJunctions = true,
+    solidity = 0.8,
     shellIds = null,
   } = {}) {
     const tol = Math.max(1e-6, Number(threshold) || 0.02);
@@ -3415,6 +3434,7 @@ export class EditableMesh {
     let totalRemovedInterior = 0;
     let totalStitchedEdges = 0;
     let didUnion = false;
+    let faceOrigins = null;
 
     // Escala de la malla para proteger triángulos finos de corte booleano frente a colapsos
     let gMinX = Infinity, gMinY = Infinity, gMinZ = Infinity;
@@ -3436,6 +3456,7 @@ export class EditableMesh {
       if (unionRes && unionRes.performed) {
         didUnion = true;
         totalRemovedInterior += unionRes.removedInsideCount || 0;
+        faceOrigins = unionRes.faceOrigins || null;
       }
     }
 
@@ -3445,7 +3466,11 @@ export class EditableMesh {
     const activeTolSq = activeTol * activeTol;
 
     // 1. Soldar vértices cercanos o apilados iterativamente hasta converger (conservando paredes opuestas aún)
-    const firstMerge = this.mergeByDistance(activeTol, null, { dedupeFaces: !removeInteriorFaces, iterative: true });
+    const firstMerge = this.mergeByDistance(activeTol, null, {
+      dedupeFaces: !removeInteriorFaces,
+      iterative: true,
+      faceTags: faceOrigins,
+    });
     if (firstMerge.changed) {
       totalMergedVerts += firstMerge.mergedCount;
     }
@@ -3461,6 +3486,8 @@ export class EditableMesh {
         const ex = pb.x - pa.x, ey = pb.y - pa.y, ez = pb.z - pa.z;
         const lenSq = ex * ex + ey * ey + ez * ez;
         if (lenSq <= activeTolSq * 4) continue;
+        const edgeLen = Math.sqrt(lenSq);
+        const endMargin = Math.min(0.015, Math.max(1e-4, (activeTol * 1.05) / edgeLen));
         const minX = Math.min(pa.x, pb.x) - activeTol, maxX = Math.max(pa.x, pb.x) + activeTol;
         const minY = Math.min(pa.y, pb.y) - activeTol, maxY = Math.max(pa.y, pb.y) + activeTol;
         const minZ = Math.min(pa.z, pb.z) - activeTol, maxZ = Math.max(pa.z, pb.z) + activeTol;
@@ -3470,7 +3497,7 @@ export class EditableMesh {
           const p = this.verts[vi];
           if (p.x < minX || p.x > maxX || p.y < minY || p.y > maxY || p.z < minZ || p.z > maxZ) continue;
           const t = ((p.x - pa.x) * ex + (p.y - pa.y) * ey + (p.z - pa.z) * ez) / lenSq;
-          if (t <= 0.015 || t >= 0.985) continue;
+          if (t <= endMargin || t >= 1 - endMargin) continue;
           const qx = pa.x + ex * t, qy = pa.y + ey * t, qz = pa.z + ez * t;
           const dSq = (p.x - qx) ** 2 + (p.y - qy) ** 2 + (p.z - qz) ** 2;
           if (dSq <= activeTolSq) {
@@ -3526,7 +3553,11 @@ export class EditableMesh {
         this.invalidateTopology();
 
         // Resoldar en caso de que la costura dejara vértices duplicados adyacentes
-        const postStitchWeld = this.mergeByDistance(activeTol, null, { dedupeFaces: !removeInteriorFaces, iterative: true });
+        const postStitchWeld = this.mergeByDistance(activeTol, null, {
+          dedupeFaces: !removeInteriorFaces,
+          iterative: true,
+          faceTags: faceOrigins,
+        });
         if (postStitchWeld.changed) {
           totalMergedVerts += postStitchWeld.mergedCount;
         }
@@ -3625,17 +3656,32 @@ export class EditableMesh {
       if (removedHere > 0) {
         const nextFaces = [];
         const nextUvs = [];
+        const nextOrigins = faceOrigins ? [] : null;
         for (let fi = 0; fi < this.faces.length; fi++) {
           if (removed[fi]) continue;
           nextFaces.push(this.faces[fi]);
           nextUvs.push(this.faceUvs[fi] || this.faces[fi].map(() => [0, 0]));
+          if (nextOrigins) nextOrigins.push(faceOrigins[fi]);
         }
         this.faces = nextFaces;
         this.faceUvs = nextUvs;
+        if (nextOrigins) {
+          faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+        }
+        this.invalidateTopology();
       }
     }
 
-    // 4. Limpieza final obligatoria: borrar todo vértice interior, suelto o huérfano y fusionar duplicados residuales
+    // 4. Simplificar topología booleana según el nivel de solidez deseado
+    if (didUnion && this.faces.length >= 2) {
+      simplifyUnionTopology(this, faceOrigins, {
+        planeTol: Math.min(tol * 0.5, Math.max(1e-4, diag * 3e-4)),
+        edgeTol: activeTol * 2,
+        solidity,
+      });
+    }
+
+    // 5. Limpieza final obligatoria: borrar todo vértice interior, suelto o huérfano y fusionar duplicados residuales
     this.pruneUnusedVertices();
     const prunedCount = Math.max(0, prevVertCount - this.verts.length);
     this.invalidateTopology();
@@ -3742,6 +3788,7 @@ export class EditableMesh {
       threshold: opts.threshold ?? 0.02,
       removeInteriorFaces: opts.removeInteriorFaces !== false,
       stitchTJunctions: opts.stitchTJunctions !== false,
+      solidity: opts.solidity ?? 0.8,
       shellIds: combinedShellIds,
     });
 

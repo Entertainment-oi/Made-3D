@@ -238,14 +238,18 @@ fn m3dResolveVertex(vin: VertexInput) -> M3dVertex {
   let mCount = min(uObject.morphInfo.x, 32u);
   let vCount = uObject.morphInfo.y;
   let hasNor = uObject.morphInfo.z != 0u;
+  let relMorph = uObject.morphInfo.w != 0u;
+  let baseNor = nor;
   let stride = select(1u, 2u, hasNor);
   for (var i: u32 = 0u; i < mCount; i = i + 1u) {
     let w = uObject.morphWeights[i >> 2u][i & 3u];
     if (abs(w) < 1e-5) { continue; }
     let idx = (i * vCount + vin.vertexIndex) * stride;
-    pos = pos + uMorphData[idx].xyz * w;
+    let tPos = uMorphData[idx].xyz;
+    pos = pos + select(tPos - vin.position, tPos, relMorph) * w;
     if (hasNor) {
-      nor = nor + uMorphData[idx + 1u].xyz * w;
+      let tNor = uMorphData[idx + 1u].xyz;
+      nor = nor + select(tNor - baseNor, tNor, relMorph) * w;
     }
   }
 #endif

@@ -147,6 +147,15 @@ export function syncEditPivotUI() {
   }
 }
 
+export function syncGizmoSpaceUI(space = viewport.gizmo?.space || edit.editor?.space || 'world') {
+  const normalized = space === 'local' ? 'local' : 'world';
+  if (dom.btnSpace) {
+    dom.btnSpace.textContent = normalized === 'world' ? 'Espacio: Mundo' : 'Espacio: Local';
+    dom.btnSpace.classList.toggle('is-active', normalized === 'local');
+  }
+  return normalized;
+}
+
 export function buildGizmo(style) {
   const prevMode = viewport.gizmo ? viewport.gizmo.mode : 'translate';
   const prevSpace = viewport.gizmo ? viewport.gizmo.space : 'world';
@@ -172,8 +181,13 @@ export function buildGizmo(style) {
     syncEditPivotUI();
   });
 
+  gizmo.addEventListener('spaceChange', ({ value }) => {
+    edit.editor.setSpace(value);
+    syncGizmoSpaceUI(value);
+  });
+
   gizmo.addEventListener('multiSelectChange', (e) => {
-    if (e?.enabled) {
+    if (e?.value ?? e?.enabled) {
       setStatus('Multi-selección activa (amarillo). Toca más objetos o el vacío para salir.');
     }
     syncSelectedUI();
@@ -261,6 +275,7 @@ export function buildGizmo(style) {
     btn.classList.toggle('is-active', btn.dataset.mode === activeMode);
   });
   syncEditPivotUI();
+  syncGizmoSpaceUI(gizmo.space);
   history.updateButtons();
 }
 

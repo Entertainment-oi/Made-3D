@@ -104,6 +104,17 @@ function isExportableNode(obj, onlyVisible) {
   return true;
 }
 
+function isNodeChainExportable(node, rootSet, onlyVisible) {
+  let cur = node;
+  while (cur) {
+    if (rootSet.has(cur) && cur.isScene) return true;
+    if (!isExportableNode(cur, onlyVisible)) return false;
+    if (rootSet.has(cur)) return true;
+    cur = cur.parent;
+  }
+  return false;
+}
+
 function approxRoughness(shininess) {
   if (!shininess || shininess <= 4) return 0.95;
   const t = Math.max(0, Math.min(1, Math.sqrt(Math.max(0, shininess - 4) / 90)));
@@ -153,6 +164,7 @@ export class GLTFExporter {
     const binary = opts.binary !== undefined ? !!opts.binary : true;
     const onlyVisible = opts.onlyVisible !== undefined ? !!opts.onlyVisible : true;
     const roots = Array.isArray(input) ? input : [input];
+    const rootSet = new Set(roots.filter(Boolean));
 
     for (const r of roots) {
       if (r && r.updateWorldMatrix) r.updateWorldMatrix(true, true);
@@ -550,7 +562,7 @@ export class GLTFExporter {
       nodeMap.set(obj, nodeIdx);
 
       if (obj.isInstancedMesh && obj.geometry && obj.instanceMatrix) {
-        const meshIdx = await exportGeometryMesh(obj.geometry, obj.material, obj.drawMode, obj.name);
+        const meshIdx = await exportGeometryMesh(obj.geometry, obj.material, obj.drawMode, obj.name, false);
         if (meshIdx !== undefined) {
           const arr = obj.instanceMatrix.array;
           const total = Math.min(obj.count || 0, Math.floor(arr.length / 16));
@@ -569,14 +581,19 @@ export class GLTFExporter {
           }
         }
       } else if (obj.isMesh && obj.geometry) {
-        const hasSkinBones = !!(obj.skeleton && obj.skeleton.bones?.length);
+        const hasSkinBones = Boolean(
+          obj.isSkinnedMesh &&
+          obj.skeleton &&
+          obj.skeleton.bones?.length &&
+          obj.skeleton.bones.every((b) => isNodeChainExportable(b, rootSet, onlyVisible))
+        );
         const maxJoint = hasSkinBones ? obj.skeleton.bones.length - 1 : -1;
         const meshIdx = await exportGeometryMesh(
           obj.geometry,
           obj.material,
           obj.drawMode,
           obj.name,
-          !obj.isSkinnedMesh || hasSkinBones,
+          hasSkinBones,
           maxJoint,
           obj.morphTargetDictionary
         );
@@ -584,7 +601,7 @@ export class GLTFExporter {
         if (Array.isArray(obj.morphTargetInfluences) && obj.morphTargetInfluences.length) {
           node.weights = Array.from(obj.morphTargetInfluences);
         }
-        if (obj.isSkinnedMesh && hasSkinBones) {
+        if (hasSkinBones) {
           skinnedPending.push({ node, obj });
         }
       }

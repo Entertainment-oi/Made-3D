@@ -341,6 +341,7 @@ export class KTX2Loader {
     this._nextTaskId = 1;
     this._workersBroken = false;
     this._creatingWorkers = 0;
+    this._disposeEpoch = 0;
   }
 
   setTranscoderPath(dirUrl) {
@@ -418,8 +419,9 @@ export class KTX2Loader {
     }
   }
 
-  async _createWorker() {
+  async _createWorker(epoch = this._disposeEpoch) {
     const { jsCode, wasmBinary } = await loadBasisAssets(this.jsUrl, this.wasmUrl);
+    if (epoch !== this._disposeEpoch) throw new Error('KTX2Loader: liberado');
     if (!this._workerUrl) {
       this._workerUrl = URL.createObjectURL(new Blob([WORKER_SCRIPT], { type: 'text/javascript' }));
     }
@@ -473,6 +475,11 @@ export class KTX2Loader {
       this._pumpQueue();
     });
 
+    if (epoch !== this._disposeEpoch) {
+      try { w.terminate(); } catch (_) {}
+      throw new Error('KTX2Loader: liberado');
+    }
+
     slot.busy = false;
     this._workers.push(slot);
     return slot;
@@ -489,16 +496,27 @@ export class KTX2Loader {
         const activeCount = this._workers.filter((s) => !s.dead).length + this._creatingWorkers;
         if (activeCount < this.workerLimit) {
           const task = this._queue.shift();
+          const epoch = this._disposeEpoch;
           this._creatingWorkers++;
-          this._createWorker()
+          this._createWorker(epoch)
             .then((slot) => {
               this._creatingWorkers = Math.max(0, this._creatingWorkers - 1);
+              if (epoch !== this._disposeEpoch) {
+                try { slot.worker.terminate(); } catch (_) {}
+                this._workers = this._workers.filter((s) => s !== slot);
+                task.reject(new Error('KTX2Loader: liberado'));
+                return;
+              }
               if (this._workersBroken) this._runTaskOnMain(task);
               else this._dispatchToSlot(slot, task);
               this._pumpQueue();
             })
-            .catch(() => {
+            .catch((err) => {
               this._creatingWorkers = Math.max(0, this._creatingWorkers - 1);
+              if (epoch !== this._disposeEpoch) {
+                task.reject(err instanceof Error ? err : new Error('KTX2Loader: liberado'));
+                return;
+              }
               // Fallback silencioso al hilo principal si el navegador bloquea Blob Workers
               this._workersBroken = true;
               this._runTaskOnMain(task);
@@ -532,8 +550,13 @@ export class KTX2Loader {
   }
 
   async _runTaskOnMain(task) {
+    const epoch = this._disposeEpoch;
     try {
       const basis = await loadBasisModule(this.jsUrl, this.wasmUrl);
+      if (epoch !== this._disposeEpoch) {
+        task.reject(new Error('KTX2Loader: liberado'));
+        return;
+      }
       const res = this._transcodeMainThread(basis, task.bytes, task.caps, task.colorSpace, task.forceRgba);
       task.resolve(res);
     } catch (err) {
@@ -598,12 +621,20 @@ export class KTX2Loader {
   }
 
   dispose() {
+    this._disposeEpoch++;
+    const err = new Error('KTX2Loader: liberado');
+    while (this._queue.length) {
+      const task = this._queue.shift();
+      try { task?.reject?.(err); } catch (_) {}
+    }
+    for (const entry of this._pending.values()) {
+      try { entry?.reject?.(err); } catch (_) {}
+    }
+    this._pending.clear();
     for (const s of this._workers) {
       try { s.worker.terminate(); } catch (_) {}
     }
     this._workers = [];
-    this._queue = [];
-    this._pending.clear();
     this._creatingWorkers = 0;
     if (this._workerUrl) {
       URL.revokeObjectURL(this._workerUrl);

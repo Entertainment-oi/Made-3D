@@ -135,6 +135,7 @@ export class GPUBackend {
         { binding: 4, resource: envSamp },
       ],
     });
+    if (this._group0Cache.size >= 64) this._group0Cache.clear();
     this._group0Cache.set(key, bg);
     return bg;
   }
@@ -240,7 +241,7 @@ export class GPUBackend {
       u32[o + 44] = mt.count;
       u32[o + 45] = mt.vCount;
       u32[o + 46] = mt.hasNormals;
-      u32[o + 47] = 0;
+      u32[o + 47] = mesh.geometry.morphTargetsRelative === false ? 0 : 1;
       buf.fill(0, o + 48, o + 80);
       const inf = mesh.morphTargetInfluences;
       const n = Math.min(mt.count, inf.length);
@@ -788,11 +789,12 @@ export class GPUBackend {
       const ab = new ArrayBuffer(48);
       const f32 = new Float32Array(ab);
       const u32 = new Uint32Array(ab);
+      const dirSign = (params.tool === 'carve' || params.tool === 'deflate') ? -1 : 1;
       f32[0] = params.center?.x || 0; f32[1] = params.center?.y || 0; f32[2] = params.center?.z || 0; f32[3] = params.radius || 0.45;
-      f32[4] = params.dir?.x || 0; f32[5] = params.dir?.y || 0; f32[6] = params.dir?.z || 0; f32[7] = params.strength || 0.5;
+      f32[4] = params.dir?.x || 0; f32[5] = params.dir?.y || 0; f32[6] = params.dir?.z || 0; f32[7] = (params.strength || 0.5) * dirSign;
       u32[8] = vCount;
       u32[9] = params.falloff === 'sphere' ? 1 : params.falloff === 'tip' ? 2 : 0;
-      u32[10] = params.tool === 'inflate' ? 4 : 0;
+      u32[10] = (params.tool === 'inflate' || params.tool === 'deflate') ? 4 : 0;
       u32[11] = 0;
       device.queue.writeBuffer(uniBuf, 0, ab);
 
@@ -850,6 +852,7 @@ export class GPUBackend {
     this._dummyShadowTex.destroy();
     if (this._dummyEnvTex) this._dummyEnvTex.destroy();
     this._group0Cache.clear();
+    if (this.outline && typeof this.outline.dispose === 'function') this.outline.dispose(this);
     this.pipes.clear();
     this.res.disposeAll();
     try { this.device.destroy(); } catch (_) {}

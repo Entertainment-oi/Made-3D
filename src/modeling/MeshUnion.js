@@ -1,4 +1,4 @@
-import { Vec3 } from '../math/Vec3.js';
+import { edgeKey } from './EditableMesh.js';
 
 function quantKey(x, y, z, invEps) {
   return `${Math.round(x * invEps)},${Math.round(y * invEps)},${Math.round(z * invEps)}`;
@@ -298,16 +298,111 @@ function classifyPointVsClosedShell(px, py, pz, shellInfo, surfTolSq, outSurface
 }
 
 // ============================================================================
-// Intersección Triángulo-Triángulo (transversal + coplanar)
+// Geometría Planar 2D / Polígonos Convexos e Intersección Polígono-Polígono
 // ============================================================================
 
-function clipTriEdgesAgainstPlane(a, b, c, da, db, dc) {
-  const pts = [a, b, c];
-  const ds = [da, db, dc];
+function cross2(ax, ay, bx, by, cx, cy) {
+  return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+}
+
+function computePolygonBasis3D(pts) {
+  const n = pts.length;
+  if (n < 3) return null;
+  let nx = 0, ny = 0, nz = 0;
+  let ox = 0, oy = 0, oz = 0;
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    const q = pts[(i + 1) % n];
+    nx += (p.y - q.y) * (p.z + q.z);
+    ny += (p.z - q.z) * (p.x + q.x);
+    nz += (p.x - q.x) * (p.y + q.y);
+    ox += p.x; oy += p.y; oz += p.z;
+  }
+  const nLen = Math.hypot(nx, ny, nz);
+  if (nLen < 1e-11) return null;
+  const invN = 1 / nLen;
+  const normal = { x: nx * invN, y: ny * invN, z: nz * invN };
+  const origin = { x: ox / n, y: oy / n, z: oz / n };
+
+  // Eje U ortogonal a normal usando la dirección más larga desde el origen
+  let bestUx = 0, bestUy = 0, bestUz = 0, bestSq = -1;
+  for (let i = 0; i < n; i++) {
+    const rx = pts[i].x - origin.x;
+    const ry = pts[i].y - origin.y;
+    const rz = pts[i].z - origin.z;
+    const dot = rx * normal.x + ry * normal.y + rz * normal.z;
+    const px = rx - dot * normal.x;
+    const py = ry - dot * normal.y;
+    const pz = rz - dot * normal.z;
+    const sq = px * px + py * py + pz * pz;
+    if (sq > bestSq) {
+      bestSq = sq;
+      bestUx = px; bestUy = py; bestUz = pz;
+    }
+  }
+  const uLen = Math.sqrt(bestSq);
+  if (uLen < 1e-11) return null;
+  const uAxis = { x: bestUx / uLen, y: bestUy / uLen, z: bestUz / uLen };
+  let vAxis = {
+    x: normal.y * uAxis.z - normal.z * uAxis.y,
+    y: normal.z * uAxis.x - normal.x * uAxis.z,
+    z: normal.x * uAxis.y - normal.y * uAxis.x,
+  };
+
+  const pts2D = new Array(n);
+  let maxPlaneDist = 0;
+  for (let i = 0; i < n; i++) {
+    const rx = pts[i].x - origin.x;
+    const ry = pts[i].y - origin.y;
+    const rz = pts[i].z - origin.z;
+    const dPlane = Math.abs(rx * normal.x + ry * normal.y + rz * normal.z);
+    if (dPlane > maxPlaneDist) maxPlaneDist = dPlane;
+    pts2D[i] = {
+      x: rx * uAxis.x + ry * uAxis.y + rz * uAxis.z,
+      y: rx * vAxis.x + ry * vAxis.y + rz * vAxis.z,
+    };
+  }
+
+  let signedArea = 0;
+  for (let i = 0; i < n; i++) {
+    const p = pts2D[i], q = pts2D[(i + 1) % n];
+    signedArea += p.x * q.y - q.x * p.y;
+  }
+  if (signedArea < 0) {
+    vAxis = { x: -vAxis.x, y: -vAxis.y, z: -vAxis.z };
+    for (let i = 0; i < n; i++) pts2D[i].y = -pts2D[i].y;
+    signedArea = -signedArea;
+  }
+
+  return { normal, origin, uAxis, vAxis, pts2D, maxPlaneDist, area2: signedArea };
+}
+
+function isConvexCCW2D(pts2D) {
+  const n = pts2D.length;
+  if (n < 3) return false;
+  if (n === 3) return true;
+  let maxSpan = 0;
+  for (let i = 0; i < n; i++) {
+    const a = pts2D[i], b = pts2D[(i + 1) % n];
+    const l = Math.hypot(b.x - a.x, b.y - a.y);
+    if (l > maxSpan) maxSpan = l;
+  }
+  const tol = -Math.max(1e-10, maxSpan * maxSpan * 1e-6);
+  for (let i = 0; i < n; i++) {
+    const a = pts2D[i];
+    const b = pts2D[(i + 1) % n];
+    const c = pts2D[(i + 2) % n];
+    if (cross2(a.x, a.y, b.x, b.y, c.x, c.y) < tol) return false;
+  }
+  return true;
+}
+
+function clipConvexPolyEdgesAgainstPlane(pts, dists) {
+  const n = pts.length;
   const out = [];
-  for (let i = 0; i < 3; i++) {
-    const p0 = pts[i], p1 = pts[(i + 1) % 3];
-    const d0 = ds[i], d1 = ds[(i + 1) % 3];
+  for (let i = 0; i < n; i++) {
+    const p0 = pts[i], p1 = pts[(i + 1) % n];
+    const d0 = dists[i], d1 = dists[(i + 1) % n];
     if (Math.abs(d0) <= 1e-8) {
       out.push({ x: p0.x, y: p0.y, z: p0.z });
     }
@@ -332,24 +427,23 @@ function clipTriEdgesAgainstPlane(a, b, c, da, db, dc) {
   return bestD > 1e-14 ? [pA, pB] : null;
 }
 
-function clipSegmentToTri2D(ax, ay, bx, by, ax2, ay2, bx2, by2, cx2, cy2) {
-  // Liang-Barsky contra las 3 aristas orientadas CCW del triángulo (a2,b2,c2)
-  const edges = [
-    [ax2, ay2, bx2, by2],
-    [bx2, by2, cx2, cy2],
-    [cx2, cy2, ax2, ay2],
-  ];
+function clipSegmentToConvexPoly2D(ax, ay, bx, by, polyPts2D) {
   let t0 = 0, t1 = 1;
   const dx = bx - ax, dy = by - ay;
-  for (let i = 0; i < 3; i++) {
-    const [ex0, ey0, ex1, ey1] = edges[i];
-    const enx = -(ey1 - ey0);
-    const eny = ex1 - ex0;
-    // Punto interior tiene (p - e0) · n >= 0
-    const num = (ax - ex0) * enx + (ay - ey0) * eny;
+  const n = polyPts2D.length;
+  for (let i = 0; i < n; i++) {
+    const e0 = polyPts2D[i];
+    const e1 = polyPts2D[(i + 1) % n];
+    const ex = e1.x - e0.x;
+    const ey = e1.y - e0.y;
+    const edgeLen = Math.hypot(ex, ey);
+    const enx = -ey;
+    const eny = ex;
+    const num = (ax - e0.x) * enx + (ay - e0.y) * eny;
     const den = dx * enx + dy * eny;
+    const eps = Math.max(1e-9, edgeLen * 1e-7);
     if (Math.abs(den) < 1e-12) {
-      if (num < -1e-7) return null;
+      if (num < -eps) return null;
     } else {
       const t = -num / den;
       if (den > 0) {
@@ -367,49 +461,58 @@ function clipSegmentToTri2D(ax, ay, bx, by, ax2, ay2, bx2, by2, cx2, cy2) {
   return [t0, t1];
 }
 
-function triTriSegments(a0, a1, a2, nA, b0, b1, b2, nB, planeTol) {
+function polyPolySegments(fA, fB, verts, planeTol) {
+  const nA = fA.normal, nB = fB.normal;
+  const oA = fA.origin, oB = fB.origin;
   const dotN = nA.x * nB.x + nA.y * nB.y + nA.z * nB.z;
-  const da0 = (a0.x - b0.x) * nB.x + (a0.y - b0.y) * nB.y + (a0.z - b0.z) * nB.z;
-  const da1 = (a1.x - b0.x) * nB.x + (a1.y - b0.y) * nB.y + (a1.z - b0.z) * nB.z;
-  const da2 = (a2.x - b0.x) * nB.x + (a2.y - b0.y) * nB.y + (a2.z - b0.z) * nB.z;
 
-  const db0 = (b0.x - a0.x) * nA.x + (b0.y - a0.y) * nA.y + (b0.z - a0.z) * nA.z;
-  const db1 = (b1.x - a0.x) * nA.x + (b1.y - a0.y) * nA.y + (b1.z - a0.z) * nA.z;
-  const db2 = (b2.x - a0.x) * nA.x + (b2.y - a0.y) * nA.y + (b2.z - a0.z) * nA.z;
+  const da = new Float64Array(fA.indices.length);
+  let minDa = Infinity, maxDa = -Infinity, maxAbsDa = 0;
+  for (let i = 0; i < fA.indices.length; i++) {
+    const p = verts[fA.indices[i]];
+    const d = (p.x - oB.x) * nB.x + (p.y - oB.y) * nB.y + (p.z - oB.z) * nB.z;
+    da[i] = d;
+    if (d < minDa) minDa = d;
+    if (d > maxDa) maxDa = d;
+    const ad = Math.abs(d);
+    if (ad > maxAbsDa) maxAbsDa = ad;
+  }
+
+  const db = new Float64Array(fB.indices.length);
+  let minDb = Infinity, maxDb = -Infinity, maxAbsDb = 0;
+  for (let i = 0; i < fB.indices.length; i++) {
+    const p = verts[fB.indices[i]];
+    const d = (p.x - oA.x) * nA.x + (p.y - oA.y) * nA.y + (p.z - oA.z) * nA.z;
+    db[i] = d;
+    if (d < minDb) minDb = d;
+    if (d > maxDb) maxDb = d;
+    const ad = Math.abs(d);
+    if (ad > maxAbsDb) maxAbsDb = ad;
+  }
+
+  if (Math.abs(dotN) > 0.992 && maxAbsDa <= planeTol && maxAbsDb <= planeTol) {
+    return { coplanar: true };
+  }
 
   const crossX = nA.y * nB.z - nA.z * nB.y;
   const crossY = nA.z * nB.x - nA.x * nB.z;
   const crossZ = nA.x * nB.y - nA.y * nB.x;
   const crossLenSq = crossX * crossX + crossY * crossY + crossZ * crossZ;
-
-  // Caso coplanar
-  if (
-    Math.abs(dotN) > 0.992 &&
-    Math.max(Math.abs(db0), Math.abs(db1), Math.abs(db2)) <= planeTol
-  ) {
-    return { coplanar: true };
-  }
-
   if (crossLenSq < 1e-10) return null;
 
   const eps = 1e-6;
-  const minDa = Math.min(da0, da1, da2);
-  const maxDa = Math.max(da0, da1, da2);
-  const minDb = Math.min(db0, db1, db2);
-  const maxDb = Math.max(db0, db1, db2);
-
   if (maxDa < -eps || minDa > eps) return null;
   if (maxDb < -eps || minDb > eps) return null;
 
-  // Si ninguno de los dos triángulos atraviesa estrictamente el plano del otro (p. ej. cubos adyacentes flush),
-  // solo se tocan en frontera sin penetración volumétrica.
   const strictA = minDa < -eps && maxDa > eps;
   const strictB = minDb < -eps && maxDb > eps;
   if (!strictA && !strictB) return null;
 
-  const segA = clipTriEdgesAgainstPlane(a0, a1, a2, da0, da1, da2);
+  const ptsA = fA.indices.map((vi) => verts[vi]);
+  const ptsB = fB.indices.map((vi) => verts[vi]);
+  const segA = clipConvexPolyEdgesAgainstPlane(ptsA, da);
   if (!segA) return null;
-  const segB = clipTriEdgesAgainstPlane(b0, b1, b2, db0, db1, db2);
+  const segB = clipConvexPolyEdgesAgainstPlane(ptsB, db);
   if (!segB) return null;
 
   const invL = 1 / Math.sqrt(crossLenSq);
@@ -441,42 +544,99 @@ function triTriSegments(a0, a1, a2, nA, b0, b1, b2, nB, planeTol) {
   return { coplanar: false, segment: [P, Q] };
 }
 
-function collectCoplanarOverlapSegs(targetA, targetB, verts) {
-  // Recorta las 3 aristas de targetB contra targetA (y viceversa) en 2D plano de targetA
-  const a0 = verts[targetA.a], a1 = verts[targetA.b], a2 = verts[targetA.c];
-  const nA = targetA.normal;
-  const e1x = a1.x - a0.x, e1y = a1.y - a0.y, e1z = a1.z - a0.z;
-  const uLen = Math.hypot(e1x, e1y, e1z);
-  if (uLen < 1e-10) return null;
-  const ux = e1x / uLen, uy = e1y / uLen, uz = e1z / uLen;
-  const vx = nA.y * uz - nA.z * uy;
-  const vy = nA.z * ux - nA.x * uz;
-  const vz = nA.x * uy - nA.y * ux;
+function triTriSegments(a0, a1, a2, nA, b0, b1, b2, nB, planeTol) {
+  const dotN = nA.x * nB.x + nA.y * nB.y + nA.z * nB.z;
+  const da0 = (a0.x - b0.x) * nB.x + (a0.y - b0.y) * nB.y + (a0.z - b0.z) * nB.z;
+  const da1 = (a1.x - b0.x) * nB.x + (a1.y - b0.y) * nB.y + (a1.z - b0.z) * nB.z;
+  const da2 = (a2.x - b0.x) * nB.x + (a2.y - b0.y) * nB.y + (a2.z - b0.z) * nB.z;
 
-  const to2D = (p) => {
-    const rx = p.x - a0.x, ry = p.y - a0.y, rz = p.z - a0.z;
-    return [rx * ux + ry * uy + rz * uz, rx * vx + ry * vy + rz * vz];
-  };
+  const db0 = (b0.x - a0.x) * nA.x + (b0.y - a0.y) * nA.y + (b0.z - a0.z) * nA.z;
+  const db1 = (b1.x - a0.x) * nA.x + (b1.y - a0.y) * nA.y + (b1.z - a0.z) * nA.z;
+  const db2 = (b2.x - a0.x) * nA.x + (b2.y - a0.y) * nA.y + (b2.z - a0.z) * nA.z;
 
-  const [ax2, ay2] = [0, 0];
-  const [bx2, by2] = to2D(a1);
-  const [cx2, cy2] = to2D(a2);
-
-  const bPts = [verts[targetB.a], verts[targetB.b], verts[targetB.c]];
-  const b2D = bPts.map(to2D);
-  // Orientación CCW de B en plano de A
-  const bArea = (b2D[1][0] - b2D[0][0]) * (b2D[2][1] - b2D[0][1]) - (b2D[1][1] - b2D[0][1]) * (b2D[2][0] - b2D[0][0]);
-  if (bArea < 0) {
-    bPts.reverse();
-    b2D.reverse();
+  if (
+    Math.abs(dotN) > 0.992 &&
+    Math.max(Math.abs(db0), Math.abs(db1), Math.abs(db2)) <= planeTol &&
+    Math.max(Math.abs(da0), Math.abs(da1), Math.abs(da2)) <= planeTol
+  ) {
+    return { coplanar: true };
   }
 
+  const crossX = nA.y * nB.z - nA.z * nB.y;
+  const crossY = nA.z * nB.x - nA.x * nB.z;
+  const crossZ = nA.x * nB.y - nA.y * nB.x;
+  const crossLenSq = crossX * crossX + crossY * crossY + crossZ * crossZ;
+  if (crossLenSq < 1e-10) return null;
+
+  const eps = 1e-6;
+  const minDa = Math.min(da0, da1, da2);
+  const maxDa = Math.max(da0, da1, da2);
+  const minDb = Math.min(db0, db1, db2);
+  const maxDb = Math.max(db0, db1, db2);
+
+  if (maxDa < -eps || minDa > eps) return null;
+  if (maxDb < -eps || minDb > eps) return null;
+
+  const strictA = minDa < -eps && maxDa > eps;
+  const strictB = minDb < -eps && maxDb > eps;
+  if (!strictA && !strictB) return null;
+
+  const segA = clipConvexPolyEdgesAgainstPlane([a0, a1, a2], [da0, da1, da2]);
+  if (!segA) return null;
+  const segB = clipConvexPolyEdgesAgainstPlane([b0, b1, b2], [db0, db1, db2]);
+  if (!segB) return null;
+
+  const invL = 1 / Math.sqrt(crossLenSq);
+  const dx = crossX * invL, dy = crossY * invL, dz = crossZ * invL;
+  const proj = (p) => p.x * dx + p.y * dy + p.z * dz;
+
+  let aT0 = proj(segA[0]), aT1 = proj(segA[1]);
+  let aP0 = segA[0], aP1 = segA[1];
+  if (aT0 > aT1) { [aT0, aT1] = [aT1, aT0]; [aP0, aP1] = [aP1, aP0]; }
+
+  let bT0 = proj(segB[0]), bT1 = proj(segB[1]);
+  let bP0 = segB[0], bP1 = segB[1];
+  if (bT0 > bT1) { [bT0, bT1] = [bT1, bT0]; [bP0, bP1] = [bP1, bP0]; }
+
+  const lo = Math.max(aT0, bT0);
+  const hi = Math.min(aT1, bT1);
+  if (hi - lo <= 1e-6) return null;
+
+  const lerp = (p, q, t) => ({
+    x: p.x + (q.x - p.x) * t,
+    y: p.y + (q.y - p.y) * t,
+    z: p.z + (q.z - p.z) * t,
+  });
+
+  const P = lo === aT0 ? aP0 : (aT1 > aT0 ? lerp(aP0, aP1, (lo - aT0) / (aT1 - aT0)) : bP0);
+  const Q = hi === aT1 ? aP1 : (aT1 > aT0 ? lerp(aP0, aP1, (hi - aT0) / (aT1 - aT0)) : bP1);
+  if (Math.hypot(Q.x - P.x, Q.y - P.y, Q.z - P.z) <= 1e-6) return null;
+
+  return { coplanar: false, segment: [P, Q] };
+}
+
+function collectCoplanarFaceOverlapSegs(fA, fB, verts) {
+  // Recorta únicamente las aristas reales del polígono B contra A y viceversa (sin diagonales internas)
+  const { origin, uAxis, vAxis, pts2D: a2D } = fA;
+  const toA2D = (p) => {
+    const rx = p.x - origin.x, ry = p.y - origin.y, rz = p.z - origin.z;
+    return { x: rx * uAxis.x + ry * uAxis.y + rz * uAxis.z, y: rx * vAxis.x + ry * vAxis.y + rz * vAxis.z };
+  };
+
+  const bPts = fB.indices.map((vi) => verts[vi]);
+  const b2D = bPts.map(toA2D);
+  let bArea = 0;
+  for (let i = 0; i < b2D.length; i++) {
+    const p = b2D[i], q = b2D[(i + 1) % b2D.length];
+    bArea += p.x * q.y - q.x * p.y;
+  }
+  const b2DCCW = bArea >= 0 ? b2D : b2D.slice().reverse();
+
   const segsForA = [];
-  for (let i = 0; i < 3; i++) {
-    const p0 = bPts[i], p1 = bPts[(i + 1) % 3];
-    const [x0, y0] = b2D[i];
-    const [x1, y1] = b2D[(i + 1) % 3];
-    const span = clipSegmentToTri2D(x0, y0, x1, y1, ax2, ay2, bx2, by2, cx2, cy2);
+  for (let i = 0; i < bPts.length; i++) {
+    const p0 = bPts[i], p1 = bPts[(i + 1) % bPts.length];
+    const q0 = b2D[i], q1 = b2D[(i + 1) % bPts.length];
+    const span = clipSegmentToConvexPoly2D(q0.x, q0.y, q1.x, q1.y, a2D);
     if (span) {
       const [t0, t1] = span;
       segsForA.push([
@@ -487,18 +647,68 @@ function collectCoplanarOverlapSegs(targetA, targetB, verts) {
   }
 
   const segsForB = [];
+  const aPts = fA.indices.map((vi) => verts[vi]);
+  for (let i = 0; i < aPts.length; i++) {
+    const p0 = aPts[i], p1 = aPts[(i + 1) % aPts.length];
+    const q0 = a2D[i], q1 = a2D[(i + 1) % aPts.length];
+    const span = clipSegmentToConvexPoly2D(q0.x, q0.y, q1.x, q1.y, b2DCCW);
+    if (span) {
+      const [t0, t1] = span;
+      segsForB.push([
+        { x: p0.x + (p1.x - p0.x) * t0, y: p0.y + (p1.y - p0.y) * t0, z: p0.z + (p1.z - p0.z) * t0 },
+        { x: p0.x + (p1.x - p0.x) * t1, y: p0.y + (p1.y - p0.y) * t1, z: p0.z + (p1.z - p0.z) * t1 },
+      ]);
+    }
+  }
+
+  return { segsForA, segsForB };
+}
+
+function collectCoplanarTriBoundarySegs(tA, tB, verts, clipBEdgesOnly = true) {
+  const a0 = verts[tA.a], a1 = verts[tA.b], a2 = verts[tA.c];
+  const nA = tA.normal;
+  const e1x = a1.x - a0.x, e1y = a1.y - a0.y, e1z = a1.z - a0.z;
+  const uLen = Math.hypot(e1x, e1y, e1z);
+  if (uLen < 1e-10) return null;
+  const ux = e1x / uLen, uy = e1y / uLen, uz = e1z / uLen;
+  const vx = nA.y * uz - nA.z * uy;
+  const vy = nA.z * ux - nA.x * uz;
+  const vz = nA.x * uy - nA.y * ux;
+
+  const to2D = (p) => {
+    const rx = p.x - a0.x, ry = p.y - a0.y, rz = p.z - a0.z;
+    return { x: rx * ux + ry * uy + rz * uz, y: rx * vx + ry * vy + rz * vz };
+  };
+
   const aPts = [a0, a1, a2];
-  const a2D = [[ax2, ay2], [bx2, by2], [cx2, cy2]];
+  const a2D = [{ x: 0, y: 0 }, to2D(a1), to2D(a2)];
+
+  const bPts = [verts[tB.a], verts[tB.b], verts[tB.c]];
+  const b2D = bPts.map(to2D);
+  const bArea = cross2(b2D[0].x, b2D[0].y, b2D[1].x, b2D[1].y, b2D[2].x, b2D[2].y);
+  const b2DCCW = bArea >= 0 ? b2D : [b2D[0], b2D[2], b2D[1]];
+
+  const segsForA = [];
   for (let i = 0; i < 3; i++) {
+    if (clipBEdgesOnly && tB.edgeIsBoundary && !tB.edgeIsBoundary[i]) continue;
+    const p0 = bPts[i], p1 = bPts[(i + 1) % 3];
+    const q0 = b2D[i], q1 = b2D[(i + 1) % 3];
+    const span = clipSegmentToConvexPoly2D(q0.x, q0.y, q1.x, q1.y, a2D);
+    if (span) {
+      const [t0, t1] = span;
+      segsForA.push([
+        { x: p0.x + (p1.x - p0.x) * t0, y: p0.y + (p1.y - p0.y) * t0, z: p0.z + (p1.z - p0.z) * t0 },
+        { x: p0.x + (p1.x - p0.x) * t1, y: p0.y + (p1.y - p0.y) * t1, z: p0.z + (p1.z - p0.z) * t1 },
+      ]);
+    }
+  }
+
+  const segsForB = [];
+  for (let i = 0; i < 3; i++) {
+    if (clipBEdgesOnly && tA.edgeIsBoundary && !tA.edgeIsBoundary[i]) continue;
     const p0 = aPts[i], p1 = aPts[(i + 1) % 3];
-    const [x0, y0] = a2D[i];
-    const [x1, y1] = a2D[(i + 1) % 3];
-    const span = clipSegmentToTri2D(
-      x0, y0, x1, y1,
-      b2D[0][0], b2D[0][1],
-      b2D[1][0], b2D[1][1],
-      b2D[2][0], b2D[2][1]
-    );
+    const q0 = a2D[i], q1 = a2D[(i + 1) % 3];
+    const span = clipSegmentToConvexPoly2D(q0.x, q0.y, q1.x, q1.y, b2DCCW);
     if (span) {
       const [t0, t1] = span;
       segsForB.push([
@@ -512,12 +722,8 @@ function collectCoplanarOverlapSegs(targetA, targetB, verts) {
 }
 
 // ============================================================================
-// Subdivisión Planar 2D de un Triángulo con Segmentos de Corte (PSLG + Ear Clipping)
+// Subdivisión Planar 2D de un Polígono Convexo con Segmentos de Corte (PSLG)
 // ============================================================================
-
-function cross2(ax, ay, bx, by, cx, cy) {
-  return (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
-}
 
 function earClipSimplePoly(poly, pts2D) {
   if (poly.length < 3) return [];
@@ -564,7 +770,6 @@ function earClipSimplePoly(poly, pts2D) {
       }
     }
     if (!clipped) {
-      // Polígono casi degenerado o colineal: abanico restante limpio
       for (let i = 1; i + 1 < ring.length; i++) {
         out.push([ring[0], ring[i], ring[i + 1]]);
       }
@@ -575,37 +780,46 @@ function earClipSimplePoly(poly, pts2D) {
   return out;
 }
 
-function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segments, snapTol) {
-  const e1x = b.x - a.x, e1y = b.y - a.y, e1z = b.z - a.z;
-  const uLen = Math.hypot(e1x, e1y, e1z);
-  if (uLen < 1e-10 || !segments.length) return null;
-  const ux = e1x / uLen, uy = e1y / uLen, uz = e1z / uLen;
-  const vx = normal.y * uz - normal.z * uy;
-  const vy = normal.z * ux - normal.x * uz;
-  const vz = normal.x * uy - normal.y * ux;
+function splitConvexPolygonWithSegments(
+  polyPts3D,
+  polyUvs,
+  polyPts2D,
+  origin,
+  uAxis,
+  vAxis,
+  segments,
+  snapTol,
+  origVertIndices
+) {
+  const m = polyPts3D.length;
+  if (m < 3 || !segments.length) return null;
 
   const to2D = (p) => {
-    const rx = p.x - a.x, ry = p.y - a.y, rz = p.z - a.z;
-    return { x: rx * ux + ry * uy + rz * uz, y: rx * vx + ry * vy + rz * vz };
+    const rx = p.x - origin.x, ry = p.y - origin.y, rz = p.z - origin.z;
+    return {
+      x: rx * uAxis.x + ry * uAxis.y + rz * uAxis.z,
+      y: rx * vAxis.x + ry * vAxis.y + rz * vAxis.z,
+    };
   };
 
-  const p0 = { x: 0, y: 0 };
-  const p1 = to2D(b);
-  const p2 = to2D(c);
-  const triArea = cross2(p0.x, p0.y, p1.x, p1.y, p2.x, p2.y);
-  if (triArea <= 1e-12) return null;
+  let scale = 0;
+  for (let i = 0; i < m; i++) {
+    const a = polyPts2D[i], b = polyPts2D[(i + 1) % m];
+    const d = Math.hypot(b.x - a.x, b.y - a.y);
+    if (d > scale) scale = d;
+  }
+  if (scale < 1e-8) return null;
 
-  const scale = Math.max(uLen, Math.hypot(p2.x, p2.y), 1e-5);
   const snap = Math.max(1e-6, Math.min(snapTol, scale * 1e-3));
   const snapSq = snap * snap;
 
-  // Colectar y recortar todos los segmentos dentro de (p0, p1, p2)
+  // Recortar todos los segmentos al contorno convexo [0..m-1]
   const rawSegs = [];
   for (let i = 0; i < segments.length; i++) {
     const s = segments[i];
     const q0 = to2D(s[0]);
     const q1 = to2D(s[1]);
-    const span = clipSegmentToTri2D(q0.x, q0.y, q1.x, q1.y, p0.x, p0.y, p1.x, p1.y, p2.x, p2.y);
+    const span = clipSegmentToConvexPoly2D(q0.x, q0.y, q1.x, q1.y, polyPts2D);
     if (!span) continue;
     const [t0, t1] = span;
     const ax = q0.x + (q1.x - q0.x) * t0, ay = q0.y + (q1.y - q0.y) * t0;
@@ -615,20 +829,19 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
   }
   if (!rawSegs.length) return null;
 
-  // Puntos unificados [p0, p1, p2, ...interiores]
-  const pts2D = [p0, p1, p2];
-  const triEdges2 = [[0, 1], [1, 2], [2, 0]];
+  const pts2D = polyPts2D.map((p) => ({ x: p.x, y: p.y }));
+  const polyEdges = [];
+  for (let i = 0; i < m; i++) polyEdges.push([i, (i + 1) % m]);
 
   const addPoint = (x, y) => {
-    // 1. Snapping exacto contra vértices existentes
     for (let i = 0; i < pts2D.length; i++) {
       const dx = x - pts2D[i].x, dy = y - pts2D[i].y;
       if (dx * dx + dy * dy <= snapSq) return i;
     }
-    // 2. Proyección exacta sobre aristas de frontera si está dentro de snap
+
     let sx = x, sy = y;
-    for (let e = 0; e < 3; e++) {
-      const va = pts2D[triEdges2[e][0]], vb = pts2D[triEdges2[e][1]];
+    for (let e = 0; e < m; e++) {
+      const va = pts2D[polyEdges[e][0]], vb = pts2D[polyEdges[e][1]];
       const ex = vb.x - va.x, ey = vb.y - va.y;
       const lSq = ex * ex + ey * ey;
       if (lSq < 1e-14) continue;
@@ -641,18 +854,23 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
         }
       }
     }
-    // Clamping baricéntrico estricto al triángulo [0,1,2]
-    const w1 = cross2(p2.x, p2.y, p0.x, p0.y, sx, sy) / triArea;
-    const w2 = cross2(p0.x, p0.y, p1.x, p1.y, sx, sy) / triArea;
-    const w0 = 1 - w1 - w2;
-    if (w0 < -1e-4 || w1 < -1e-4 || w2 < -1e-4) {
-      const cw0 = Math.max(0, w0);
-      const cw1 = Math.max(0, w1);
-      const cw2 = Math.max(0, w2);
-      const sum = cw0 + cw1 + cw2 || 1;
-      sx = (p0.x * cw0 + p1.x * cw1 + p2.x * cw2) / sum;
-      sy = (p0.y * cw0 + p1.y * cw1 + p2.y * cw2) / sum;
+
+    // Clamp suave hacia adentro del polígono convexo [0..m-1] si el punto se salió levemente
+    for (let pass = 0; pass < 2; pass++) {
+      for (let e = 0; e < m; e++) {
+        const va = polyPts2D[e], vb = polyPts2D[(e + 1) % m];
+        const ex = vb.x - va.x, ey = vb.y - va.y;
+        const lSq = ex * ex + ey * ey;
+        if (lSq < 1e-14) continue;
+        const c = ex * (sy - va.y) - ey * (sx - va.x);
+        if (c < -1e-6 * lSq) {
+          const t = Math.max(0, Math.min(1, ((sx - va.x) * ex + (sy - va.y) * ey) / lSq));
+          sx = va.x + ex * t;
+          sy = va.y + ey * t;
+        }
+      }
     }
+
     for (let i = 0; i < pts2D.length; i++) {
       const dx = sx - pts2D[i].x, dy = sy - pts2D[i].y;
       if (dx * dx + dy * dy <= snapSq) return i;
@@ -661,20 +879,19 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
     return pts2D.length - 1;
   };
 
-  // Convertir rawSegs a pares de índices e intersectar pares de segmentos cruzados
   let segPairs = [];
   for (let i = 0; i < rawSegs.length; i++) {
     const ia = addPoint(rawSegs[i][0].x, rawSegs[i][0].y);
     const ib = addPoint(rawSegs[i][1].x, rawSegs[i][1].y);
     if (ia !== ib) segPairs.push([ia, ib]);
   }
+  if (!segPairs.length && pts2D.length === m) return null;
 
-  // Subdividir pares de segmentos donde se crucen o donde un punto intermedio caiga encima
+  // Dividir segmentos en cruces mutuos y puntos intermedios colineales
   let changedSegs = true;
   let iterGuard = 0;
   while (changedSegs && iterGuard++ < 8) {
     changedSegs = false;
-    // Cruces segmento-segmento
     for (let i = 0; i < segPairs.length; i++) {
       for (let j = i + 1; j < segPairs.length; j++) {
         const [a0, a1] = segPairs[i];
@@ -695,7 +912,6 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
       }
     }
 
-    // Partir segmentos por puntos intermedios existentes (colinealidad)
     const nextPairs = [];
     const seenEdge = new Set();
     for (let i = 0; i < segPairs.length; i++) {
@@ -732,8 +948,10 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
     segPairs = nextPairs;
   }
 
-  // Mantener solo pares que no coincidan completamente con una arista exterior del triángulo padre
-  let tris = [[0, 1, 2]];
+  // Triangulación base del polígono [0..m-1] sin puntos interiores extra
+  const baseRing = Array.from({ length: m }, (_, i) => i);
+  const initTris = m === 3 ? [[0, 1, 2]] : earClipSimplePoly(baseRing, pts2D);
+  let tris = initTris.map((t) => [t[0], t[1], t[2]]);
 
   const bary = (px, py, ia, ib, ic) => {
     const va = pts2D[ia], vb = pts2D[ib], vc = pts2D[ic];
@@ -746,10 +964,9 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
     return [w0, w1, w2];
   };
 
-  // Paso 1: Insertar todos los puntos vi >= 3 dentro de `tris`
-  for (let vi = 3; vi < pts2D.length; vi++) {
+  // Paso 1: Insertar puntos nuevos vi >= m en la triangulación
+  for (let vi = m; vi < pts2D.length; vi++) {
     const p = pts2D[vi];
-    // Comprobar si cae en alguna arista de los sub-triángulos existentes
     let hitEdge = null;
     let bestEdgeDist = snap;
     for (let ti = 0; ti < tris.length; ti++) {
@@ -780,8 +997,6 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
         const iu = t.indexOf(su), iv = t.indexOf(sv);
         if (iu >= 0 && iv >= 0) {
           const iOpp = 3 - iu - iv;
-          const opp = t[iOpp];
-          // Conservar CCW original
           const a = t[iOpp], b = t[(iOpp + 1) % 3], cTri = t[(iOpp + 2) % 3];
           nextTris.push([a, b, vi], [a, vi, cTri]);
         } else {
@@ -792,19 +1007,30 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
       continue;
     }
 
-    // Buscar triángulo que contiene p
+    let bestTi = -1;
+    let bestMinW = -1e-3;
     for (let ti = 0; ti < tris.length; ti++) {
       const t = tris[ti];
-      if (t[0] === vi || t[1] === vi || t[2] === vi) break;
-      const bw = bary(p.x, p.y, t[0], t[1], t[2]);
-      if (bw && bw[0] > -1e-4 && bw[1] > -1e-4 && bw[2] > -1e-4) {
-        tris.splice(ti, 1, [t[0], t[1], vi], [t[1], t[2], vi], [t[2], t[0], vi]);
+      if (t[0] === vi || t[1] === vi || t[2] === vi) {
+        bestTi = -2;
         break;
       }
+      const bw = bary(p.x, p.y, t[0], t[1], t[2]);
+      if (bw) {
+        const minW = Math.min(bw[0], bw[1], bw[2]);
+        if (minW > bestMinW) {
+          bestMinW = minW;
+          bestTi = ti;
+        }
+      }
+    }
+    if (bestTi >= 0) {
+      const t = tris[bestTi];
+      tris.splice(bestTi, 1, [t[0], t[1], vi], [t[1], t[2], vi], [t[2], t[0], vi]);
     }
   }
 
-  // Paso 2: Forzar cada segmento restringido (p, q) dividiendo/re-triangulando cavidades cruzadas
+  // Paso 2: Forzar segmentos mediante retriangulación de cavidades cruzadas
   const hasEdgeInTris = (u, v) => {
     for (let ti = 0; ti < tris.length; ti++) {
       const t = tris[ti];
@@ -834,7 +1060,7 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
         const qpx = pA.x - pS.x, qpy = pA.y - pS.y;
         const tt = (qpx * sdy - qpy * sdx) / den;
         const uu = (qpx * rdy - qpy * rdx) / den;
-        if (tt > 1e-5 && tt < 1 - 1e-5 && uu > 1e-5 && uu < 1 - 1e-5) {
+        if (tt > 1e-6 && tt < 1 - 1e-6 && uu > 1e-6 && uu < 1 - 1e-6) {
           crossedIdx.add(ti);
           break;
         }
@@ -843,7 +1069,6 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
 
     if (!crossedIdx.size) continue;
 
-    // Extraer aristas de frontera de la cavidad de triángulos cruzados
     const dirSet = new Set();
     const boundaryEdges = [];
     const nextTris = [];
@@ -867,7 +1092,6 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
       }
     }
 
-    // Reconstruir anillo ordenado de frontera y partir por sp -> sq
     const nextVert = new Map();
     for (const [u, v] of boundaryEdges) nextVert.set(u, v);
     const loop = [];
@@ -881,53 +1105,76 @@ function splitSingleTriangleWithSegments(a, b, c, uva, uvb, uvc, normal, segment
       }
     }
     const idxQ = loop.indexOf(sq);
-    if (loop.length >= 4 && idxQ > 0) {
-      const upper = loop.slice(0, idxQ + 1); // sp -> ... -> sq
-      const lower = [sq, ...loop.slice(idxQ + 1), sp]; // sq -> ... -> sp
+    if (loop.length >= 4 && idxQ > 0 && idxQ < loop.length) {
+      const upper = loop.slice(0, idxQ + 1);
+      const lower = [sq, ...loop.slice(idxQ + 1), sp];
       const tUpper = earClipSimplePoly(upper, pts2D);
       const tLower = earClipSimplePoly(lower, pts2D);
-      tris = nextTris.concat(tUpper, tLower);
+      if (tUpper.length && tLower.length) {
+        tris = nextTris.concat(tUpper, tLower);
+      }
     }
   }
 
-  // Reconstruir vértices 3D + UVs por coordenadas baricéntricas
-  const outVerts = [
-    { x: a.x, y: a.y, z: a.z },
-    { x: b.x, y: b.y, z: b.z },
-    { x: c.x, y: c.y, z: c.z },
-  ];
-  const outUvs = [uva.slice(), uvb.slice(), uvc.slice()];
-  for (let vi = 3; vi < pts2D.length; vi++) {
-    const p = pts2D[vi];
-    const w1 = cross2(p2.x, p2.y, p0.x, p0.y, p.x, p.y) / triArea;
-    const w2 = cross2(p0.x, p0.y, p1.x, p1.y, p.x, p.y) / triArea;
-    const w0 = 1 - w1 - w2;
-    outVerts.push({
-      x: a.x * w0 + b.x * w1 + c.x * w2,
-      y: a.y * w0 + b.y * w1 + c.y * w2,
-      z: a.z * w0 + b.z * w1 + c.z * w2,
-    });
-    outUvs.push([
-      uva[0] * w0 + uvb[0] * w1 + uvc[0] * w2,
-      uva[1] * w0 + uvb[1] * w1 + uvc[1] * w2,
-    ]);
+  // Reconstruir vértices 3D + UVs reutilizando esquinas originales 0..m-1 sin duplicarlas
+  const outNewVerts = [];
+  const vertGlobalIndices = new Int32Array(pts2D.length);
+  const outUvs = new Array(pts2D.length);
+
+  for (let vi = 0; vi < m; vi++) {
+    vertGlobalIndices[vi] = origVertIndices ? origVertIndices[vi] : vi;
+    outUvs[vi] = polyUvs[vi].slice();
   }
 
-  // Filtrar sub-triángulos degenerados y asegurar orientación consistente
+  for (let vi = m; vi < pts2D.length; vi++) {
+    const p = pts2D[vi];
+    let bestTri = initTris[0];
+    let bestW = [1, 0, 0];
+    let bestScore = -Infinity;
+    for (let k = 0; k < initTris.length; k++) {
+      const it = initTris[k];
+      const bw = bary(p.x, p.y, it[0], it[1], it[2]);
+      if (!bw) continue;
+      const minW = Math.min(bw[0], bw[1], bw[2]);
+      if (minW > bestScore) {
+        bestScore = minW;
+        bestTri = it;
+        bestW = bw;
+      }
+    }
+    const cw0 = Math.max(0, bestW[0]);
+    const cw1 = Math.max(0, bestW[1]);
+    const cw2 = Math.max(0, bestW[2]);
+    const sum = cw0 + cw1 + cw2 || 1;
+    const w0 = cw0 / sum, w1 = cw1 / sum, w2 = cw2 / sum;
+    const p0 = polyPts3D[bestTri[0]], p1 = polyPts3D[bestTri[1]], p2 = polyPts3D[bestTri[2]];
+    const uv0 = polyUvs[bestTri[0]], uv1 = polyUvs[bestTri[1]], uv2 = polyUvs[bestTri[2]];
+    vertGlobalIndices[vi] = -(outNewVerts.length + 1); // indicador temporal relativo
+    outNewVerts.push({
+      x: p0.x * w0 + p1.x * w1 + p2.x * w2,
+      y: p0.y * w0 + p1.y * w1 + p2.y * w2,
+      z: p0.z * w0 + p1.z * w1 + p2.z * w2,
+    });
+    outUvs[vi] = [
+      uv0[0] * w0 + uv1[0] * w1 + uv2[0] * w2,
+      uv0[1] * w0 + uv1[1] * w1 + uv2[1] * w2,
+    ];
+  }
+
   const cleanTris = [];
   for (let i = 0; i < tris.length; i++) {
     const [ia, ib, ic] = tris[i];
     if (ia === ib || ib === ic || ic === ia) continue;
     const area2 = cross2(pts2D[ia].x, pts2D[ia].y, pts2D[ib].x, pts2D[ib].y, pts2D[ic].x, pts2D[ic].y);
-    if (Math.abs(area2) <= 1e-12) continue;
+    if (Math.abs(area2) <= 1e-13) continue;
     cleanTris.push(area2 > 0 ? [ia, ib, ic] : [ia, ic, ib]);
   }
 
-  return { verts: outVerts, uvs: outUvs, tris: cleanTris };
+  return { newVerts: outNewVerts, vertGlobalIndices, uvs: outUvs, tris: cleanTris };
 }
 
 // ============================================================================
-// Pipeline unificado de soldado + unión booleana sólida de sub-mallas
+// Pipeline unificado de unión booleana sólida de sub-mallas
 // ============================================================================
 
 export function computeFaceShellIds(editableMesh) {
@@ -987,7 +1234,6 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
   const tol = Math.max(1e-6, Number(threshold) || 0.015);
   const verts = editableMesh.verts;
 
-  // Escala global
   let gMinX = Infinity, gMinY = Infinity, gMinZ = Infinity;
   let gMaxX = -Infinity, gMaxY = -Infinity, gMaxZ = -Infinity;
   for (let i = 0; i < verts.length; i++) {
@@ -998,9 +1244,10 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
   }
   const diag = Math.hypot(gMaxX - gMinX, gMaxY - gMinY, gMaxZ - gMinZ) || 1;
   const planeTol = Math.min(tol * 0.5, diag * 1e-4);
+  const polyPlanarTol = Math.max(planeTol, diag * 2e-4);
 
-  // Triangulación temporal de cada cara por shell
   const allTris = [];
+  const facesMeta = new Array(editableMesh.faces.length);
   const trisByShell = Array.from({ length: shellCount }, () => []);
   const edgeCountByShell = Array.from({ length: shellCount }, () => new Map());
 
@@ -1023,6 +1270,22 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
     for (let i = 0; i < f.length; i++) {
       countShellEdge(sId, f[i], f[(i + 1) % f.length]);
     }
+
+    const pts3D = f.map((vi) => verts[vi]);
+    const basis = computePolygonBasis3D(pts3D);
+    const isPlanarConvex = Boolean(
+      basis &&
+      basis.area2 > 1e-12 &&
+      (f.length === 3 || (basis.maxPlaneDist <= polyPlanarTol && isConvexCCW2D(basis.pts2D)))
+    );
+
+    const triRefs = [];
+    const boundaryEdgeSet = new Set();
+    for (let i = 0; i < f.length; i++) {
+      const a = f[i], b = f[(i + 1) % f.length];
+      boundaryEdgeSet.add(edgeKey(a, b));
+    }
+
     const pushTri = (ia, ib, ic, ua, ub, uc) => {
       const pa = verts[ia], pb = verts[ib], pc = verts[ic];
       const e1x = pb.x - pa.x, e1y = pb.y - pa.y, e1z = pb.z - pa.z;
@@ -1034,13 +1297,20 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
       if (l < 1e-11) return;
       const triObj = {
         index: allTris.length,
+        faceIndex: fi,
         shell: sId,
         a: ia, b: ib, c: ic,
         uva: ua.slice(), uvb: ub.slice(), uvc: uc.slice(),
         normal: { x: nx / l, y: ny / l, z: nz / l },
+        edgeIsBoundary: [
+          boundaryEdgeSet.has(edgeKey(ia, ib)),
+          boundaryEdgeSet.has(edgeKey(ib, ic)),
+          boundaryEdgeSet.has(edgeKey(ic, ia)),
+        ],
       };
       allTris.push(triObj);
       trisByShell[sId].push(triObj);
+      triRefs.push(triObj);
     };
 
     if (f.length === 3) {
@@ -1053,6 +1323,20 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
         pushTri(f[0], f[i], f[i + 1], fUv[0] || [0, 0], fUv[i] || [0, 0], fUv[i + 1] || [0, 0]);
       }
     }
+
+    facesMeta[fi] = {
+      fi,
+      shell: sId,
+      indices: f,
+      uvs: fUv,
+      normal: basis ? basis.normal : (triRefs[0] ? triRefs[0].normal : { x: 0, y: 1, z: 0 }),
+      origin: basis ? basis.origin : pts3D[0],
+      uAxis: basis ? basis.uAxis : { x: 1, y: 0, z: 0 },
+      vAxis: basis ? basis.vAxis : { x: 0, y: 0, z: 1 },
+      pts2D: basis ? basis.pts2D : null,
+      isPlanarConvex,
+      triRefs,
+    };
   }
 
   // Construir info & BVH por shell
@@ -1088,8 +1372,14 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
     return { performed: false };
   }
 
-  // Buscar pares de shells con AABB superpuestos y recopilar intersecciones transversales/coplanares + contención interior
-  const triSegs = new Map(); // global tri.index -> Array<[p, q]>
+  // Colectar segmentos por cara planar convexa (`faceSegs`) o por triángulo fallback (`triSegs`)
+  const faceSegs = new Map();
+  const triSegs = new Map();
+  const pushFaceSeg = (fi, seg) => {
+    let arr = faceSegs.get(fi);
+    if (!arr) { arr = []; faceSegs.set(fi, arr); }
+    arr.push(seg);
+  };
   const pushTriSeg = (triIdx, seg) => {
     let arr = triSegs.get(triIdx);
     if (!arr) { arr = []; triSegs.set(triIdx, arr); }
@@ -1098,7 +1388,9 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
 
   let hasTransverseCross = false;
   let hasStrictlyInside = false;
-  const coplanarPairs = [];
+  const coplanarFacePairs = [];
+  const coplanarTriPairs = [];
+  const seenFacePairs = new Set();
   const surfTol = Math.max(1e-6, Math.min(tol * 0.05, diag * 1e-4));
   const surfTolSq = surfTol * surfTol;
 
@@ -1116,7 +1408,6 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
         continue;
       }
 
-      // 1. Comprobar intersección triángulo-triángulo usando BVH de shell B
       for (let i = 0; i < infoA.tris.length; i++) {
         const tA = infoA.tris[i];
         const a0 = verts[tA.a], a1 = verts[tA.b], a2 = verts[tA.c];
@@ -1127,22 +1418,46 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
         const maxY = Math.max(a0.y, a1.y, a2.y) + planeTol;
         const maxZ = Math.max(a0.z, a1.z, a2.z) + planeTol;
 
+        const fA = facesMeta[tA.faceIndex];
+
         queryBVHBox(infoB.bvh, minX, minY, minZ, maxX, maxY, maxZ, (localIdxB) => {
           const tB = infoB.tris[localIdxB];
+          const fB = facesMeta[tB.faceIndex];
+
+          // Vía rápida limpia a nivel de polígono planar convexo (evita cortes fantasma contra diagonales de quads)
+          if (fA && fB && fA.isPlanarConvex && fB.isPlanarConvex) {
+            const pk = fA.fi < fB.fi ? `${fA.fi}_${fB.fi}` : `${fB.fi}_${fA.fi}`;
+            if (seenFacePairs.has(pk)) return;
+            seenFacePairs.add(pk);
+
+            const hit = polyPolySegments(fA, fB, verts, planeTol);
+            if (!hit) return;
+            if (hit.coplanar) {
+              coplanarFacePairs.push([fA, fB]);
+            } else if (hit.segment) {
+              hasTransverseCross = true;
+              pushFaceSeg(fA.fi, hit.segment);
+              pushFaceSeg(fB.fi, hit.segment);
+            }
+            return;
+          }
+
+          // Fallback triángulo-triángulo para caras no planares o cóncavas
           const b0 = verts[tB.a], b1 = verts[tB.b], b2 = verts[tB.c];
           const hit = triTriSegments(a0, a1, a2, tA.normal, b0, b1, b2, tB.normal, planeTol);
           if (!hit) return;
           if (hit.coplanar) {
-            coplanarPairs.push([tA, tB]);
+            coplanarTriPairs.push([tA, tB]);
           } else if (hit.segment) {
             hasTransverseCross = true;
-            pushTriSeg(tA.index, hit.segment);
-            pushTriSeg(tB.index, hit.segment);
+            if (fA && fA.isPlanarConvex) pushFaceSeg(fA.fi, hit.segment);
+            else pushTriSeg(tA.index, hit.segment);
+            if (fB && fB.isPlanarConvex) pushFaceSeg(fB.fi, hit.segment);
+            else pushTriSeg(tB.index, hit.segment);
           }
         });
       }
 
-      // 2. Comprobar contención estricta de algún centroide/vértice si alguno es sólido cerrado
       if (!hasStrictlyInside && infoB.isClosed) {
         for (let i = 0; i < infoA.tris.length; i++) {
           const t = infoA.tris[i];
@@ -1170,113 +1485,203 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
     }
   }
 
-  // Si no hay cruce transversal ni penetración interior: verificar si hay pares coplanares con diferente tamaño
-  // (p. ej. cubo pequeño pegado contra cara de cubo grande). Si son cubos flush idénticos, preservar quads originales.
   if (!hasTransverseCross && !hasStrictlyInside) {
     return { performed: false };
   }
 
-  // Agregar segmentos coplanares para que caras compartidas en el mismo plano (p.ej. tapas superiores de dos cubos)
-  // queden perfectamente divididas y coincidan esquina a esquina
-  for (let i = 0; i < coplanarPairs.length; i++) {
-    const [tA, tB] = coplanarPairs[i];
-    const co = collectCoplanarOverlapSegs(tA, tB, verts);
+  // Agregar segmentos coplanares usando únicamente aristas exteriores reales
+  for (let i = 0; i < coplanarFacePairs.length; i++) {
+    const [fA, fB] = coplanarFacePairs[i];
+    const co = collectCoplanarFaceOverlapSegs(fA, fB, verts);
+    for (let k = 0; k < co.segsForA.length; k++) pushFaceSeg(fA.fi, co.segsForA[k]);
+    for (let k = 0; k < co.segsForB.length; k++) pushFaceSeg(fB.fi, co.segsForB[k]);
+  }
+  for (let i = 0; i < coplanarTriPairs.length; i++) {
+    const [tA, tB] = coplanarTriPairs[i];
+    const co = collectCoplanarTriBoundarySegs(tA, tB, verts, true);
     if (!co) continue;
-    for (let k = 0; k < co.segsForA.length; k++) pushTriSeg(tA.index, co.segsForA[k]);
-    for (let k = 0; k < co.segsForB.length; k++) pushTriSeg(tB.index, co.segsForB[k]);
-  }
-
-  // Subdividir los triángulos cruzados y conservar lista plana de sub-triángulos
-  const splitVerts = verts.map((v) => ({ x: v.x, y: v.y, z: v.z }));
-  const seamSnap = Math.max(1e-5, Math.min(tol * 0.25, diag * 2e-4));
-  const subTris = [];
-
-  for (let ti = 0; ti < allTris.length; ti++) {
-    const t = allTris[ti];
-    const segs = triSegs.get(t.index);
-    if (segs && segs.length) {
-      const splitRes = splitSingleTriangleWithSegments(
-        verts[t.a], verts[t.b], verts[t.c],
-        t.uva, t.uvb, t.uvc,
-        t.normal,
-        segs,
-        seamSnap
-      );
-      if (splitRes && splitRes.tris.length) {
-        const baseIdx = splitVerts.length;
-        for (let k = 0; k < splitRes.verts.length; k++) {
-          splitVerts.push(splitRes.verts[k]);
-        }
-        for (let k = 0; k < splitRes.tris.length; k++) {
-          const [ia, ib, ic] = splitRes.tris[k];
-          subTris.push({
-            shell: t.shell,
-            a: baseIdx + ia,
-            b: baseIdx + ib,
-            c: baseIdx + ic,
-            uvs: [splitRes.uvs[ia], splitRes.uvs[ib], splitRes.uvs[ic]],
-            normal: t.normal,
-          });
-        }
-        continue;
-      }
+    const fA = facesMeta[tA.faceIndex], fB = facesMeta[tB.faceIndex];
+    for (let k = 0; k < co.segsForA.length; k++) {
+      if (fA && fA.isPlanarConvex) pushFaceSeg(fA.fi, co.segsForA[k]);
+      else pushTriSeg(tA.index, co.segsForA[k]);
     }
-    subTris.push({
-      shell: t.shell,
-      a: t.a, b: t.b, c: t.c,
-      uvs: [t.uva.slice(), t.uvb.slice(), t.uvc.slice()],
-      normal: t.normal,
-    });
+    for (let k = 0; k < co.segsForB.length; k++) {
+      if (fB && fB.isPlanarConvex) pushFaceSeg(fB.fi, co.segsForB[k]);
+      else pushTriSeg(tB.index, co.segsForB[k]);
+    }
   }
 
-  // Filtrar todo sub-triángulo cuyo centroide quede estrictamente dentro de OTRA shell cerrada
-  const keptFaces = [];
-  const keptUvs = [];
-  const keptNormals = [];
-  const keptShells = [];
-  let removedInsideCount = 0;
+  const coplanarTouchedFaces = new Set();
+  for (let i = 0; i < coplanarFacePairs.length; i++) {
+    coplanarTouchedFaces.add(coplanarFacePairs[i][0].fi);
+    coplanarTouchedFaces.add(coplanarFacePairs[i][1].fi);
+  }
+  for (let i = 0; i < coplanarTriPairs.length; i++) {
+    coplanarTouchedFaces.add(coplanarTriPairs[i][0].faceIndex);
+    coplanarTouchedFaces.add(coplanarTriPairs[i][1].faceIndex);
+  }
 
-  for (let i = 0; i < subTris.length; i++) {
-    const st = subTris[i];
-    const pa = splitVerts[st.a], pb = splitVerts[st.b], pc = splitVerts[st.c];
+  const classifySubTriKeep = (pa, pb, pc, stNormal, stShell) => {
     const cx = (pa.x + pb.x + pc.x) / 3;
     const cy = (pa.y + pb.y + pc.y) / 3;
     const cz = (pa.z + pb.z + pc.z) / 3;
-
-    let drop = false;
     const surfHolder = { tri: null };
     for (let s = 0; s < shellCount; s++) {
-      if (s === st.shell) continue;
+      if (s === stShell) continue;
       const sInfo = shellInfos[s];
       if (!sInfo.isClosed) continue;
       surfHolder.tri = null;
       const cls = classifyPointVsClosedShell(cx, cy, cz, sInfo, surfTolSq, surfHolder);
-      if (cls === 'inside') {
-        drop = true;
-        break;
-      }
+      if (cls === 'inside') return false;
       if (cls === 'surface' && surfHolder.tri) {
         const sn = surfHolder.tri.normal;
-        const dot = sn.x * st.normal.x + sn.y * st.normal.y + sn.z * st.normal.z;
-        if (dot < -0.9 || (dot > 0.9 && st.shell > s)) {
-          drop = true;
-          break;
+        const dot = sn.x * stNormal.x + sn.y * stNormal.y + sn.z * stNormal.z;
+        if (dot < -0.9 || (dot > 0.9 && stShell > s)) {
+          return false;
         }
       }
     }
+    return true;
+  };
 
-    if (drop) {
-      removedInsideCount++;
-      continue;
+  // Subdividir caras cortadas preservando intactas las caras no cortadas
+  const splitVerts = verts.map((v) => ({ x: v.x, y: v.y, z: v.z }));
+  const seamSnap = Math.max(1e-5, Math.min(tol * 0.25, diag * 2e-4));
+
+  const keptFaces = [];
+  const keptUvs = [];
+  const faceOrigins = [];
+  let removedInsideCount = 0;
+
+  for (let fi = 0; fi < editableMesh.faces.length; fi++) {
+    const fInfo = facesMeta[fi];
+    if (!fInfo) continue;
+
+    const fSegs = faceSegs.get(fi);
+    const anyTriSplit = fInfo.triRefs.some((t) => triSegs.has(t.index));
+
+    // Caso 1: Cara planar convexa con segmentos de corte (split a nivel polígono sin diagonales falsas)
+    if (fInfo.isPlanarConvex && fSegs && fSegs.length) {
+      const polyPts3D = fInfo.indices.map((vi) => verts[vi]);
+      const splitRes = splitConvexPolygonWithSegments(
+        polyPts3D,
+        fInfo.uvs,
+        fInfo.pts2D,
+        fInfo.origin,
+        fInfo.uAxis,
+        fInfo.vAxis,
+        fSegs,
+        seamSnap,
+        fInfo.indices
+      );
+      if (splitRes && splitRes.tris.length) {
+        const baseNewIdx = splitVerts.length;
+        for (let k = 0; k < splitRes.newVerts.length; k++) {
+          splitVerts.push(splitRes.newVerts[k]);
+        }
+        const mapLocalVert = (localVi) => {
+          const g = splitRes.vertGlobalIndices[localVi];
+          return g >= 0 ? g : baseNewIdx + (-g - 1);
+        };
+        for (let k = 0; k < splitRes.tris.length; k++) {
+          const [ia, ib, ic] = splitRes.tris[k];
+          const ga = mapLocalVert(ia);
+          const gb = mapLocalVert(ib);
+          const gc = mapLocalVert(ic);
+          if (!classifySubTriKeep(splitVerts[ga], splitVerts[gb], splitVerts[gc], fInfo.normal, fInfo.shell)) {
+            removedInsideCount++;
+            continue;
+          }
+          keptFaces.push([ga, gb, gc]);
+          keptUvs.push([splitRes.uvs[ia].slice(), splitRes.uvs[ib].slice(), splitRes.uvs[ic].slice()]);
+          faceOrigins.push({ origFaceId: fi, shell: fInfo.shell, wasTouched: true });
+        }
+        continue;
+      }
     }
 
-    keptFaces.push([st.a, st.b, st.c]);
-    keptUvs.push(st.uvs);
-    keptNormals.push(st.normal);
-    keptShells.push(st.shell);
+    // Caso 2: Cara sin ningún corte -> preservar el polígono original completo (quad/N-gono) si sobrevive íntegro
+    if ((!fSegs || !fSegs.length) && !anyTriSplit) {
+      const triFlags = fInfo.triRefs.map((t) =>
+        classifySubTriKeep(verts[t.a], verts[t.b], verts[t.c], t.normal, fInfo.shell)
+      );
+      const keepAll = triFlags.length > 0 && triFlags.every(Boolean);
+      const dropAll = triFlags.length > 0 && triFlags.every((fl) => !fl);
+      if (keepAll) {
+        keptFaces.push(fInfo.indices.slice());
+        keptUvs.push(fInfo.uvs.map((u) => u.slice()));
+        faceOrigins.push({
+          origFaceId: fi,
+          shell: fInfo.shell,
+          wasTouched: coplanarTouchedFaces.has(fi),
+        });
+        continue;
+      }
+      if (dropAll) {
+        removedInsideCount += triFlags.length;
+        continue;
+      }
+    }
+
+    // Caso 3: Cara no planar / cóncava o parcialmente cortada por triángulos fallback
+    for (let ti = 0; ti < fInfo.triRefs.length; ti++) {
+      const t = fInfo.triRefs[ti];
+      const tSegs = triSegs.get(t.index);
+      if (tSegs && tSegs.length) {
+        const triBasis = computePolygonBasis3D([verts[t.a], verts[t.b], verts[t.c]]);
+        if (triBasis) {
+          const splitRes = splitConvexPolygonWithSegments(
+            [verts[t.a], verts[t.b], verts[t.c]],
+            [t.uva, t.uvb, t.uvc],
+            triBasis.pts2D,
+            triBasis.origin,
+            triBasis.uAxis,
+            triBasis.vAxis,
+            tSegs,
+            seamSnap,
+            [t.a, t.b, t.c]
+          );
+          if (splitRes && splitRes.tris.length) {
+            const baseNewIdx = splitVerts.length;
+            for (let k = 0; k < splitRes.newVerts.length; k++) {
+              splitVerts.push(splitRes.newVerts[k]);
+            }
+            const mapLocalVert = (localVi) => {
+              const g = splitRes.vertGlobalIndices[localVi];
+              return g >= 0 ? g : baseNewIdx + (-g - 1);
+            };
+            for (let k = 0; k < splitRes.tris.length; k++) {
+              const [ia, ib, ic] = splitRes.tris[k];
+              const ga = mapLocalVert(ia);
+              const gb = mapLocalVert(ib);
+              const gc = mapLocalVert(ic);
+              if (!classifySubTriKeep(splitVerts[ga], splitVerts[gb], splitVerts[gc], t.normal, t.shell)) {
+                removedInsideCount++;
+                continue;
+              }
+              keptFaces.push([ga, gb, gc]);
+              keptUvs.push([splitRes.uvs[ia].slice(), splitRes.uvs[ib].slice(), splitRes.uvs[ic].slice()]);
+              faceOrigins.push({ origFaceId: fi, shell: t.shell, wasTouched: true });
+            }
+            continue;
+          }
+        }
+      }
+
+      if (!classifySubTriKeep(verts[t.a], verts[t.b], verts[t.c], t.normal, t.shell)) {
+        removedInsideCount++;
+        continue;
+      }
+      keptFaces.push([t.a, t.b, t.c]);
+      keptUvs.push([t.uva.slice(), t.uvb.slice(), t.uvc.slice()]);
+      faceOrigins.push({
+        origFaceId: fi,
+        shell: t.shell,
+        wasTouched: coplanarTouchedFaces.has(fi) || Boolean(anyTriSplit),
+      });
+    }
   }
 
-  // Reemplazar malla con la superficie exterior dividida (luego weldShells soldará vértices, quitará duplicados/opuestos y podará interiores)
   editableMesh.verts = splitVerts;
   editableMesh.faces = keptFaces;
   editableMesh.faceUvs = keptUvs;
@@ -1288,6 +1693,493 @@ export function performVolumetricUnionIfNeeded(editableMesh, {
     performed: true,
     removedInsideCount,
     splitFaceCount: keptFaces.length,
-    shellTags: keptShells,
+    faceOrigins,
   };
+}
+
+// ============================================================================
+// Simplificación Topológica Post-Unión (fusión de caras coplanares y disolución)
+// ============================================================================
+
+function computeFaceUnitNormal(face, verts) {
+  const n = face.length;
+  let nx = 0, ny = 0, nz = 0;
+  for (let i = 0; i < n; i++) {
+    const p = verts[face[i]];
+    const q = verts[face[(i + 1) % n]];
+    nx += (p.y - q.y) * (p.z + q.z);
+    ny += (p.z - q.z) * (p.x + q.x);
+    nz += (p.x - q.x) * (p.y + q.y);
+  }
+  const len = Math.hypot(nx, ny, nz);
+  if (len < 1e-12) return null;
+  return { x: nx / len, y: ny / len, z: nz / len };
+}
+
+function analyzeMergedRing2D(ring, verts, planeTol) {
+  const n = ring.length;
+  if (n < 3) return null;
+  const pts = new Array(n);
+  for (let i = 0; i < n; i++) pts[i] = verts[ring[i]];
+  const basis = computePolygonBasis3D(pts);
+  if (!basis || basis.area2 <= 1e-12) return null;
+  if (basis.maxPlaneDist > planeTol) return null;
+
+  const { pts2D } = basis;
+  let trueCorners = 0;
+  for (let i = 0; i < n; i++) {
+    const prev = pts2D[(i - 1 + n) % n];
+    const curr = pts2D[i];
+    const next = pts2D[(i + 1) % n];
+    const e1x = curr.x - prev.x, e1y = curr.y - prev.y;
+    const e2x = next.x - curr.x, e2y = next.y - curr.y;
+    const l1 = Math.hypot(e1x, e1y);
+    const l2 = Math.hypot(e2x, e2y);
+    if (l1 < 1e-8 || l2 < 1e-8) return null;
+    const inv = 1 / (l1 * l2);
+    const sinTurn = (e1x * e2y - e1y * e2x) * inv;
+    const cosTurn = (e1x * e2x + e1y * e2y) * inv;
+    if (sinTurn < -0.008) return null; // Esquina cóncava / reflex no permitida
+    if (Math.abs(sinTurn) > 0.015 || cosTurn < 0.999) trueCorners++;
+  }
+  return { trueCorners, basis };
+}
+
+function tryBuildMergedFace(fA, uvA, fB, uvB, u, v, verts, planeTol) {
+  const nA = fA.length, nB = fB.length;
+  let ia = -1, p = -1, q = -1;
+  for (let i = 0; i < nA; i++) {
+    const a = fA[i], b = fA[(i + 1) % nA];
+    if ((a === u && b === v) || (a === v && b === u)) {
+      ia = i; p = a; q = b;
+      break;
+    }
+  }
+  if (ia < 0) return null;
+
+  let ib = -1;
+  for (let i = 0; i < nB; i++) {
+    if (fB[i] === q && fB[(i + 1) % nB] === p) {
+      ib = i;
+      break;
+    }
+  }
+  if (ib < 0) return null;
+
+  const ring = [];
+  const uvs = [];
+  for (let k = 1; k <= nA; k++) {
+    const idx = (ia + k) % nA;
+    ring.push(fA[idx]);
+    uvs.push((uvA[idx] || [0, 0]).slice());
+  }
+  for (let k = 2; k < nB; k++) {
+    const idx = (ib + k) % nB;
+    ring.push(fB[idx]);
+    uvs.push((uvB[idx] || [0, 0]).slice());
+  }
+
+  if (ring.length < 3) return null;
+  if (new Set(ring).size !== ring.length) return null;
+
+  const info = analyzeMergedRing2D(ring, verts, planeTol);
+  if (!info) return null;
+  return { ring, uvs, trueCorners: info.trueCorners };
+}
+
+function mergeCoplanarFacesPass(
+  editableMesh,
+  faceOrigins,
+  planeTol,
+  allowCrossFace,
+  normalDotMin = 0.9997,
+  maxCrossCorners = 4
+) {
+  const verts = editableMesh.verts;
+  let totalMerged = 0;
+
+  for (let iter = 0; iter < 64; iter++) {
+    const F = editableMesh.faces.length;
+    if (F < 2) break;
+    const topo = editableMesh.getTopology();
+    const normals = new Array(F);
+    for (let fi = 0; fi < F; fi++) {
+      normals[fi] = computeFaceUnitNormal(editableMesh.faces[fi], verts);
+    }
+
+    // Buscar el mejor par candidato (priorizando mismo origFaceId -> quads <= 4 esquinas -> aristas más largas)
+    const candidates = [];
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (!e || e.faces.length !== 2) continue;
+      const fa = e.faces[0], fb = e.faces[1];
+      if (fa === fb) continue;
+      const normA = normals[fa], normB = normals[fb];
+      if (!normA || !normB) continue;
+      if (normA.x * normB.x + normA.y * normB.y + normA.z * normB.z < normalDotMin) continue;
+
+      const origA = faceOrigins ? faceOrigins[fa] : null;
+      const origB = faceOrigins ? faceOrigins[fb] : null;
+      const sameOrig = Boolean(origA && origB && origA.origFaceId >= 0 && origA.origFaceId === origB.origFaceId);
+      if (!sameOrig) {
+        if (!allowCrossFace) continue;
+        if (origA && origB && !origA.wasTouched && !origB.wasTouched) continue;
+      }
+
+      const merged = tryBuildMergedFace(
+        editableMesh.faces[fa],
+        editableMesh.faceUvs[fa] || [],
+        editableMesh.faces[fb],
+        editableMesh.faceUvs[fb] || [],
+        e.a,
+        e.b,
+        verts,
+        planeTol
+      );
+      if (!merged) continue;
+      if (!sameOrig && merged.trueCorners > maxCrossCorners) continue;
+
+      const pa = verts[e.a], pb = verts[e.b];
+      const edgeLenSq = (pb.x - pa.x) ** 2 + (pb.y - pa.y) ** 2 + (pb.z - pa.z) ** 2;
+      const priority =
+        (sameOrig ? 1e6 : 0) +
+        (merged.trueCorners <= 4 ? 1e4 : 0) -
+        merged.trueCorners * 100 +
+        Math.min(100, edgeLenSq);
+
+      candidates.push({ fa, fb, merged, origA, origB, priority });
+    }
+
+    if (!candidates.length) break;
+    candidates.sort((x, y) => y.priority - x.priority);
+
+    const usedFace = new Uint8Array(F);
+    const replaceWith = new Map();
+    const dropFace = new Uint8Array(F);
+    let mergedThisPass = 0;
+
+    for (let i = 0; i < candidates.length; i++) {
+      const c = candidates[i];
+      if (usedFace[c.fa] || usedFace[c.fb]) continue;
+      usedFace[c.fa] = 1;
+      usedFace[c.fb] = 1;
+      dropFace[c.fb] = 1;
+      replaceWith.set(c.fa, c);
+      mergedThisPass++;
+    }
+
+    if (!mergedThisPass) break;
+    totalMerged += mergedThisPass;
+
+    const nextFaces = [];
+    const nextUvs = [];
+    const nextOrigins = faceOrigins ? [] : null;
+    for (let fi = 0; fi < F; fi++) {
+      if (dropFace[fi]) continue;
+      const rep = replaceWith.get(fi);
+      if (rep) {
+        nextFaces.push(rep.merged.ring);
+        nextUvs.push(rep.merged.uvs);
+        if (nextOrigins) {
+          nextOrigins.push({
+            origFaceId: rep.origA && rep.origB && rep.origA.origFaceId === rep.origB.origFaceId
+              ? rep.origA.origFaceId
+              : -1,
+            shell: rep.origA ? rep.origA.shell : -1,
+            wasTouched: true,
+          });
+        }
+      } else {
+        nextFaces.push(editableMesh.faces[fi]);
+        nextUvs.push(editableMesh.faceUvs[fi] || editableMesh.faces[fi].map(() => [0, 0]));
+        if (nextOrigins) nextOrigins.push(faceOrigins[fi]);
+      }
+    }
+    editableMesh.faces = nextFaces;
+    editableMesh.faceUvs = nextUvs;
+    if (faceOrigins && nextOrigins) {
+      faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+    }
+    editableMesh.invalidateTopology();
+  }
+
+  return totalMerged;
+}
+
+function dissolveFlatInteriorVertices(editableMesh, faceOrigins, planeTol, normalDotMin = 0.9997) {
+  let dissolved = 0;
+  const verts = editableMesh.verts;
+
+  for (let pass = 0; pass < 8; pass++) {
+    let changedPass = false;
+    const topo = editableMesh.getTopology();
+    const F = editableMesh.faces.length;
+    const normals = new Array(F);
+    for (let fi = 0; fi < F; fi++) {
+      normals[fi] = computeFaceUnitNormal(editableMesh.faces[fi], verts);
+    }
+
+    const removedFaces = new Uint8Array(F);
+    const addedFaces = [];
+    const addedUvs = [];
+    const addedOrigins = [];
+
+    for (let vi = 0; vi < verts.length; vi++) {
+      const incEdges = topo.vertEdges[vi];
+      const incFaces = topo.vertFaces[vi];
+      if (!incEdges || !incFaces || incFaces.length < 3 || incFaces.length !== incEdges.length) continue;
+
+      let skip = false;
+      let anyTouched = !faceOrigins;
+      for (let i = 0; i < incEdges.length; i++) {
+        const e = topo.edges[incEdges[i]];
+        if (!e || e.faces.length !== 2) { skip = true; break; }
+      }
+      if (skip) continue;
+
+      for (let i = 0; i < incFaces.length; i++) {
+        const fi = incFaces[i];
+        if (removedFaces[fi] || !normals[fi]) { skip = true; break; }
+        if (faceOrigins && faceOrigins[fi]?.wasTouched) anyTouched = true;
+      }
+      if (skip || !anyTouched) continue;
+
+      const refN = normals[incFaces[0]];
+      const pV = verts[vi];
+      let coplanar = true;
+      for (let i = 0; i < incFaces.length; i++) {
+        const fi = incFaces[i];
+        const ni = normals[fi];
+        if (ni.x * refN.x + ni.y * refN.y + ni.z * refN.z < normalDotMin) {
+          coplanar = false;
+          break;
+        }
+        const f = editableMesh.faces[fi];
+        for (let k = 0; k < f.length; k++) {
+          const p = verts[f[k]];
+          const d = Math.abs((p.x - pV.x) * refN.x + (p.y - pV.y) * refN.y + (p.z - pV.z) * refN.z);
+          if (d > planeTol) { coplanar = false; break; }
+        }
+        if (!coplanar) break;
+      }
+      if (!coplanar) continue;
+
+      // Construir anillo exterior ordenado alrededor de vi
+      const byStart = new Map();
+      let validRing = true;
+      for (let i = 0; i < incFaces.length; i++) {
+        const fi = incFaces[i];
+        const f = editableMesh.faces[fi];
+        const fUv = editableMesh.faceUvs[fi] || f.map(() => [0, 0]);
+        const pos = f.indexOf(vi);
+        if (pos < 0) { validRing = false; break; }
+        const n = f.length;
+        const startV = f[(pos + 1) % n];
+        const endV = f[(pos - 1 + n) % n];
+        if (byStart.has(startV)) { validRing = false; break; }
+        const chain = [];
+        const chainUv = [];
+        for (let step = 1; step < n - 1; step++) {
+          const idx = (pos + step) % n;
+          chain.push(f[idx]);
+          chainUv.push((fUv[idx] || [0, 0]).slice());
+        }
+        byStart.set(startV, { startV, endV, chain, chainUv, origId: faceOrigins ? faceOrigins[fi]?.origFaceId : -1 });
+      }
+      if (!validRing || byStart.size !== incFaces.length) continue;
+
+      const firstEntry = byStart.values().next().value;
+      const loop = [];
+      const loopUv = [];
+      let cur = firstEntry;
+      let visited = 0;
+      const origSet = new Set();
+      while (cur && visited < incFaces.length) {
+        visited++;
+        origSet.add(cur.origId);
+        for (let k = 0; k < cur.chain.length; k++) {
+          loop.push(cur.chain[k]);
+          loopUv.push(cur.chainUv[k]);
+        }
+        cur = byStart.get(cur.endV);
+      }
+      if (visited !== incFaces.length || !cur || cur.startV !== firstEntry.startV) continue;
+      if (loop.length < 3 || new Set(loop).size !== loop.length) continue;
+
+      const ringInfo = analyzeMergedRing2D(loop, verts, planeTol);
+      const sameOrigAll = origSet.size === 1 && !origSet.has(-1);
+      if (ringInfo && (sameOrigAll || ringInfo.trueCorners <= 6)) {
+        for (let i = 0; i < incFaces.length; i++) removedFaces[incFaces[i]] = 1;
+        addedFaces.push(loop);
+        addedUvs.push(loopUv);
+        addedOrigins.push({
+          origFaceId: sameOrigAll ? firstEntry.origId : -1,
+          shell: faceOrigins ? faceOrigins[incFaces[0]]?.shell ?? -1 : -1,
+          wasTouched: true,
+        });
+        dissolved++;
+        changedPass = true;
+      }
+    }
+
+    if (!changedPass) break;
+
+    const nextFaces = [];
+    const nextUvs = [];
+    const nextOrigins = faceOrigins ? [] : null;
+    for (let fi = 0; fi < F; fi++) {
+      if (removedFaces[fi]) continue;
+      nextFaces.push(editableMesh.faces[fi]);
+      nextUvs.push(editableMesh.faceUvs[fi] || editableMesh.faces[fi].map(() => [0, 0]));
+      if (nextOrigins) nextOrigins.push(faceOrigins[fi]);
+    }
+    for (let i = 0; i < addedFaces.length; i++) {
+      nextFaces.push(addedFaces[i]);
+      nextUvs.push(addedUvs[i]);
+      if (nextOrigins) nextOrigins.push(addedOrigins[i]);
+    }
+    editableMesh.faces = nextFaces;
+    editableMesh.faceUvs = nextUvs;
+    if (faceOrigins && nextOrigins) {
+      faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+    }
+    editableMesh.invalidateTopology();
+  }
+
+  return dissolved;
+}
+
+function dissolveCollinearVertices(editableMesh, faceOrigins, edgeTol, collinearDotMax = -0.9999) {
+  let dissolved = 0;
+  const verts = editableMesh.verts;
+
+  for (let pass = 0; pass < 12; pass++) {
+    let changedPass = false;
+    const topo = editableMesh.getTopology();
+    const activeEdges = new Set();
+
+    for (let vi = 0; vi < verts.length; vi++) {
+      const incEdges = topo.vertEdges[vi];
+      const incFaces = topo.vertFaces[vi];
+      if (!incEdges || !incFaces || incEdges.length !== 2 || incFaces.length !== 2) continue;
+      if (incFaces[0] === incFaces[1]) continue;
+
+      const e0 = topo.edges[incEdges[0]];
+      const e1 = topo.edges[incEdges[1]];
+      if (!e0 || !e1 || e0.faces.length !== 2 || e1.faces.length !== 2) continue;
+
+      const a = e0.a === vi ? e0.b : e0.a;
+      const b = e1.a === vi ? e1.b : e1.a;
+      if (a === b) continue;
+
+      const f0 = editableMesh.faces[incFaces[0]];
+      const f1 = editableMesh.faces[incFaces[1]];
+      if (!f0 || !f1 || f0.length < 4 || f1.length < 4) continue;
+
+      const abKey = edgeKey(a, b);
+      if (topo.edgeMap.has(abKey) || activeEdges.has(abKey)) continue;
+
+      if (faceOrigins && !faceOrigins[incFaces[0]]?.wasTouched && !faceOrigins[incFaces[1]]?.wasTouched) continue;
+
+      const pv = verts[vi], pa = verts[a], pb = verts[b];
+      const dax = pa.x - pv.x, day = pa.y - pv.y, daz = pa.z - pv.z;
+      const dbx = pb.x - pv.x, dby = pb.y - pv.y, dbz = pb.z - pv.z;
+      const la = Math.hypot(dax, day, daz);
+      const lb = Math.hypot(dbx, dby, dbz);
+      if (la < 1e-8 || lb < 1e-8) continue;
+      const dot = (dax * dbx + day * dby + daz * dbz) / (la * lb);
+      if (dot > collinearDotMax) continue;
+
+      // Comprobar distancia perpendicular de pv al segmento ab
+      const abx = pb.x - pa.x, aby = pb.y - pa.y, abz = pb.z - pa.z;
+      const abSq = abx * abx + aby * aby + abz * abz;
+      if (abSq < 1e-14) continue;
+      const t = ((pv.x - pa.x) * abx + (pv.y - pa.y) * aby + (pv.z - pa.z) * abz) / abSq;
+      if (t <= 0 || t >= 1) continue;
+      const px = pa.x + abx * t, py = pa.y + aby * t, pz = pa.z + abz * t;
+      if (Math.hypot(pv.x - px, pv.y - py, pv.z - pz) > edgeTol * 0.5) continue;
+
+      const pos0 = f0.indexOf(vi);
+      const pos1 = f1.indexOf(vi);
+      if (pos0 < 0 || pos1 < 0) continue;
+      const prev0 = f0[(pos0 - 1 + f0.length) % f0.length];
+      const next0 = f0[(pos0 + 1) % f0.length];
+      const prev1 = f1[(pos1 - 1 + f1.length) % f1.length];
+      const next1 = f1[(pos1 + 1) % f1.length];
+      if (!((prev0 === a && next0 === b) || (prev0 === b && next0 === a))) continue;
+      if (!((prev1 === a && next1 === b) || (prev1 === b && next1 === a))) continue;
+
+      f0.splice(pos0, 1);
+      if (editableMesh.faceUvs[incFaces[0]]) editableMesh.faceUvs[incFaces[0]].splice(pos0, 1);
+      f1.splice(pos1, 1);
+      if (editableMesh.faceUvs[incFaces[1]]) editableMesh.faceUvs[incFaces[1]].splice(pos1, 1);
+      if (faceOrigins) {
+        faceOrigins[incFaces[0]].wasTouched = true;
+        faceOrigins[incFaces[1]].wasTouched = true;
+      }
+      activeEdges.add(abKey);
+      dissolved++;
+      changedPass = true;
+      break; // re-indexar topología de forma segura tras modificar caras
+    }
+
+    if (!changedPass) break;
+    editableMesh.invalidateTopology();
+  }
+
+  return dissolved;
+}
+
+export function simplifyUnionTopology(editableMesh, faceOrigins = null, {
+  planeTol = 1e-4,
+  edgeTol = 1e-3,
+  solidity = 0.8,
+} = {}) {
+  if (!editableMesh || editableMesh.faces.length < 2) return { mergedFaces: 0, dissolvedVerts: 0 };
+
+  const rawSolidity = Number(solidity);
+  const s = Number.isFinite(rawSolidity) ? Math.max(0, Math.min(1, rawSolidity)) : 0.8;
+  if (s <= 0) {
+    return { mergedFaces: 0, dissolvedVerts: 0 };
+  }
+
+  const allowCrossFace = s >= 0.45;
+  const allowCollinearDissolve = s >= 0.45;
+  const normalDotMin = s >= 0.85
+    ? 0.9996 - ((s - 0.85) / 0.15) * 0.0026
+    : 0.9999 - s * 0.0003;
+  const effPlaneTol = planeTol * (s >= 0.85 ? 1 + ((s - 0.85) / 0.15) * 1.5 : 0.5 + s * 0.625);
+  const effEdgeTol = edgeTol * (s >= 0.85 ? 1 + ((s - 0.85) / 0.15) * 0.75 : 0.6 + s * 0.5);
+  const maxCrossCorners = s >= 0.95 ? 6 : 4;
+  const collinearDotMax = -(0.99995 - s * 0.00025);
+
+  let mergedFaces = 0;
+  let dissolvedVerts = 0;
+
+  for (let outer = 0; outer < 4; outer++) {
+    let changed = false;
+    // 1. Restaurar sub-triángulos de una misma cara original (sin diagonales internas innecesarias)
+    const m1 = mergeCoplanarFacesPass(editableMesh, faceOrigins, effPlaneTol, false, normalDotMin, maxCrossCorners);
+    if (m1 > 0) { mergedFaces += m1; changed = true; }
+
+    // 2. Eliminar vértices interiores coplanares atrapados entre sub-parches
+    const d1 = dissolveFlatInteriorVertices(editableMesh, faceOrigins, effPlaneTol, normalDotMin);
+    if (d1 > 0) { dissolvedVerts += d1; changed = true; }
+
+    // 3. Fusionar caras coplanares alineadas entre parches vecinos formando rectángulos/quads limpios
+    if (allowCrossFace) {
+      const m2 = mergeCoplanarFacesPass(editableMesh, faceOrigins, effPlaneTol, true, normalDotMin, maxCrossCorners);
+      if (m2 > 0) { mergedFaces += m2; changed = true; }
+    }
+
+    // 4. Eliminar vértices de costura colineales de grado 2 sobre aristas rectas
+    if (allowCollinearDissolve) {
+      const d2 = dissolveCollinearVertices(editableMesh, faceOrigins, effEdgeTol, collinearDotMax);
+      if (d2 > 0) { dissolvedVerts += d2; changed = true; }
+    }
+
+    if (!changed) break;
+  }
+
+  return { mergedFaces, dissolvedVerts };
 }

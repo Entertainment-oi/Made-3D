@@ -378,9 +378,20 @@ export class GL2Backend {
       return;
     }
     res.bindVAO(ig.vao);
-    if (gg.indexed) gl.drawElementsInstanced(gl.TRIANGLES, gg.count, gg.indexType, 0, n);
-    else gl.drawArraysInstanced(gl.TRIANGLES, 0, gg.count, n);
-    r.info.calls++; r.info.drawn++; r.info.instances += n; r.info.triangles += (gg.count / 3) * n;
+    if (mode === 'triangles') {
+      if (gg.indexed) gl.drawElementsInstanced(gl.TRIANGLES, gg.count, gg.indexType, 0, n);
+      else gl.drawArraysInstanced(gl.TRIANGLES, 0, gg.count, n);
+      r.info.triangles += (gg.count / 3) * n;
+    } else {
+      const modes = { lines: gl.LINES, lineStrip: gl.LINE_STRIP, line_strip: gl.LINE_STRIP, lineLoop: gl.LINE_LOOP, line_loop: gl.LINE_LOOP, points: gl.POINTS };
+      const lm = modes[mode] || gl[mode.toUpperCase()] || gl.LINES;
+      if (gg.indexed) gl.drawElementsInstanced(lm, gg.count, gg.indexType, 0, n);
+      else gl.drawArraysInstanced(lm, 0, gg.count, n);
+      if (lm === gl.LINE_STRIP) r.info.lines += Math.max(0, gg.count - 1) * n;
+      else if (lm === gl.LINE_LOOP) r.info.lines += gg.count * n;
+      else if (lm === gl.LINES) r.info.lines += (gg.count / 2) * n;
+    }
+    r.info.calls++; r.info.drawn++; r.info.instances += n;
   }
 
   _issue(mesh, gg, instanced, mode) {

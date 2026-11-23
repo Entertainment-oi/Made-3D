@@ -257,6 +257,7 @@ export class GL2Resources {
     if (p.byName.uMorphVertexCount) gl.uniform1i(p.byName.uMorphVertexCount.loc, mt.vCount);
     if (p.byName.uMorphTexWidth) gl.uniform1i(p.byName.uMorphTexWidth.loc, mt.texWidth);
     if (p.byName.uMorphHasNormals) gl.uniform1i(p.byName.uMorphHasNormals.loc, mt.hasNormals);
+    if (p.byName.uMorphRelative) gl.uniform1i(p.byName.uMorphRelative.loc, mesh.geometry.morphTargetsRelative === false ? 0 : 1);
     if (p.byName.uMorphWeights) {
       const wb = this._morphWeightsBuf;
       wb.fill(0);
@@ -352,6 +353,13 @@ export class GL2Resources {
         b.version = a.version;
       }
     }
+    for (const name in gg.buffers) {
+      if (!g.attributes[name]) {
+        gl.disableVertexAttribArray(gg.buffers[name].loc);
+        gl.deleteBuffer(gg.buffers[name].buf);
+        delete gg.buffers[name];
+      }
+    }
     const ia = g.index;
     if (ia) {
       if (!gg.indexBuf) {
@@ -367,7 +375,16 @@ export class GL2Resources {
         gg.indexType = ia.array instanceof Uint32Array ? gl.UNSIGNED_INT : gl.UNSIGNED_SHORT;
       }
       gg.indexed = true; gg.count = ia.array.length;
-    } else { gg.indexed = false; gg.count = g.vertexCount; }
+    } else {
+      if (gg.indexBuf) {
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, null);
+        gl.deleteBuffer(gg.indexBuf);
+        gg.indexBuf = null;
+        gg.indexAttr = null;
+        gg.indexVersion = -1;
+      }
+      gg.indexed = false; gg.count = g.vertexCount;
+    }
     gg.attrSig = sig + '|' + (gg.indexed ? '1' : '0');
     return gg;
   }
@@ -401,8 +418,12 @@ export class GL2Resources {
         }
       }
       this.bindVAO(w.vao);
-      for (const k in gg.buffers) {
+      for (const k in LOC) {
         const b = gg.buffers[k];
+        if (!b) {
+          gl.disableVertexAttribArray(LOC[k]);
+          continue;
+        }
         gl.bindBuffer(gl.ARRAY_BUFFER, b.buf);
         gl.enableVertexAttribArray(b.loc);
         gl.vertexAttribPointer(b.loc, b.itemSize, gl.FLOAT, false, 0, 0);
@@ -435,8 +456,12 @@ export class GL2Resources {
   bindInstancedVAO(vao, gg, buf, indexBuf) {
     const gl = this.b.gl;
     this.bindVAO(vao);
-    for (const k in gg.buffers) {
+    for (const k in LOC) {
       const b = gg.buffers[k];
+      if (!b) {
+        gl.disableVertexAttribArray(LOC[k]);
+        continue;
+      }
       gl.bindBuffer(gl.ARRAY_BUFFER, b.buf);
       gl.enableVertexAttribArray(b.loc);
       gl.vertexAttribPointer(b.loc, b.itemSize, gl.FLOAT, false, 0, 0);

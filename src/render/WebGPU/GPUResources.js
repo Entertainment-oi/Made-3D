@@ -291,6 +291,7 @@ export class GPUResources {
     this._targets.delete(rt);
     this._targetList.delete(rt);
     this._group2Cache.clear();
+    this.b._group0Cache?.clear();
     this.b.renderer.info.memory.textures--;
     if (this.b.renderer._rt === rt) this.b.renderer._rt = null;
   }
@@ -326,6 +327,7 @@ export class GPUResources {
     if (!sm) return;
     sm.tex.destroy();
     this._shadows.delete(light);
+    this.b._group0Cache?.clear();
   }
 
   // ───────── skinning & morph storage buffers ─────────
@@ -748,6 +750,7 @@ export class GPUResources {
         if (t.gpuTex) t.gpuTex.destroy();
         this._tex.delete(tex);
         this._group2Cache.clear();
+        this.b._group0Cache?.clear();
         r.info.memory.textures--;
       };
       t = { gpuTex: null, view: null, version: -1, loaded: false, srgb: null, uploading: false, _fallbackMip0: null, _fallbackVersion: -1, _fallbackDirty: false, onDispose };

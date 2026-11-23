@@ -221,20 +221,24 @@ export class OBJExporter {
       if (nor) {
         hasNormals = true;
         const nArr = new Float32Array(pCount * 3);
-        const totalIdx = idx ? idx.length : pCount;
-        for (let t = 0; t + 2 < totalIdx; t += 3) {
-          const a = idx ? idx[t] : t;
-          const b = idx ? idx[t + 1] : t + 1;
-          const c = idx ? idx[t + 2] : t + 2;
-          const ax = posedPos[a * 3], ay = posedPos[a * 3 + 1], az = posedPos[a * 3 + 2];
-          const e1x = posedPos[b * 3] - ax, e1y = posedPos[b * 3 + 1] - ay, e1z = posedPos[b * 3 + 2] - az;
-          const e2x = posedPos[c * 3] - ax, e2y = posedPos[c * 3 + 1] - ay, e2z = posedPos[c * 3 + 2] - az;
-          const nx = e1y * e2z - e1z * e2y;
-          const ny = e1z * e2x - e1x * e2z;
-          const nz = e1x * e2y - e1y * e2x;
-          nArr[a * 3] += nx; nArr[a * 3 + 1] += ny; nArr[a * 3 + 2] += nz;
-          nArr[b * 3] += nx; nArr[b * 3 + 1] += ny; nArr[b * 3 + 2] += nz;
-          nArr[c * 3] += nx; nArr[c * 3 + 1] += ny; nArr[c * 3 + 2] += nz;
+        if (typeof obj.computeSkinnedWorldNormals === 'function') {
+          obj.computeSkinnedWorldNormals(nArr, pCount);
+        } else {
+          const totalIdx = idx ? idx.length : pCount;
+          for (let t = 0; t + 2 < totalIdx; t += 3) {
+            const a = idx ? idx[t] : t;
+            const b = idx ? idx[t + 1] : t + 1;
+            const c = idx ? idx[t + 2] : t + 2;
+            const ax = posedPos[a * 3], ay = posedPos[a * 3 + 1], az = posedPos[a * 3 + 2];
+            const e1x = posedPos[b * 3] - ax, e1y = posedPos[b * 3 + 1] - ay, e1z = posedPos[b * 3 + 2] - az;
+            const e2x = posedPos[c * 3] - ax, e2y = posedPos[c * 3 + 1] - ay, e2z = posedPos[c * 3 + 2] - az;
+            const nx = e1y * e2z - e1z * e2y;
+            const ny = e1z * e2x - e1x * e2z;
+            const nz = e1x * e2y - e1y * e2x;
+            nArr[a * 3] += nx; nArr[a * 3 + 1] += ny; nArr[a * 3 + 2] += nz;
+            nArr[b * 3] += nx; nArr[b * 3 + 1] += ny; nArr[b * 3 + 2] += nz;
+            nArr[c * 3] += nx; nArr[c * 3 + 1] += ny; nArr[c * 3 + 2] += nz;
+          }
         }
         for (let i = 0; i < pCount; i++) {
           const o = i * 3;

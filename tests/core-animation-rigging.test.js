@@ -22,6 +22,8 @@ import {
   loadAnimation,
   loadRigging,
 } from '../made3d.module.js';
+import { InstancedMesh } from '../src/objects/InstancedMesh.js';
+import { cloneSkinned } from '../src/modules/rigging.js';
 import { ensureEditableBase, canIncrementSubsurf } from '../src/modules/modeling.js';
 
 test('made3d.module.js mantiene núcleo ligero y carga submódulos pesados bajo demanda con import()', async () => {
@@ -284,3 +286,60 @@ test('SubdivisionSurface protege la UI y evita reconstruir quads en mallas densa
   assert.equal(mod.baseMesh.faces.length, triCount);
   assert.equal(mod.baseMesh.faces[0].length, 3);
 });
+
+test('cloneSkinned conserva InstancedMesh y SkinnedMesh.raycast invalida caché con cambios de geometría/bindMatrix', async () => {
+  const { Bone, Skeleton, SkinnedMesh } = await loadRigging();
+
+  // 1. cloneSkinned con InstancedMesh hijo
+  const root = new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial({ color: 0xffffff }));
+  const inst = new InstancedMesh(new BoxGeometry(0.5, 0.5, 0.5), new StandardMaterial({ color: 0xff0000 }), 4);
+  inst.count = 2;
+  inst.setTransformAt(0, new Vec3(2, 0, 0), new Quat(), new Vec3(1, 1, 1));
+  inst.setTransformAt(1, new Vec3(-2, 0, 0), new Quat(), new Vec3(1, 1, 1));
+  inst.commit();
+  root.add(inst);
+
+  const clonedRoot = cloneSkinned(root);
+  const clonedInst = clonedRoot.children[0];
+  assert.equal(clonedInst.isInstancedMesh, true);
+  assert.equal(clonedInst.count, 2);
+  assert.equal(clonedInst.instanceMatrix.array[12], 2);
+  assert.equal(clonedInst.instanceMatrix.array[28], -2);
+
+  // 2. SkinnedMesh.raycast actualiza cache tras cambiar bindMatrix o versión de posición
+  const tri = new Geometry();
+  tri.setAttribute('position', new Float32Array([-1, -1, 0, 1, -1, 0, 0, 1, 0]), 3);
+  tri.setAttribute('normal', new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), 3);
+  tri.setAttribute('skinIndex', new Float32Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), 4);
+  tri.setAttribute('skinWeight', new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]), 4);
+  const b = new Bone();
+  const sk = new Skeleton([b]);
+  const sm = new SkinnedMesh(tri, new StandardMaterial({ color: 0xffffff }));
+  sm.add(b);
+  sm.bind(sk);
+  sm.updateWorldMatrix(true, true);
+  sk.update();
+
+  const rc = new Raycaster();
+  rc.ray.origin.set(0, 0, 5);
+  rc.ray.direction.set(0, 0, -1);
+  const hits1 = [];
+  sm.raycast(rc, hits1);
+  assert.equal(hits1.length, 1);
+
+  // Desplazar bindMatrix lejos sin tocar sk.version -> raycast debe recalcular y fallar el impacto en (0,0)
+  sm.bindMatrix.compose(new Vec3(10, 0, 0), new Quat(), new Vec3(1, 1, 1));
+  const hits2 = [];
+  sm.raycast(rc, hits2);
+  assert.equal(hits2.length, 0);
+
+  // computeSkinnedWorldNormals
+  sm.bindMatrix.identity();
+  b.quaternion.setFromAxisAngle(new Vec3(0, 1, 0), Math.PI * 0.5);
+  sm.updateWorldMatrix(true, true);
+  sk.update();
+  const wn = new Float32Array(9);
+  sm.computeSkinnedWorldNormals(wn, 3);
+  assert.ok(Math.abs(wn[0] - 1) < 1e-4 && Math.abs(wn[2]) < 1e-4);
+});
+

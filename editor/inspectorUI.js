@@ -42,6 +42,7 @@ import {
   setGizmoStyle,
   setGizmoMode,
   setEditPivotMode,
+  syncGizmoSpaceUI,
   switchRenderBackend,
 } from './viewport.js';
 import {
@@ -1046,12 +1047,11 @@ export function bindUI() {
   // ---- Visor / Gizmo ajustes ----
   dom.gizmoStyleSelect?.addEventListener('change', (e) => setGizmoStyle(e.target.value));
   dom.btnSpace?.addEventListener('click', () => {
-    if (!viewport.gizmo) return;
-    const next = viewport.gizmo.space === 'world' ? 'local' : 'world';
-    viewport.gizmo.setSpace(next);
+    const cur = viewport.gizmo ? viewport.gizmo.space : edit.editor.space;
+    const next = cur === 'world' ? 'local' : 'world';
+    if (viewport.gizmo) viewport.gizmo.setSpace(next);
     edit.editor.setSpace(next);
-    dom.btnSpace.textContent = next === 'world' ? 'Espacio: Mundo' : 'Espacio: Local';
-    dom.btnSpace.classList.toggle('is-active', next === 'local');
+    syncGizmoSpaceUI(next);
   });
 
   dom.btnSnap?.addEventListener('click', () => {
@@ -1140,11 +1140,28 @@ export function bindUI() {
     });
   });
 
-  dom.canvas?.addEventListener('pointerdown', () => {
+  dom.viewportWrap?.addEventListener('pointerdown', (e) => {
+    if (e.target !== dom.canvas) return;
     closeEditFlyouts();
     if (dom.popSculptMore) dom.popSculptMore.hidden = true;
     dom.btnSculptMore?.classList.remove('is-active');
   });
+
+  const readWeldSolidity = () => {
+    const raw = Number(dom.editWeldSolidityNum?.value ?? dom.editWeldSolidity?.value ?? 80);
+    const pct = Number.isFinite(raw) ? Math.max(0, Math.min(100, raw)) : 80;
+    return pct / 100;
+  };
+  const syncWeldSolidityInputs = (val, sourceEl) => {
+    const pct = Number(val);
+    if (!Number.isFinite(pct)) return;
+    const clamped = String(Math.round(Math.max(0, Math.min(100, pct))));
+    if (dom.editWeldSolidity && dom.editWeldSolidity !== sourceEl) dom.editWeldSolidity.value = clamped;
+    if (dom.editWeldSolidityNum && dom.editWeldSolidityNum !== sourceEl) dom.editWeldSolidityNum.value = clamped;
+  };
+  dom.editWeldSolidity?.addEventListener('input', (e) => syncWeldSolidityInputs(e.target.value, dom.editWeldSolidity));
+  dom.editWeldSolidityNum?.addEventListener('input', (e) => syncWeldSolidityInputs(e.target.value, dom.editWeldSolidityNum));
+  dom.editWeldSolidityNum?.addEventListener('change', (e) => syncWeldSolidityInputs(e.target.value, null));
 
   dom.btnEditMerge?.addEventListener('click', runEditMerge);
   dom.btnEditMergeMeshes?.addEventListener('click', () => {
@@ -1158,6 +1175,7 @@ export function bindUI() {
       threshold: Math.max(0.0001, Number(dom.editMergeDist?.value) || 0.015),
       removeInteriorFaces: dom.editWeldInterior ? dom.editWeldInterior.checked : true,
       stitchTJunctions: dom.editWeldStitch ? dom.editWeldStitch.checked : true,
+      solidity: readWeldSolidity(),
     });
     if (ok) closeEditFlyouts();
   });
@@ -2048,6 +2066,11 @@ export function bindUI() {
     getControlsEnabled: () => !(cameraView.activeSceneCam && cameraView.camViewLocked),
     onSelectionChange: () => syncEditUI(),
     onModeChange: () => syncEditUI(),
+    onSpaceChange: (nextSpace) => {
+      if (viewport.gizmo) viewport.gizmo.setSpace(nextSpace);
+      syncGizmoSpaceUI(nextSpace);
+      setStatus(nextSpace === 'local' ? 'Espacio del gizmo: Local' : 'Espacio del gizmo: Mundo');
+    },
     onReadoutChange: (text) => {
       if (!dom.gizmoReadout) return;
       if (!text) dom.gizmoReadout.hidden = true;
@@ -2091,7 +2114,14 @@ export function bindUI() {
     },
     onStrokeEnd: (res) => {
       if (res && res.diff) {
-        history.push({ type: 'sculpt', mesh: res.mesh, geo: res.geometry, diff: res.diff });
+        history.push({
+          type: 'sculpt',
+          mesh: res.mesh,
+          geo: res.geometry,
+          diff: res.diff,
+          beforeState: res.beforeState,
+          afterState: res.afterState,
+        });
         syncSculptUI();
       }
     },

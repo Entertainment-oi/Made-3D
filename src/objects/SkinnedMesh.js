@@ -77,12 +77,14 @@ export class SkinnedMesh extends Mesh {
 
   invalidateSkinCache() {
     this._worldVersion = -1;
+    this._worldPosAttr = null;
     return this;
   }
 
   refreshSkinning() {
     this.computeSkinPad();
     this._worldVersion = -1;
+    this._worldPosAttr = null;
     if (!this._gpu) this.updateSkinnedVertices();
     return this;
   }
@@ -90,6 +92,7 @@ export class SkinnedMesh extends Mesh {
   setGeometry(geometry) {
     this.geometry = geometry;
     this._worldVersion = -1;
+    this._worldPosAttr = null;
     if (!this._gpu && geometry && geometry.attributes && geometry.attributes.position) {
       this._bind = Float32Array.from(geometry.attributes.position.array);
       this._bindNormal = geometry.attributes.normal
@@ -215,6 +218,60 @@ export class SkinnedMesh extends Mesh {
     return out;
   }
 
+  // Rellena `out` (Float32Array) con las normales deformadas de todos los vértices, en el mundo.
+  computeSkinnedWorldNormals(out, count) {
+    const geo = this.geometry;
+    const norAttr = geo && geo.attributes ? geo.attributes.normal : null;
+    const nSrc = this._bindNormal || (norAttr ? norAttr.array : null);
+    if (!nSrc || !out) return out;
+    const si = geo.attributes.skinIndex ? geo.attributes.skinIndex.array : null;
+    const sw = geo.attributes.skinWeight ? geo.attributes.skinWeight.array : null;
+    const maxV = Math.min(count, (nSrc.length / 3) | 0, (out.length / 3) | 0);
+    const skinnedLen = si && sw ? Math.min((si.length / 4) | 0, (sw.length / 4) | 0) : 0;
+    const be = this.bindMatrix.elements;
+    const bm = this.skeleton ? this.skeleton.boneMatrices : null;
+    const nBones = bm ? (bm.length / 16) | 0 : 0;
+    for (let i = 0; i < maxV; i++) {
+      let m00 = 0, m10 = 0, m20 = 0, m01 = 0, m11 = 0, m21 = 0, m02 = 0, m12 = 0, m22 = 0;
+      let applied = 0;
+      if (bm && si && sw && i < skinnedLen) {
+        for (let j = 0; j < 4; j++) {
+          const w = sw[i * 4 + j];
+          if (!w) continue;
+          const bi = Math.round(si[i * 4 + j]) | 0;
+          if (bi < 0 || bi >= nBones) continue;
+          const o = bi * 16;
+          m00 += bm[o] * w; m10 += bm[o + 1] * w; m20 += bm[o + 2] * w;
+          m01 += bm[o + 4] * w; m11 += bm[o + 5] * w; m21 += bm[o + 6] * w;
+          m02 += bm[o + 8] * w; m12 += bm[o + 9] * w; m22 += bm[o + 10] * w;
+          applied += w;
+        }
+      }
+      if (!(applied > 0)) { m00 = m11 = m22 = 1; }
+      const s00 = m00 * be[0] + m01 * be[1] + m02 * be[2];
+      const s10 = m10 * be[0] + m11 * be[1] + m12 * be[2];
+      const s20 = m20 * be[0] + m21 * be[1] + m22 * be[2];
+      const s01 = m00 * be[4] + m01 * be[5] + m02 * be[6];
+      const s11 = m10 * be[4] + m11 * be[5] + m12 * be[6];
+      const s21 = m20 * be[4] + m21 * be[5] + m22 * be[6];
+      const s02 = m00 * be[8] + m01 * be[9] + m02 * be[10];
+      const s12 = m10 * be[8] + m11 * be[9] + m12 * be[10];
+      const s22 = m20 * be[8] + m21 * be[9] + m22 * be[10];
+      const c00 = s11 * s22 - s21 * s12, c10 = -(s01 * s22 - s21 * s02), c20 = s01 * s12 - s11 * s02;
+      const c01 = -(s10 * s22 - s20 * s12), c11 = s00 * s22 - s20 * s02, c21 = -(s00 * s12 - s10 * s02);
+      const c02 = s10 * s21 - s20 * s11, c12 = -(s00 * s21 - s20 * s01), c22 = s00 * s11 - s10 * s01;
+      const det = s00 * c00 + s10 * c10 + s20 * c20;
+      const inv = Math.abs(det) > 1e-20 ? 1 / det : 1;
+      const nx = nSrc[i * 3], ny = nSrc[i * 3 + 1], nz = nSrc[i * 3 + 2];
+      const wx = (c00 * nx + c01 * ny + c02 * nz) * inv;
+      const wy = (c10 * nx + c11 * ny + c12 * nz) * inv;
+      const wz = (c20 * nx + c21 * ny + c22 * nz) * inv;
+      const l = Math.hypot(wx, wy, wz) || 1;
+      out[i * 3] = wx / l; out[i * 3 + 1] = wy / l; out[i * 3 + 2] = wz / l;
+    }
+    return out;
+  }
+
   // Escribe las posiciones (y normales) deformadas en la geometría (solo para el skinning en CPU) y devuelve true si cambió algo.
   updateSkinnedVertices() {
     const geo = this.geometry;
@@ -328,12 +385,30 @@ export class SkinnedMesh extends Mesh {
       sk.center.x, sk.center.y, sk.center.z, boundR + 1e-3) === null) {
       return;
     }
-    const n = geo.attributes.position.count;
+    const posAttr = geo.attributes.position;
+    const n = posAttr.count;
     if (!this._world || this._world.length < n * 3) this._world = new Float32Array(n * 3);
-    if (this._worldVersion !== sk.version || this._worldCount !== n) {
+    const be = this.bindMatrix.elements;
+    let bindDirty = !this._worldBindMat;
+    if (!bindDirty) {
+      for (let i = 0; i < 16; i++) {
+        if (this._worldBindMat[i] !== be[i]) { bindDirty = true; break; }
+      }
+    }
+    if (
+      bindDirty ||
+      this._worldVersion !== sk.version ||
+      this._worldCount !== n ||
+      this._worldPosAttr !== posAttr ||
+      this._worldPosVer !== posAttr.version
+    ) {
       this.computeSkinnedWorld(this._world, n);
       this._worldVersion = sk.version;
       this._worldCount = n;
+      this._worldPosAttr = posAttr;
+      this._worldPosVer = posAttr.version;
+      if (!this._worldBindMat) this._worldBindMat = new Float32Array(16);
+      this._worldBindMat.set(be);
     }
     intersectGeometry(raycaster, intersects, geo, this.matrixWorld, this, null, this._world);
   }

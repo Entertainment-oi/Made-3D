@@ -326,6 +326,7 @@ export function mergeSelectedObjects({
   threshold = 0.015,
   removeInteriorFaces = true,
   stitchTJunctions = true,
+  solidity = 0.8,
 } = {}) {
   const rawList = Array.isArray(targets) && targets.length
     ? targets
@@ -368,6 +369,7 @@ export function mergeSelectedObjects({
       threshold,
       removeInteriorFaces,
       stitchTJunctions,
+      solidity,
     });
     const merged = mergeRes && mergeRes.mesh ? mergeRes.mesh : null;
     if (!merged || !merged.verts.length) {
@@ -440,6 +442,7 @@ export function mergeSelectedObjects({
     threshold,
     removeInteriorFaces,
     stitchTJunctions,
+    solidity,
   });
   if (!weldRes.changed) {
     setStatus('No había vértices o costuras cercanas que soldar con esa tolerancia.');

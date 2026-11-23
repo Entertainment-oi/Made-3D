@@ -170,13 +170,13 @@ export function catmullClarkStep(mesh, smoothness = 1) {
       const creaseX = 0.5 * p.x + 0.25 * (m0.x + m1.x);
       const creaseY = 0.5 * p.y + 0.25 * (m0.y + m1.y);
       const creaseZ = 0.5 * p.z + 0.25 * (m0.z + m1.z);
-      const cx = smoothPos.x + (creaseX - smoothPos.x) * cMin;
-      const cy = smoothPos.y + (creaseY - smoothPos.y) * cMin;
-      const cz = smoothPos.z + (creaseZ - smoothPos.z) * cMin;
+      const csX = p.x + (creaseX - p.x) * s;
+      const csY = p.y + (creaseY - p.y) * s;
+      const csZ = p.z + (creaseZ - p.z) * s;
       newVerts[vi] = {
-        x: p.x + (cx - p.x) * s,
-        y: p.y + (cy - p.y) * s,
-        z: p.z + (cz - p.z) * s,
+        x: smoothPos.x + (csX - smoothPos.x) * cMin,
+        y: smoothPos.y + (csY - smoothPos.y) * cMin,
+        z: smoothPos.z + (csZ - smoothPos.z) * cMin,
       };
     } else if (sharpEdges.length >= 3) {
       let wSum = 0;

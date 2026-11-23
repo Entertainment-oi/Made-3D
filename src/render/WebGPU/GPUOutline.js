@@ -12,6 +12,10 @@ export class GPUOutline {
   _getState(backend, mw, mh) {
     const device = backend.device;
     let st = _gpu.get(backend);
+    if (st && st.device !== device) {
+      this.dispose(backend);
+      st = null;
+    }
     if (!st) {
       const horizMod = backend.pipes.getShaderModule(OUTLINE_HORIZ_COMPUTE_WGSL);
       const horizPipe = device.createComputePipeline({
@@ -53,6 +57,7 @@ export class GPUOutline {
       });
 
       st = {
+        device,
         texMask: null, viewMask: null,
         texHoriz: null, viewHoriz: null,
         mw: 0, mh: 0,
@@ -263,5 +268,15 @@ export class GPUOutline {
     pass2.end();
 
     device.queue.submit([enc.finish()]);
+  }
+
+  dispose(backend) {
+    const st = _gpu.get(backend);
+    if (!st) return;
+    _gpu.delete(backend);
+    try { if (st.texMask) st.texMask.destroy(); } catch (_) {}
+    try { if (st.texHoriz) st.texHoriz.destroy(); } catch (_) {}
+    try { if (st.paramsBuf) st.paramsBuf.destroy(); } catch (_) {}
+    try { if (st.colorBuf) st.colorBuf.destroy(); } catch (_) {}
   }
 }

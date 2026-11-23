@@ -171,18 +171,33 @@ export function subdivideSelectedMesh() {
   if (sculpt.sculptor.isStroking) commitSculptStroke();
 
   Sculptor.ensureUniqueGeometry(mesh, viewport.scene);
+  const beforeGeo = mesh.geometry;
+  const beforeSubsurf = {
+    subsurf: mesh._subsurf
+      ? {
+          level: mesh._subsurf.level | 0,
+          smoothness: mesh._subsurf.smoothness ?? 1,
+          smoothShading: Boolean(mesh._subsurf.smoothShading),
+          showCage: Boolean(mesh._subsurf.showCage),
+          alwaysShowCage: Boolean(mesh._subsurf.alwaysShowCage),
+          baseMesh: mesh._subsurf.baseMesh ? mesh._subsurf.baseMesh.clone() : null,
+        }
+      : null,
+    dirty: Boolean(mesh._subsurfDirtyFromGeometry),
+    modFlag: Boolean(beforeGeo?._modifiedBySculpt),
+    genFlag: Boolean(beforeGeo?._isGeneratedSubsurf),
+  };
   if (mesh._subsurf) {
     mesh._subsurf = null;
   }
   mesh._subsurfDirtyFromGeometry = false;
-  const beforeGeo = mesh.geometry;
   try {
     const afterGeo = subdivideGeometry(beforeGeo, 1);
     afterGeo._modifiedBySculpt = true;
     afterGeo._isGeneratedSubsurf = false;
     if (typeof mesh.setGeometry === 'function') mesh.setGeometry(afterGeo);
     else mesh.geometry = afterGeo;
-    history.push({ type: 'subdivide', mesh, beforeGeo, afterGeo });
+    history.push({ type: 'subdivide', mesh, beforeGeo, afterGeo, beforeSubsurf });
     syncSculptUI();
     syncEditUI();
     const { triangles: tris } = afterGeo.getStats();

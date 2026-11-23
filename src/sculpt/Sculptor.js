@@ -17,7 +17,7 @@ function markGeometrySculpted(mesh, geo) {
   }
 }
 
-export const SCULPT_TOOLS = ['draw', 'clay', 'grab', 'smooth', 'inflate', 'flatten', 'pinch'];
+export const SCULPT_TOOLS = ['draw', 'carve', 'clay', 'crease', 'grab', 'smooth', 'inflate', 'deflate', 'flatten', 'pinch'];
 export const SCULPT_SYMMETRIES = ['none', 'x', 'y', 'z'];
 export const SCULPT_FALLOFFS = ['smooth', 'sphere', 'tip'];
 
@@ -362,10 +362,13 @@ export function subdivideGeometry(geo, levels = 1, opts = {}) {
 
 const TOOL_COLORS = {
   draw: '#60a5fa',
+  carve: '#f87171',
   clay: '#f59e0b',
+  crease: '#fb7185',
   grab: '#fbbf24',
   smooth: '#34d399',
   inflate: '#a78bfa',
+  deflate: '#c084fc',
   flatten: '#38bdf8',
   pinch: '#f472b6',
 };
@@ -516,6 +519,16 @@ export class Sculptor {
       prevDirty: Boolean(mesh._subsurfDirtyFromGeometry),
       prevModFlag: Boolean(geo._modifiedBySculpt),
       prevGenFlag: Boolean(geo._isGeneratedSubsurf),
+      prevSubsurf: mesh._subsurf
+        ? {
+            level: mesh._subsurf.level | 0,
+            smoothness: mesh._subsurf.smoothness ?? 1,
+            smoothShading: Boolean(mesh._subsurf.smoothShading),
+            showCage: Boolean(mesh._subsurf.showCage),
+            alwaysShowCage: Boolean(mesh._subsurf.alwaysShowCage),
+            baseMesh: mesh._subsurf.baseMesh ? mesh._subsurf.baseMesh.clone() : null,
+          }
+        : null,
       tool: this.tool,
       lastLocalPt: localPt.clone(),
       grab: null,
@@ -809,14 +822,27 @@ export class Sculptor {
       if (tool === 'draw') {
         const amt = sign * baseAmp * weight;
         dx = avgNx * amt; dy = avgNy * amt; dz = avgNz * amt;
+      } else if (tool === 'carve') {
+        const amt = -sign * baseAmp * 1.1 * weight;
+        dx = avgNx * amt; dy = avgNy * amt; dz = avgNz * amt;
       } else if (tool === 'clay') {
         const proj = (vx - avgPx) * avgNx + (vy - avgPy) * avgNy + (vz - avgPz) * avgNz;
         const lift = sign * baseAmp - proj * 0.35 * str;
         const amt = lift * weight;
         dx = avgNx * amt; dy = avgNy * amt; dz = avgNz * amt;
+      } else if (tool === 'crease') {
+        const indent = -sign * baseAmp * 0.95 * weight;
+        const pull = sign * Math.min(0.45, str * 0.18) * weight;
+        dx = avgNx * indent + (cx - vx) * pull;
+        dy = avgNy * indent + (cy - vy) * pull;
+        dz = avgNz * indent + (cz - vz) * pull;
       } else if (tool === 'inflate') {
         const vnx = nor[rep3], vny = nor[rep3 + 1], vnz = nor[rep3 + 2];
         const amt = sign * baseAmp * weight;
+        dx = vnx * amt; dy = vny * amt; dz = vnz * amt;
+      } else if (tool === 'deflate') {
+        const vnx = nor[rep3], vny = nor[rep3 + 1], vnz = nor[rep3 + 2];
+        const amt = -sign * baseAmp * weight;
         dx = vnx * amt; dy = vny * amt; dz = vnz * amt;
       } else if (tool === 'flatten') {
         const proj = (vx - avgPx) * avgNx + (vy - avgPy) * avgNy + (vz - avgPz) * avgNz;
@@ -872,16 +898,41 @@ export class Sculptor {
       syncEditableBaseFromGeometry(s.mesh);
     }
 
+    const afterSubsurf = s.mesh._subsurf
+      ? {
+          level: s.mesh._subsurf.level | 0,
+          smoothness: s.mesh._subsurf.smoothness ?? 1,
+          smoothShading: Boolean(s.mesh._subsurf.smoothShading),
+          showCage: Boolean(s.mesh._subsurf.showCage),
+          alwaysShowCage: Boolean(s.mesh._subsurf.alwaysShowCage),
+          baseMesh: s.mesh._subsurf.baseMesh ? s.mesh._subsurf.baseMesh.clone() : null,
+        }
+      : null;
+
     return {
       mesh: s.mesh,
       geometry: s.geometry,
       diff: { indices, before, after },
+      beforeState: {
+        subsurf: s.prevSubsurf,
+        dirty: s.prevDirty,
+        modFlag: s.prevModFlag,
+        genFlag: s.prevGenFlag,
+      },
+      afterState: {
+        subsurf: afterSubsurf,
+        dirty: Boolean(s.mesh._subsurfDirtyFromGeometry),
+        modFlag: Boolean(s.geometry._modifiedBySculpt),
+        genFlag: Boolean(s.geometry._isGeneratedSubsurf),
+      },
     };
   }
 
   cancelStroke() {
     const s = this._stroke;
     this._stroke = null;
+    this._releasePointerCapture();
+    this._activePointerId = null;
     if (!s) return false;
     const posAttr = s.geometry.attributes.position;
     posAttr.array.set(s.beforePos);

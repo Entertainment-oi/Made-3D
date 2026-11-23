@@ -23,3 +23,7 @@ export {
   EDIT_TRANSFORM_MODES,
   EDIT_CUT_MODES,
 } from '../modeling/MeshEditor.js';
+export {
+  computeFaceShellIds,
+  performVolumetricUnionIfNeeded,
+} from '../modeling/MeshUnion.js';

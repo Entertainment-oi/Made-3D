@@ -105,10 +105,13 @@ export class EditableMesh {
     this.looseEdges = looseEdges; // Array<[number, number]>
     this.creases = creases instanceof Map ? new Map(creases) : new Map(); // edgeKey -> weight [0..1]
     this._topologyCache = null;
+    this._densityOrigin = null;
+    this.autoSmoothCos = null;
   }
 
   invalidateTopology() {
     this._topologyCache = null;
+    this._densityOrigin = null;
   }
 
   getEdgeCrease(a, b) {
@@ -172,6 +175,7 @@ export class EditableMesh {
     for (let i = 0; i < targets.length; i++) {
       this.setEdgeCrease(targets[i].a, targets[i].b, v);
     }
+    this._densityOrigin = null;
     return { changed: true, count: targets.length, value: v };
   }
 
@@ -208,7 +212,14 @@ export class EditableMesh {
     const faces = this.faces.map((f) => f.slice());
     const faceUvs = this.faceUvs.map((uvs) => uvs.map((uv) => [uv[0], uv[1]]));
     const looseEdges = this.looseEdges.map((e) => [e[0], e[1]]);
-    return new EditableMesh(verts, faces, faceUvs, looseEdges, this.creases);
+    const copy = new EditableMesh(verts, faces, faceUvs, looseEdges, this.creases);
+    copy.autoSmoothCos = this.autoSmoothCos;
+    if (this._densityOrigin) {
+      const originCopy = this._densityOrigin.clone();
+      originCopy._densityOrigin = null;
+      copy._densityOrigin = originCopy;
+    }
+    return copy;
   }
 
   copyPositionsFrom(other) {
@@ -503,9 +514,11 @@ export class EditableMesh {
 
   /**
    * Compila la malla poligonal a una Geometry indexada de Made3D.
-   * Respeta aristas duras (creases >= creaseThreshold) generando división de normales suave/dura por arista.
+  /**
+   * Compila la malla poligonal a una Geometry indexada de Made3D.
+   * Respeta aristas duras (creases >= creaseThreshold) y ángulo auto-suave (`autoSmoothCos`) generando división de normales suave/dura por arista.
    */
-  toGeometry({ flatShading = false, creaseThreshold = 0.5 } = {}) {
+  toGeometry({ flatShading = false, creaseThreshold = 0.5, autoSmoothCos = this.autoSmoothCos } = {}) {
     const geo = new Geometry();
     const positions = [];
     const normals = [];
@@ -521,18 +534,19 @@ export class EditableMesh {
         }
       }
     }
+    const useAutoSmooth = !flatShading && autoSmoothCos !== null && Number.isFinite(autoSmoothCos) && autoSmoothCos > -1;
+    const effAutoCos = useAutoSmooth ? Number(autoSmoothCos) : -2;
 
     const faceNormals = new Array(this.faces.length);
+    const faceAreas = !flatShading ? new Float64Array(this.faces.length) : null;
     const faceCornerAngles = !flatShading ? new Array(this.faces.length) : null;
-    const vertNormals = !flatShading && !hasSharpCreases
-      ? Array.from({ length: this.verts.length }, () => [0, 0, 0])
-      : null;
 
     for (let fi = 0; fi < this.faces.length; fi++) {
       const an = this.computeFaceAreaNormal(fi, _vA);
       const len = Math.hypot(an.x, an.y, an.z) || 1;
       const fn = [an.x / len, an.y / len, an.z / len];
       faceNormals[fi] = fn;
+      if (faceAreas) faceAreas[fi] = len * 0.5;
       if (!flatShading) {
         const f = this.faces[fi];
         const kLen = f.length;
@@ -549,16 +563,42 @@ export class EditableMesh {
             ? Math.acos(Math.max(-1, Math.min(1, (ax * bx + ay * by + az * bz) / (la * lb))))
             : 0;
           angles[i] = ang;
-          if (vertNormals) {
-            const vn = vertNormals[f[i]];
-            vn[0] += fn[0] * ang; vn[1] += fn[1] * ang; vn[2] += fn[2] * ang;
-          }
         }
         faceCornerAngles[fi] = angles;
       }
     }
 
+    let hasAutoSharpEdges = false;
+    const topoForNormals = !flatShading && (hasSharpCreases || useAutoSmooth) ? this.getTopology() : null;
+    if (useAutoSmooth && topoForNormals) {
+      for (let ei = 0; ei < topoForNormals.edges.length; ei++) {
+        const e = topoForNormals.edges[ei];
+        if (e.faces.length !== 2) continue;
+        const n0 = faceNormals[e.faces[0]];
+        const n1 = faceNormals[e.faces[1]];
+        if (n0[0] * n1[0] + n0[1] * n1[1] + n0[2] * n1[2] < effAutoCos) {
+          hasAutoSharpEdges = true;
+          break;
+        }
+      }
+    }
+
+    const useSplitNormals = !flatShading && (hasSharpCreases || hasAutoSharpEdges);
+    const vertNormals = !flatShading && !useSplitNormals
+      ? Array.from({ length: this.verts.length }, () => [0, 0, 0])
+      : null;
+
     if (vertNormals) {
+      for (let fi = 0; fi < this.faces.length; fi++) {
+        const f = this.faces[fi];
+        const fn = faceNormals[fi];
+        const angles = faceCornerAngles[fi];
+        for (let i = 0; i < f.length; i++) {
+          const vn = vertNormals[f[i]];
+          const ang = angles[i];
+          vn[0] += fn[0] * ang; vn[1] += fn[1] * ang; vn[2] += fn[2] * ang;
+        }
+      }
       for (let i = 0; i < vertNormals.length; i++) {
         const vn = vertNormals[i];
         const l = Math.hypot(vn[0], vn[1], vn[2]);
@@ -570,10 +610,10 @@ export class EditableMesh {
       }
     }
 
-    // Si existen aristas con dureza >= creaseThreshold, agrupar abanicos de caras lisas por vértice
-    const cornerNormals = hasSharpCreases ? new Array(this.faces.length) : null;
-    if (hasSharpCreases) {
-      const topo = this.getTopology();
+    // Si existen aristas con dureza >= creaseThreshold o quiebre > autoSmoothCos, agrupar abanicos de caras lisas por vértice
+    const cornerNormals = useSplitNormals ? new Array(this.faces.length) : null;
+    if (useSplitNormals) {
+      const topo = topoForNormals;
       for (let fi = 0; fi < this.faces.length; fi++) {
         cornerNormals[fi] = new Array(this.faces[fi].length);
       }
@@ -591,15 +631,19 @@ export class EditableMesh {
           continue;
         }
 
-        // Construir adyacencia suave entre caras incidentes a `vi`
+        // Construir adyacencia suave entre caras incidentes a `vi` (caras mayores primero para fijar paredes planas)
         const incSet = new Set(incFaces);
+        const orderedInc = hasAutoSharpEdges && faceAreas
+          ? incFaces.slice().sort((a, b) => faceAreas[b] - faceAreas[a])
+          : incFaces;
         const visited = new Set();
-        for (let startIdx = 0; startIdx < incFaces.length; startIdx++) {
-          const seed = incFaces[startIdx];
+        for (let startIdx = 0; startIdx < orderedInc.length; startIdx++) {
+          const seed = orderedInc[startIdx];
           if (visited.has(seed)) continue;
           const group = [];
           const queue = [seed];
           visited.add(seed);
+          const seedFn = faceNormals[seed];
           let sx = 0, sy = 0, sz = 0;
 
           while (queue.length) {
@@ -615,17 +659,24 @@ export class EditableMesh {
             if (weightSum < 1e-8) weightSum = 1e-4;
             sx += fn[0] * weightSum; sy += fn[1] * weightSum; sz += fn[2] * weightSum;
 
+            const gsLen = Math.hypot(sx, sy, sz) || 1;
+            const gx = sx / gsLen, gy = sy / gsLen, gz = sz / gsLen;
             const fe = topo.faceEdges[curFi] || [];
             for (let eiIdx = 0; eiIdx < fe.length; eiIdx++) {
               const e = topo.edges[fe[eiIdx]];
               if (!e || (e.a !== vi && e.b !== vi)) continue;
-              if (this.getEdgeCrease(e.a, e.b) >= creaseThreshold) continue;
+              if (hasSharpCreases && this.getEdgeCrease(e.a, e.b) >= creaseThreshold) continue;
               for (let nfIdx = 0; nfIdx < e.faces.length; nfIdx++) {
                 const nfi = e.faces[nfIdx];
-                if (incSet.has(nfi) && !visited.has(nfi)) {
-                  visited.add(nfi);
-                  queue.push(nfi);
+                if (!incSet.has(nfi) || visited.has(nfi)) continue;
+                if (hasAutoSharpEdges) {
+                  const fnNbr = faceNormals[nfi];
+                  if (fn[0] * fnNbr[0] + fn[1] * fnNbr[1] + fn[2] * fnNbr[2] < effAutoCos) continue;
+                  if (seedFn[0] * fnNbr[0] + seedFn[1] * fnNbr[1] + seedFn[2] * fnNbr[2] < 0.34) continue;
+                  if (gx * fnNbr[0] + gy * fnNbr[1] + gz * fnNbr[2] < 0.52) continue;
                 }
+                visited.add(nfi);
+                queue.push(nfi);
               }
             }
           }
@@ -648,7 +699,7 @@ export class EditableMesh {
       if (!flatShading) {
         const uq = Math.round(uv[0] * 10000);
         const vq = Math.round(uv[1] * 10000);
-        const key = hasSharpCreases
+        const key = useSplitNormals
           ? `${vi}_${uq}_${vq}_${Math.round(nrm[0] * 1000)}_${Math.round(nrm[1] * 1000)}_${Math.round(nrm[2] * 1000)}`
           : `${vi}_${uq}_${vq}`;
         const existing = cornerCache.get(key);
@@ -697,7 +748,7 @@ export class EditableMesh {
       const cornerIndices = new Array(f.length);
       for (let i = 0; i < f.length; i++) {
         const vi = f[i];
-        const nrm = flatShading ? fn : (hasSharpCreases ? (cornerNormals[fi][i] || fn) : vertNormals[vi]);
+        const nrm = flatShading ? fn : (useSplitNormals ? (cornerNormals[fi][i] || fn) : vertNormals[vi]);
         cornerIndices[i] = emitCorner(vi, fUv[i] || [0, 0], nrm);
       }
 
@@ -758,6 +809,41 @@ export class EditableMesh {
               let bestEarIdx = -1;
               let bestEarScore = -Infinity;
               const m = ring.length;
+              if (m === 4) {
+                const [r0, r1, r2, r3] = ring;
+                const d02A = triAlignScore(pts[r0], pts[r1], pts[r2], fn);
+                const d02B = triAlignScore(pts[r0], pts[r2], pts[r3], fn);
+                const d13A = triAlignScore(pts[r1], pts[r2], pts[r3], fn);
+                const d13B = triAlignScore(pts[r1], pts[r3], pts[r0], fn);
+                const s02 = Math.min(d02A, d02B);
+                const s13 = Math.min(d13A, d13B);
+                // Verificar además calidad de forma si ambas diagonales alinean bien
+                const shapeOf = (ia, ib, ic) => {
+                  const pa = pts[ia], pb = pts[ib], pc = pts[ic];
+                  const e1x = pb.x - pa.x, e1y = pb.y - pa.y, e1z = pb.z - pa.z;
+                  const e2x = pc.x - pa.x, e2y = pc.y - pa.y, e2z = pc.z - pa.z;
+                  const e3x = pc.x - pb.x, e3y = pc.y - pb.y, e3z = pc.z - pb.z;
+                  const area3 = Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+                  const sumSq3 = (e1x * e1x + e1y * e1y + e1z * e1z) + (e2x * e2x + e2y * e2y + e2z * e2z) + (e3x * e3x + e3y * e3y + e3z * e3z);
+                  return area3 / (sumSq3 || 1e-12);
+                };
+                const q02 = (s02 < 0.75 ? s02 - 1.5 : s02) + Math.min(shapeOf(r0, r1, r2), shapeOf(r0, r2, r3)) * 0.8;
+                const q13 = (s13 < 0.75 ? s13 - 1.5 : s13) + Math.min(shapeOf(r1, r2, r3), shapeOf(r1, r3, r0)) * 0.8;
+                const p02A = pts2D[r0], p02B = pts2D[r1], p02C = pts2D[r2], p02D = pts2D[r3];
+                const ok02 = cross2D(p02A, p02B, p02C) > 1e-12 && cross2D(p02A, p02C, p02D) > 1e-12;
+                const ok13 = cross2D(p02B, p02C, p02D) > 1e-12 && cross2D(p02B, p02D, p02A) > 1e-12;
+                if (ok02 && (!ok13 || q02 >= q13)) {
+                  indices.push(cornerIndices[r0], cornerIndices[r1], cornerIndices[r2], cornerIndices[r0], cornerIndices[r2], cornerIndices[r3]);
+                  ring.length = 0;
+                  earClipped = true;
+                  break;
+                } else if (ok13) {
+                  indices.push(cornerIndices[r1], cornerIndices[r2], cornerIndices[r3], cornerIndices[r1], cornerIndices[r3], cornerIndices[r0]);
+                  ring.length = 0;
+                  earClipped = true;
+                  break;
+                }
+              }
               for (let i = 0; i < m; i++) {
                 const prev = ring[(i - 1 + m) % m];
                 const curr = ring[i];
@@ -777,8 +863,16 @@ export class EditableMesh {
                 }
                 if (hasInside) continue;
                 const align = triAlignScore(pts[prev], pts[curr], pts[next], fn);
-                if (align > bestEarScore) {
-                  bestEarScore = align;
+                const pa = pts[prev], pb = pts[curr], pc = pts[next];
+                const e1x = pb.x - pa.x, e1y = pb.y - pa.y, e1z = pb.z - pa.z;
+                const e2x = pc.x - pa.x, e2y = pc.y - pa.y, e2z = pc.z - pa.z;
+                const e3x = pc.x - pb.x, e3y = pc.y - pb.y, e3z = pc.z - pb.z;
+                const area3 = Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+                const sumSq3 = (e1x * e1x + e1y * e1y + e1z * e1z) + (e2x * e2x + e2y * e2y + e2z * e2z) + (e3x * e3x + e3y * e3y + e3z * e3z);
+                const shape = area3 / (sumSq3 || 1e-12);
+                const earScore = (align < 0.75 ? align - 1.5 : align) + shape * 1.4;
+                if (earScore > bestEarScore) {
+                  bestEarScore = earScore;
                   bestEarIdx = i;
                 }
               }
@@ -789,7 +883,9 @@ export class EditableMesh {
               indices.push(cornerIndices[prev], cornerIndices[curr], cornerIndices[next]);
               ring.splice(bestEarIdx, 1);
             }
-            if (ring.length === 3) {
+            if (ring.length === 0) {
+              earClipped = true;
+            } else if (ring.length === 3) {
               indices.push(cornerIndices[ring[0]], cornerIndices[ring[1]], cornerIndices[ring[2]]);
               earClipped = true;
             } else if (ring.length > 3) {
@@ -3830,7 +3926,7 @@ export class EditableMesh {
 
       if (solidity > 0) {
         collapseTinySeamSlivers(this, faceOrigins, {
-          maxEdgeLen: Math.max(activeTol * 4, diag * 2.5e-3),
+          maxEdgeLen: Math.max(activeTol * 6, diag * 4e-3),
         });
       }
 
@@ -3840,6 +3936,8 @@ export class EditableMesh {
       if (seamSmooth > 0) {
         smoothUnionSeam(this, faceOrigins, seamSmooth);
       }
+
+      this.autoSmoothCos = Math.cos((50 * Math.PI) / 180);
     }
     } // end if (!didOrganicUnion)
 
@@ -3955,6 +4053,9 @@ export class EditableMesh {
       remeshOrganic: Boolean(opts.remeshOrganic),
       shellIds: combinedShellIds,
     });
+    if (!opts.remeshOrganic && opts.autoSmooth !== false) {
+      merged.autoSmoothCos = Math.cos((50 * Math.PI) / 180);
+    }
 
     return {
       mesh: merged,

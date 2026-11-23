@@ -1224,7 +1224,8 @@ export function bindUI() {
     const syncDensityInputs = (val, sourceEl) => {
       const num = Number(val);
       if (!Number.isFinite(num)) return;
-      const clamped = String(Math.round(Math.max(20, Math.min(300, num))));
+      const maxPct = Math.max(400, Number(dom.editDensityScale?.max) || 400);
+      const clamped = String(Math.round(Math.max(1, Math.min(maxPct, num))));
       if (dom.editDensityScale && dom.editDensityScale !== sourceEl) dom.editDensityScale.value = clamped;
       if (dom.editDensityScaleNum && dom.editDensityScaleNum !== sourceEl) dom.editDensityScaleNum.value = clamped;
       updateEditDensityPreview();

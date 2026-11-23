@@ -542,6 +542,7 @@ export class MeshEditor {
       changed: true,
       beforeVerts: res.beforeVerts,
       afterVerts: res.afterVerts,
+      originVerts: res.originVerts,
       faceCount: res.faceCount,
       stats: this.getStats(),
     };

@@ -40,8 +40,18 @@ export function estimateCommandBytes(cmd) {
     };
     bytes += countGeo(cmd.beforeGeo) + countGeo(cmd.afterGeo);
   } else if (cmd.type === 'meshEdit' || cmd.type === 'mergeMeshes') {
-    const vLen = (cmd.beforeState?.baseMesh?.verts?.length || 0) + (cmd.afterState?.baseMesh?.verts?.length || 0);
-    const fLen = (cmd.beforeState?.baseMesh?.faces?.length || 0) + (cmd.afterState?.baseMesh?.faces?.length || 0);
+    const bMesh = cmd.beforeState?.baseMesh;
+    const aMesh = cmd.afterState?.baseMesh;
+    const vLen =
+      (bMesh?.verts?.length || 0) +
+      (aMesh?.verts?.length || 0) +
+      (bMesh?._densityOrigin?.verts?.length || 0) +
+      (aMesh?._densityOrigin?.verts?.length || 0);
+    const fLen =
+      (bMesh?.faces?.length || 0) +
+      (aMesh?.faces?.length || 0) +
+      (bMesh?._densityOrigin?.faces?.length || 0) +
+      (aMesh?._densityOrigin?.faces?.length || 0);
     bytes += vLen * 32 + fLen * 48 + (cmd.removals ? cmd.removals.length * 256 : 0);
   } else if (cmd.type === 'transform') {
     bytes += (cmd.os ? cmd.os.length : 1) * 192;

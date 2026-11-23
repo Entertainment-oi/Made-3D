@@ -1116,6 +1116,119 @@ function splitConvexPolygonWithSegments(
     }
   }
 
+  // Normalizar devanado CCW 2D de todos los triángulos
+  for (let i = 0; i < tris.length; i++) {
+    const t = tris[i];
+    const area2 = cross2(pts2D[t[0]].x, pts2D[t[0]].y, pts2D[t[1]].x, pts2D[t[1]].y, pts2D[t[2]].x, pts2D[t[2]].y);
+    if (area2 < 0) {
+      const tmp = t[1]; t[1] = t[2]; t[2] = tmp;
+    }
+  }
+
+  // Paso 3: Legalización Constrained Delaunay (Lawson Edge-Flipping)
+  // Elimina triángulos aguja (0.1°) maximizando el ángulo mínimo sin cruzar segmentos de corte
+  if (tris.length >= 2) {
+    const constrained = new Set();
+    for (let i = 0; i < m; i++) {
+      const u = i, v = (i + 1) % m;
+      constrained.add(u < v ? `${u}_${v}` : `${v}_${u}`);
+    }
+    for (let i = 0; i < segPairs.length; i++) {
+      const u = segPairs[i][0], v = segPairs[i][1];
+      if (u !== v) constrained.add(u < v ? `${u}_${v}` : `${v}_${u}`);
+    }
+    // Proteger también aristas sobre los bordes originales partidos por puntos nuevos
+    for (let e = 0; e < m; e++) {
+      const va = pts2D[e], vb = pts2D[(e + 1) % m];
+      const ex = vb.x - va.x, ey = vb.y - va.y;
+      const lSq = ex * ex + ey * ey;
+      if (lSq < 1e-14) continue;
+      const onEdge = [{ vi: e, t: 0 }, { vi: (e + 1) % m, t: 1 }];
+      for (let vi = m; vi < pts2D.length; vi++) {
+        const p = pts2D[vi];
+        const t = ((p.x - va.x) * ex + (p.y - va.y) * ey) / lSq;
+        if (t <= 1e-4 || t >= 1 - 1e-4) continue;
+        const dx = p.x - (va.x + ex * t), dy = p.y - (va.y + ey * t);
+        if (dx * dx + dy * dy <= snapSq * 1.1) onEdge.push({ vi, t });
+      }
+      if (onEdge.length > 2) {
+        onEdge.sort((u, v) => u.t - v.t);
+        for (let k = 0; k + 1 < onEdge.length; k++) {
+          const u = onEdge[k].vi, v = onEdge[k + 1].vi;
+          if (u !== v) constrained.add(u < v ? `${u}_${v}` : `${v}_${u}`);
+        }
+      }
+    }
+
+    const triMinSinSq = (ia, ib, ic) => {
+      const pa = pts2D[ia], pb = pts2D[ib], pc = pts2D[ic];
+      const area2 = cross2(pa.x, pa.y, pb.x, pb.y, pc.x, pc.y);
+      if (area2 <= 1e-13) return 0;
+      const l01 = (pb.x - pa.x) ** 2 + (pb.y - pa.y) ** 2;
+      const l12 = (pc.x - pb.x) ** 2 + (pc.y - pb.y) ** 2;
+      const l20 = (pa.x - pc.x) ** 2 + (pa.y - pc.y) ** 2;
+      const maxProd = Math.max(l01 * l12, l12 * l20, l20 * l01);
+      return maxProd > 1e-24 ? (area2 * area2) / maxProd : 0;
+    };
+
+    const maxPasses = Math.min(12, Math.max(4, tris.length));
+    for (let pass = 0; pass < maxPasses; pass++) {
+      let flippedHere = false;
+      const edgeToTris = new Map();
+      for (let ti = 0; ti < tris.length; ti++) {
+        const t = tris[ti];
+        for (let e = 0; e < 3; e++) {
+          const u = t[e], v = t[(e + 1) % 3];
+          if (u === v) continue;
+          const ek = u < v ? `${u}_${v}` : `${v}_${u}`;
+          let arr = edgeToTris.get(ek);
+          if (!arr) { arr = []; edgeToTris.set(ek, arr); }
+          arr.push(ti);
+        }
+      }
+
+      const dirtyTri = new Uint8Array(tris.length);
+      for (const [ek, list] of edgeToTris.entries()) {
+        if (list.length !== 2 || constrained.has(ek)) continue;
+        const ti0 = list[0], ti1 = list[1];
+        if (dirtyTri[ti0] || dirtyTri[ti1]) continue;
+        const t0 = tris[ti0], t1 = tris[ti1];
+        const sep = ek.indexOf('_');
+        const ea = Number(ek.slice(0, sep)), eb = Number(ek.slice(sep + 1));
+        const ia0 = t0.indexOf(ea), ib0 = t0.indexOf(eb);
+        if (ia0 < 0 || ib0 < 0) continue;
+        const uFirst = ((ia0 + 1) % 3) === ib0;
+        const a = uFirst ? ea : eb;
+        const b = uFirst ? eb : ea;
+        const c = t0[3 - ia0 - ib0];
+        const ia1 = t1.indexOf(a), ib1 = t1.indexOf(b);
+        if (ia1 < 0 || ib1 < 0) continue;
+        const d = t1[3 - ia1 - ib1];
+        if (c === d || a === c || b === c || a === d || b === d) continue;
+
+        const pa = pts2D[a], pb = pts2D[b], pc = pts2D[c], pd = pts2D[d];
+        // Verificar convexidad estricta del quad CCW [a, d, b, c]
+        if (
+          cross2(pa.x, pa.y, pd.x, pd.y, pb.x, pb.y) <= 1e-12 ||
+          cross2(pb.x, pb.y, pc.x, pc.y, pa.x, pa.y) <= 1e-12 ||
+          cross2(pc.x, pc.y, pa.x, pa.y, pd.x, pd.y) <= 1e-12 ||
+          cross2(pd.x, pd.y, pb.x, pb.y, pc.x, pc.y) <= 1e-12
+        ) continue;
+
+        const qBefore = Math.min(triMinSinSq(a, b, c), triMinSinSq(b, a, d));
+        const qAfter = Math.min(triMinSinSq(a, d, c), triMinSinSq(d, b, c));
+        if (qAfter > qBefore * 1.01) {
+          tris[ti0] = [a, d, c];
+          tris[ti1] = [d, b, c];
+          dirtyTri[ti0] = 1;
+          dirtyTri[ti1] = 1;
+          flippedHere = true;
+        }
+      }
+      if (!flippedHere) break;
+    }
+  }
+
   // Reconstruir vértices 3D + UVs reutilizando esquinas originales 0..m-1 sin duplicarlas
   const outNewVerts = [];
   const vertGlobalIndices = new Int32Array(pts2D.length);
@@ -2476,10 +2589,101 @@ export function collapseTinySeamSlivers(editableMesh, faceOrigins = null, { maxE
   if (!seamLengths.length) return { collapsed: 0 };
   seamLengths.sort((a, b) => a - b);
   const medSeamLen = seamLengths[(seamLengths.length * 0.5) | 0];
-  const sliverCut = Math.min(maxEdgeLen, medSeamLen * 0.14);
+  const sliverCut = Math.min(maxEdgeLen, medSeamLen * 0.18);
+  const needleCut = Math.min(maxEdgeLen * 3.0, medSeamLen * 0.35);
   if (sliverCut <= 1e-7) return { collapsed: 0 };
 
+  const triQualityInfo = (f) => {
+    const p0 = verts[f[0]], p1 = verts[f[1]], p2 = verts[f[2]];
+    const e01 = Math.hypot(p1.x - p0.x, p1.y - p0.y, p1.z - p0.z);
+    const e12 = Math.hypot(p2.x - p1.x, p2.y - p1.y, p2.z - p1.z);
+    const e20 = Math.hypot(p0.x - p2.x, p0.y - p2.y, p0.z - p2.z);
+    const e1x = p1.x - p0.x, e1y = p1.y - p0.y, e1z = p1.z - p0.z;
+    const e2x = p2.x - p0.x, e2y = p2.y - p0.y, e2z = p2.z - p0.z;
+    const cx = e1y * e2z - e1z * e2y;
+    const cy = e1z * e2x - e1x * e2z;
+    const cz = e1x * e2y - e1y * e2x;
+    const area2 = Math.hypot(cx, cy, cz);
+    const sumSq = e01 * e01 + e12 * e12 + e20 * e20;
+    const maxProd = Math.max(e01 * e12, e12 * e20, e20 * e01);
+    const q = sumSq > 1e-18 ? area2 / sumSq : 0;
+    const sinSq = maxProd > 1e-12 ? (area2 * area2) / (maxProd * maxProd) : 0;
+    return { q, sinSq, area2, minE: Math.min(e01, e12, e20), maxE: Math.max(e01, e12, e20) };
+  };
+
   let totalCollapsed = 0;
+
+  // Paso 0: Voltear diagonales entre pares de triángulos coplanares o casi planos tocados por el corte
+  for (let fPass = 0; fPass < 3; fPass++) {
+    const topo = editableMesh.getTopology();
+    const V = verts.length;
+    const vNbrs = Array.from({ length: V }, () => new Set());
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      vNbrs[e.a].add(e.b);
+      vNbrs[e.b].add(e.a);
+    }
+    const faceTouched = new Uint8Array(editableMesh.faces.length);
+    const fNormals = editableMesh.faces.map((f) => computeFaceUnitNormal(f, verts));
+    let flips = 0;
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (e.faces.length !== 2) continue;
+      const [fi0, fi1] = e.faces;
+      if (faceTouched[fi0] || faceTouched[fi1]) continue;
+      const f0 = editableMesh.faces[fi0], f1 = editableMesh.faces[fi1];
+      if (!f0 || !f1 || f0.length !== 3 || f1.length !== 3) continue;
+      if (faceOrigins && !faceOrigins[fi0]?.wasTouched && !faceOrigins[fi1]?.wasTouched) continue;
+      if (faceOrigins && faceOrigins[fi0]?.shell !== faceOrigins[fi1]?.shell) continue;
+      const n0 = fNormals[fi0], n1 = fNormals[fi1];
+      if (!n0 || !n1 || (n0.x * n1.x + n0.y * n1.y + n0.z * n1.z) < 0.992) continue;
+
+      const iu0 = f0.indexOf(e.a), iv0 = f0.indexOf(e.b);
+      if (iu0 < 0 || iv0 < 0) continue;
+      const uFirst = ((iu0 + 1) % 3) === iv0;
+      const a = uFirst ? e.a : e.b;
+      const b = uFirst ? e.b : e.a;
+      const c = f0[3 - f0.indexOf(a) - f0.indexOf(b)];
+      const d = f1[3 - f1.indexOf(a) - f1.indexOf(b)];
+      if (c === d || vNbrs[c].has(d)) continue;
+
+      const q0 = triQualityInfo(f0);
+      const q1 = triQualityInfo(f1);
+      const minSinBefore = Math.min(q0.sinSq, q1.sinSq);
+      if (minSinBefore >= 0.03) continue; // ya tiene ángulo >= ~10°
+
+      const nf0 = [a, d, c], nf1 = [d, b, c];
+      const nn0 = computeFaceUnitNormal(nf0, verts);
+      const nn1 = computeFaceUnitNormal(nf1, verts);
+      if (!nn0 || !nn1) continue;
+      if (nn0.x * n0.x + nn0.y * n0.y + nn0.z * n0.z < 0.985) continue;
+      if (nn1.x * n1.x + nn1.y * n1.y + nn1.z * n1.z < 0.985) continue;
+      const nq0 = triQualityInfo(nf0);
+      const nq1 = triQualityInfo(nf1);
+      const minSinAfter = Math.min(nq0.sinSq, nq1.sinSq);
+      if (minSinAfter <= minSinBefore * 1.4) continue;
+
+      const uv0 = editableMesh.faceUvs[fi0] || [[0, 0], [0, 0], [0, 0]];
+      const uv1 = editableMesh.faceUvs[fi1] || [[0, 0], [0, 0], [0, 0]];
+      const getUv = (face, uvs, vi) => {
+        const idx = face.indexOf(vi);
+        return idx >= 0 && uvs[idx] ? uvs[idx].slice() : [0, 0];
+      };
+      const uvA = getUv(f0, uv0, a), uvB = getUv(f0, uv0, b), uvC = getUv(f0, uv0, c), uvD = getUv(f1, uv1, d);
+      editableMesh.faces[fi0] = nf0;
+      editableMesh.faceUvs[fi0] = [uvA, uvD, uvC];
+      editableMesh.faces[fi1] = nf1;
+      editableMesh.faceUvs[fi1] = [uvD.slice(), uvB, uvC.slice()];
+      if (faceOrigins?.[fi0]) faceOrigins[fi0].wasTouched = true;
+      if (faceOrigins?.[fi1]) faceOrigins[fi1].wasTouched = true;
+      vNbrs[a].delete(b); vNbrs[b].delete(a);
+      vNbrs[c].add(d); vNbrs[d].add(c);
+      faceTouched[fi0] = 1; faceTouched[fi1] = 1;
+      flips++;
+    }
+    if (!flips) break;
+    editableMesh.invalidateTopology();
+  }
 
   for (let pass = 0; pass < 6; pass++) {
     const topo = editableMesh.getTopology();
@@ -2488,8 +2692,14 @@ export function collapseTinySeamSlivers(editableMesh, faceOrigins = null, { maxE
 
     const isBoundaryVert = new Uint8Array(V);
     const isSeamVert = new Uint8Array(V);
+    const isSharpCorner = new Uint8Array(V);
     const vertNeighbors = Array.from({ length: V }, () => new Set());
+    const faceNormals = new Array(F);
+    for (let fi = 0; fi < F; fi++) {
+      faceNormals[fi] = computeFaceUnitNormal(editableMesh.faces[fi], verts);
+    }
 
+    const sharpEdgeDeg = new Int32Array(V);
     for (let ei = 0; ei < topo.edges.length; ei++) {
       const e = topo.edges[ei];
       vertNeighbors[e.a].add(e.b);
@@ -2497,7 +2707,16 @@ export function collapseTinySeamSlivers(editableMesh, faceOrigins = null, { maxE
       if (e.faces.length !== 2) {
         isBoundaryVert[e.a] = 1;
         isBoundaryVert[e.b] = 1;
+      } else {
+        const na = faceNormals[e.faces[0]], nb = faceNormals[e.faces[1]];
+        if (na && nb && (na.x * nb.x + na.y * nb.y + na.z * nb.z) < 0.65) {
+          sharpEdgeDeg[e.a]++;
+          sharpEdgeDeg[e.b]++;
+        }
       }
+    }
+    for (let vi = 0; vi < V; vi++) {
+      if (sharpEdgeDeg[vi] >= 3) isSharpCorner[vi] = 1;
     }
 
     if (faceOrigins) {
@@ -2513,6 +2732,13 @@ export function collapseTinySeamSlivers(editableMesh, faceOrigins = null, { maxE
       }
     }
 
+    const triInfo = new Array(F);
+    for (let fi = 0; fi < F; fi++) {
+      if (editableMesh.faces[fi].length === 3) {
+        triInfo[fi] = triQualityInfo(editableMesh.faces[fi]);
+      }
+    }
+
     const candidates = [];
     for (let ei = 0; ei < topo.edges.length; ei++) {
       const e = topo.edges[ei];
@@ -2520,11 +2746,18 @@ export function collapseTinySeamSlivers(editableMesh, faceOrigins = null, { maxE
       if (isBoundaryVert[e.a] || isBoundaryVert[e.b]) continue;
       const fa = e.faces[0], fb = e.faces[1];
       if (fa === fb) continue;
-      if (editableMesh.faces[fa].length !== 3 || editableMesh.faces[fb].length !== 3) continue;
+      const lenA = editableMesh.faces[fa].length;
+      const lenB = editableMesh.faces[fb].length;
+      if (lenA < 3 || lenB < 3) continue;
       if (faceOrigins && !faceOrigins[fa]?.wasTouched && !faceOrigins[fb]?.wasTouched) continue;
       const pa = verts[e.a], pb = verts[e.b];
       const len = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
-      if (len < sliverCut) {
+
+      const isSharpTri =
+        (triInfo[fa] && triInfo[fa].sinSq < 0.06 && Math.abs(len - triInfo[fa].minE) < 1e-7) ||
+        (triInfo[fb] && triInfo[fb].sinSq < 0.06 && Math.abs(len - triInfo[fb].minE) < 1e-7);
+
+      if (len < sliverCut || (isSharpTri && len < needleCut)) {
         candidates.push({ ei, u: e.a, v: e.b, fa, fb, len });
       }
     }
@@ -2534,41 +2767,72 @@ export function collapseTinySeamSlivers(editableMesh, faceOrigins = null, { maxE
 
     const dirtyVert = new Uint8Array(V);
     const droppedFace = new Uint8Array(F);
-    const faceNormals = new Array(F);
-    for (let fi = 0; fi < F; fi++) {
-      faceNormals[fi] = computeFaceUnitNormal(editableMesh.faces[fi], verts);
-    }
 
     let collapsedHere = 0;
     for (let i = 0; i < candidates.length; i++) {
       const { u, v, fa, fb } = candidates[i];
       if (dirtyVert[u] || dirtyVert[v] || droppedFace[fa] || droppedFace[fb]) continue;
 
-      // Condición de enlace 2-manifold: los vecinos comunes de u y v deben ser exactamente 2
+      const fA = editableMesh.faces[fa];
+      const fB = editableMesh.faces[fb];
+      const bothTris = fA.length === 3 && fB.length === 3;
+      const expectedCommon = (fA.length === 3 ? 1 : 0) + (fB.length === 3 ? 1 : 0);
+
       let commonCount = 0;
       const nu = vertNeighbors[u];
       const nv = vertNeighbors[v];
       for (const w of nu) {
         if (nv.has(w)) commonCount++;
       }
-      if (commonCount !== 2) continue;
+      if (commonCount !== expectedCommon) continue;
+
+      if (isSharpCorner[u] && isSharpCorner[v]) continue;
 
       const seamU = isSeamVert[u], seamV = isSeamVert[v];
+      const cornerU = isSharpCorner[u], cornerV = isSharpCorner[v];
+      const ridgeU = sharpEdgeDeg[u] > 0, ridgeV = sharpEdgeDeg[v] > 0;
       const pu = verts[u], pv = verts[v];
-      const target = seamU && !seamV
-        ? { x: pu.x, y: pu.y, z: pu.z }
-        : (!seamU && seamV)
-        ? { x: pv.x, y: pv.y, z: pv.z }
-        : { x: (pu.x + pv.x) * 0.5, y: (pu.y + pv.y) * 0.5, z: (pu.z + pv.z) * 0.5 };
+      let target;
+      if (cornerU && !cornerV) {
+        target = { x: pu.x, y: pu.y, z: pu.z };
+      } else if (!cornerU && cornerV) {
+        target = { x: pv.x, y: pv.y, z: pv.z };
+      } else if (seamU && !seamV) {
+        target = { x: pu.x, y: pu.y, z: pu.z };
+      } else if (!seamU && seamV) {
+        target = { x: pv.x, y: pv.y, z: pv.z };
+      } else if (ridgeU && !ridgeV) {
+        target = { x: pu.x, y: pu.y, z: pu.z };
+      } else if (!ridgeU && ridgeV) {
+        target = { x: pv.x, y: pv.y, z: pv.z };
+      } else {
+        target = { x: (pu.x + pv.x) * 0.5, y: (pu.y + pv.y) * 0.5, z: (pu.z + pv.z) * 0.5 };
+      }
+
+      const dropF1 = fA.length === 3 ? fa : (fB.length === 3 ? fb : -1);
+      const dropF2 = bothTris ? fb : -1;
 
       const incFaces = new Set([...(topo.vertFaces[u] || []), ...(topo.vertFaces[v] || [])]);
       let valid = true;
       for (const fi of incFaces) {
-        if (fi === fa || fi === fb || droppedFace[fi]) continue;
+        if (fi === dropF1 || fi === dropF2 || droppedFace[fi]) continue;
         const oldN = faceNormals[fi];
         if (!oldN) { valid = false; break; }
         const f = editableMesh.faces[fi];
-        const pts = f.map((vi) => ((vi === u || vi === v) ? target : verts[vi]));
+        // Si f contiene ambos u y v (ej. quad/N-gono cuando !bothTris), solo quedará kept en lugar de (u,v)
+        const mapped = [];
+        const seenMapped = new Set();
+        for (let k = 0; k < f.length; k++) {
+          const vi = f[k];
+          const mv = (vi === u || vi === v) ? -1 : vi;
+          if (mapped.length && mapped[mapped.length - 1] === mv) continue;
+          if (mapped.length && mv === mapped[0] && k === f.length - 1) continue;
+          if (seenMapped.has(mv)) { valid = false; break; }
+          seenMapped.add(mv);
+          mapped.push(mv);
+        }
+        if (!valid || mapped.length < 3) { valid = false; break; }
+        const pts = mapped.map((vi) => (vi === -1 ? target : verts[vi]));
         let nx = 0, ny = 0, nz = 0;
         for (let k = 0; k < pts.length; k++) {
           const p = pts[k], q = pts[(k + 1) % pts.length];
@@ -2579,21 +2843,31 @@ export function collapseTinySeamSlivers(editableMesh, faceOrigins = null, { maxE
         const nl = Math.hypot(nx, ny, nz);
         if (nl < 1e-12) { valid = false; break; }
         const dot = (nx / nl) * oldN.x + (ny / nl) * oldN.y + (nz / nl) * oldN.z;
-        if (dot <= 0.25) { valid = false; break; }
+        if (dot <= 0.45) { valid = false; break; }
       }
       if (!valid) continue;
 
       const kept = Math.min(u, v);
       const drop = Math.max(u, v);
       verts[kept] = target;
-      droppedFace[fa] = 1;
-      droppedFace[fb] = 1;
+      droppedFace[dropF1] = 1;
+      if (dropF2 >= 0) droppedFace[dropF2] = 1;
+
       for (const fi of incFaces) {
-        if (fi === fa || fi === fb || droppedFace[fi]) continue;
+        if (fi === dropF1 || fi === dropF2 || droppedFace[fi]) continue;
         const f = editableMesh.faces[fi];
+        const fUv = editableMesh.faceUvs[fi];
+        const nextIdx = [];
+        const nextUv = fUv ? [] : null;
         for (let k = 0; k < f.length; k++) {
-          if (f[k] === drop) f[k] = kept;
+          const vi = f[k] === drop ? kept : f[k];
+          if (nextIdx.length && nextIdx[nextIdx.length - 1] === vi) continue;
+          if (nextIdx.length && vi === nextIdx[0] && k === f.length - 1) continue;
+          nextIdx.push(vi);
+          if (nextUv) nextUv.push((fUv[k] || [0, 0]).slice());
         }
+        editableMesh.faces[fi] = nextIdx;
+        if (nextUv) editableMesh.faceUvs[fi] = nextUv;
         if (faceOrigins?.[fi]) faceOrigins[fi].wasTouched = true;
       }
 
@@ -2726,7 +3000,7 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
   const diag = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) || 1;
   seamEdgeLens.sort((a, b) => a - b);
   const medSeamLen = seamEdgeLens.length ? seamEdgeLens[(seamEdgeLens.length * 0.5) | 0] : diag * 0.03;
-  const filletRadius = Math.max(diag * 0.015, Math.min(diag * 0.095, medSeamLen * (0.65 + 1.15 * s)));
+  const filletRadius = Math.max(diag * 0.015, Math.min(diag * 0.075, medSeamLen * (0.65 + 1.05 * s)));
   const bandRadius = filletRadius * 1.25;
 
   // Dijkstra geodésico desde los vértices de costura hasta maxRadius
@@ -2794,9 +3068,38 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
     return { dist, topo: curTopo };
   };
 
-  let { dist: geoDist } = computeGeodesicDist(bandRadius);
+  // Detectar aristas agudas pre-existentes de las propias piezas (misma shell, dihedral < 0.68)
+  // para evitar deformar filos de cajas o tapas de cilindros al suavizar la costura.
+  const sharpFeatureEdges = new Set();
+  const buildFeatureMaps = () => {
+    const fNorms = editableMesh.faces.map((f) => computeFaceUnitNormal(f, editableMesh.verts));
+    const vCount = editableMesh.verts.length;
+    const featAdj = Array.from({ length: vCount }, () => []);
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (e.faces.length !== 2) continue;
+      if (sharpFeatureEdges.has(e.key)) {
+        featAdj[e.a].push(e.b);
+        featAdj[e.b].push(e.a);
+        continue;
+      }
+      const sh0 = faceOrigins[e.faces[0]]?.shell ?? -1;
+      const sh1 = faceOrigins[e.faces[1]]?.shell ?? -1;
+      if (sh0 < 0 || sh0 !== sh1) continue;
+      const n0 = fNorms[e.faces[0]], n1 = fNorms[e.faces[1]];
+      if (n0 && n1 && (n0.x * n1.x + n0.y * n1.y + n0.z * n1.z) < 0.68) {
+        sharpFeatureEdges.add(e.key);
+        featAdj[e.a].push(e.b);
+        featAdj[e.b].push(e.a);
+      }
+    }
+    return featAdj;
+  };
+  let featAdj = buildFeatureMaps();
 
-  // 1. Subdividir quads largos en el collar geodésico y ejecutar remallado isotrópico local
+  let { dist: geoDist } = computeGeodesicDist(bandRadius * 1.2);
+
+  // 1. Subdividir quads en el collar geodésico y ejecutar remallado isotrópico local
   let refinedFaces = 0;
   {
     const nextFaces = [];
@@ -2820,7 +3123,7 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
       const f = editableMesh.faces[fi];
       const fUv = editableMesh.faceUvs[fi] || f.map(() => [0, 0]);
       const orig = faceOrigins[fi] || { origFaceId: -1, shell: -1, wasTouched: false };
-      if (f.length === 4 && f.some((vi) => geoDist[vi] <= bandRadius * 0.9)) {
+      if (f.length === 4 && f.some((vi) => geoDist[vi] <= bandRadius * 1.55)) {
         const q02 = Math.min(triQual(f[0], f[1], f[2]), triQual(f[0], f[2], f[3]));
         const q13 = Math.min(triQual(f[1], f[2], f[3]), triQual(f[1], f[3], f[0]));
         const u0 = fUv[0] || [0, 0], u1 = fUv[1] || [0, 0], u2 = fUv[2] || [0, 0], u3 = fUv[3] || [0, 0];
@@ -2846,38 +3149,54 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
       editableMesh.invalidateTopology();
       ({ topo, seamVerts } = collectSeamData());
       ({ dist: geoDist } = computeGeodesicDist(bandRadius));
+      featAdj = buildFeatureMaps();
     }
   }
 
   // Remallado isotrópico local dentro de geoDist <= bandRadius (Edge Split -> Collapse -> Edge Flip -> Tangential Relax)
-  const targetLen = Math.max(diag * 0.008, Math.min(filletRadius * 0.65, medSeamLen * 1.15));
-  const remeshIters = 2;
+  const targetLen = Math.max(diag * 0.008, Math.min(filletRadius * 0.42, medSeamLen * 1.05));
+  const remeshIters = 5;
   for (let rIter = 0; rIter < remeshIters; rIter++) {
     if (editableMesh.faces.length >= 35000) break;
 
-    // A) Edge Split en aristas largas dentro de la banda
-    ({ topo } = computeGeodesicDist(bandRadius));
-    const maxLen = targetLen * 1.45;
-    const splitMap = new Map(); // edgeKey -> { u, v, midVi }
-    for (let ei = 0; ei < topo.edges.length; ei++) {
-      const e = topo.edges[ei];
-      if (e.faces.length !== 2) continue;
-      if (geoDist[e.a] > bandRadius && geoDist[e.b] > bandRadius) continue;
-      const fa = editableMesh.faces[e.faces[0]], fb = editableMesh.faces[e.faces[1]];
-      if (!fa || !fb || fa.length !== 3 || fb.length !== 3) continue;
-      const pa = editableMesh.verts[e.a], pb = editableMesh.verts[e.b];
-      const len = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
-      if (len <= maxLen) continue;
-      const midVi = editableMesh.verts.length;
-      editableMesh.verts.push({
-        x: (pa.x + pb.x) * 0.5,
-        y: (pa.y + pb.y) * 0.5,
-        z: (pa.z + pb.z) * 0.5,
-      });
-      splitMap.set(e.key, { u: e.a, v: e.b, midVi });
-    }
+    // A) Edge Split en aristas largas dentro de la banda (intercalado con colapso y volteo en cada iteración)
+    {
+      ({ dist: geoDist, topo } = computeGeodesicDist(bandRadius * 1.15));
+      const maxLen = targetLen * 1.42;
+      const splitMap = new Map(); // edgeKey -> { u, v, midVi }
+      for (let ei = 0; ei < topo.edges.length; ei++) {
+        const e = topo.edges[ei];
+        if (e.faces.length !== 2) continue;
+        const fa = editableMesh.faces[e.faces[0]], fb = editableMesh.faces[e.faces[1]];
+        if (!fa || !fb || fa.length !== 3 || fb.length !== 3) continue;
+        const pa = editableMesh.verts[e.a], pb = editableMesh.verts[e.b];
+        const len = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
+        const endInBand = geoDist[e.a] <= bandRadius || geoDist[e.b] <= bandRadius;
+        if (!endInBand) {
+          if (len <= maxLen * 1.55) continue;
+          const oppInBand =
+            fa.some((vi) => geoDist[vi] <= bandRadius * 1.05) ||
+            fb.some((vi) => geoDist[vi] <= bandRadius * 1.05);
+          if (!oppInBand) continue;
+        } else if (len <= maxLen) {
+          continue;
+        }
+        const midVi = editableMesh.verts.length;
+        editableMesh.verts.push({
+          x: (pa.x + pb.x) * 0.5,
+          y: (pa.y + pb.y) * 0.5,
+          z: (pa.z + pb.z) * 0.5,
+        });
+        if (sharpFeatureEdges.has(e.key)) {
+          sharpFeatureEdges.delete(e.key);
+          sharpFeatureEdges.add(edgeKey(e.a, midVi));
+          sharpFeatureEdges.add(edgeKey(midVi, e.b));
+        }
+        splitMap.set(e.key, { u: e.a, v: e.b, midVi });
+      }
 
-    if (splitMap.size > 0 && editableMesh.faces.length + splitMap.size * 2 < 35000) {
+      if (splitMap.size > 0 && editableMesh.faces.length + splitMap.size * 2 < 35000) {
+
       const nextFaces = [];
       const nextUvs = [];
       const nextOrigins = [];
@@ -2945,17 +3264,20 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
           pushTri([sm.midVi, rv[1], rv[2]], [sm.uv.slice(), ru[1].slice(), ru[2].slice()]);
         }
       }
-      editableMesh.faces = nextFaces;
-      editableMesh.faceUvs = nextUvs;
-      faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
-      editableMesh.invalidateTopology();
-      ({ topo, seamVerts } = collectSeamData());
+        editableMesh.faces = nextFaces;
+        editableMesh.faceUvs = nextUvs;
+        faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
+        editableMesh.invalidateTopology();
+        ({ topo, seamVerts } = collectSeamData());
+        featAdj = buildFeatureMaps();
+      }
     }
 
     // B) Colapso de aristas cortas o esquirlas dentro de la banda
     ({ dist: geoDist, topo } = computeGeodesicDist(bandRadius));
     const V = editableMesh.verts.length;
     const minLen = targetLen * 0.42;
+    const sliverLenCap = targetLen * 0.78;
     const isBoundaryVert = new Uint8Array(V);
     const vertNeighbors = Array.from({ length: V }, () => new Set());
     for (let ei = 0; ei < topo.edges.length; ei++) {
@@ -2968,6 +3290,17 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
       }
     }
     const faceNormals = editableMesh.faces.map((f) => computeFaceUnitNormal(f, editableMesh.verts));
+    const triQCol = (f) => {
+      if (!f || f.length !== 3) return 1;
+      const p0 = editableMesh.verts[f[0]], p1 = editableMesh.verts[f[1]], p2 = editableMesh.verts[f[2]];
+      const e1x = p1.x - p0.x, e1y = p1.y - p0.y, e1z = p1.z - p0.z;
+      const e2x = p2.x - p0.x, e2y = p2.y - p0.y, e2z = p2.z - p0.z;
+      const area2 = Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+      const l01 = e1x * e1x + e1y * e1y + e1z * e1z;
+      const l20 = e2x * e2x + e2y * e2y + e2z * e2z;
+      const l12 = (p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2 + (p2.z - p1.z) ** 2;
+      return area2 / ((l01 + l20 + l12) || 1e-12);
+    };
     const droppedFace = new Uint8Array(editableMesh.faces.length);
     const dirtyVert = new Uint8Array(V);
     const candidates = [];
@@ -2975,12 +3308,13 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
       const e = topo.edges[ei];
       if (e.faces.length !== 2) continue;
       if (isBoundaryVert[e.a] || isBoundaryVert[e.b]) continue;
-      if (Math.min(geoDist[e.a], geoDist[e.b]) > bandRadius * 0.92) continue;
+      if (Math.min(geoDist[e.a], geoDist[e.b]) > bandRadius * 0.94) continue;
       const fa = editableMesh.faces[e.faces[0]], fb = editableMesh.faces[e.faces[1]];
       if (!fa || !fb || fa.length !== 3 || fb.length !== 3) continue;
       const pa = editableMesh.verts[e.a], pb = editableMesh.verts[e.b];
       const len = Math.hypot(pb.x - pa.x, pb.y - pa.y, pb.z - pa.z);
-      if (len < minLen) candidates.push({ ei, len });
+      const isBadSliver = Math.min(triQCol(fa), triQCol(fb)) < 0.045;
+      if (len < minLen || (isBadSliver && len < sliverLenCap)) candidates.push({ ei, len });
     }
     candidates.sort((x, y) => x.len - y.len);
     let collapsedHere = 0;
@@ -2991,6 +3325,11 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
       const [fa, fb] = e.faces;
       if (droppedFace[fa] || droppedFace[fb]) continue;
 
+      const fDegU = featAdj[u]?.length || 0;
+      const fDegV = featAdj[v]?.length || 0;
+      // Proteger esquinas rígidas fuera de la costura
+      if ((fDegU >= 3 && !seamVerts.has(u)) && (fDegV >= 3 && !seamVerts.has(v))) continue;
+
       let common = 0;
       const nu = vertNeighbors[u], nv = vertNeighbors[v];
       for (const w of nu) {
@@ -3000,11 +3339,14 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
 
       const seamU = seamVerts.has(u), seamV = seamVerts.has(v);
       const pu = editableMesh.verts[u], pv = editableMesh.verts[v];
-      const target = seamU && !seamV
-        ? { x: pu.x, y: pu.y, z: pu.z }
-        : (!seamU && seamV)
-        ? { x: pv.x, y: pv.y, z: pv.z }
-        : { x: (pu.x + pv.x) * 0.5, y: (pu.y + pv.y) * 0.5, z: (pu.z + pv.z) * 0.5 };
+      let target;
+      if (fDegU >= 3 && !seamU) target = { x: pu.x, y: pu.y, z: pu.z };
+      else if (fDegV >= 3 && !seamV) target = { x: pv.x, y: pv.y, z: pv.z };
+      else if (seamU && !seamV) target = { x: pu.x, y: pu.y, z: pu.z };
+      else if (!seamU && seamV) target = { x: pv.x, y: pv.y, z: pv.z };
+      else if (fDegU > 0 && fDegV === 0) target = { x: pu.x, y: pu.y, z: pu.z };
+      else if (fDegV > 0 && fDegU === 0) target = { x: pv.x, y: pv.y, z: pv.z };
+      else target = { x: (pu.x + pv.x) * 0.5, y: (pu.y + pv.y) * 0.5, z: (pu.z + pv.z) * 0.5 };
 
       const incFaces = new Set([...(topo.vertFaces[u] || []), ...(topo.vertFaces[v] || [])]);
       let valid = true;
@@ -3015,7 +3357,7 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
         const f = editableMesh.faces[fi];
         const pts = f.map((vi) => ((vi === u || vi === v) ? target : editableMesh.verts[vi]));
         const curN = computeFaceUnitNormal([0, 1, 2], pts);
-        if (!curN || curN.x * oldN.x + curN.y * oldN.y + curN.z * oldN.z <= 0.35) {
+        if (!curN || curN.x * oldN.x + curN.y * oldN.y + curN.z * oldN.z <= 0.4) {
           valid = false; break;
         }
       }
@@ -3032,6 +3374,18 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
           if (f[k] === drop) f[k] = kept;
         }
         if (faceOrigins[fi]) faceOrigins[fi].wasTouched = true;
+      }
+      // Remapear sharpFeatureEdges de drop -> kept
+      if (sharpFeatureEdges.size > 0) {
+        for (const ck of [...sharpFeatureEdges]) {
+          const sep = ck.indexOf('_');
+          const ca = Number(ck.slice(0, sep)), cb = Number(ck.slice(sep + 1));
+          if (ca !== drop && cb !== drop) continue;
+          sharpFeatureEdges.delete(ck);
+          const na = ca === drop ? kept : ca;
+          const nb = cb === drop ? kept : cb;
+          if (na !== nb) sharpFeatureEdges.add(edgeKey(na, nb));
+        }
       }
       dirtyVert[u] = 1; dirtyVert[v] = 1;
       for (const w of nu) dirtyVert[w] = 1;
@@ -3051,9 +3405,10 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
       faceOrigins.splice(0, faceOrigins.length, ...nextOrigins);
       editableMesh.invalidateTopology();
       ({ topo, seamVerts } = collectSeamData());
+      featAdj = buildFeatureMaps();
     }
 
-    // C) Edge Flip guiado por valencia (objetivo = 6) y relación de aspecto con guarda diedral (> 0.72)
+    // C) Edge Flip guiado por eliminación de esquirlas + valencia (objetivo = 6) con guarda diedral (> 0.72)
     ({ dist: geoDist, topo } = computeGeodesicDist(bandRadius));
     const Vflip = editableMesh.verts.length;
     const deg = new Int32Array(Vflip);
@@ -3084,13 +3439,13 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
     for (let ei = 0; ei < topo.edges.length; ei++) {
       const e = topo.edges[ei];
       if (e.faces.length !== 2) continue;
+      if (sharpFeatureEdges.has(e.key)) continue;
       if (geoDist[e.a] > bandRadius && geoDist[e.b] > bandRadius) continue;
       const [fi0, fi1] = e.faces;
       if (faceTouched[fi0] || faceTouched[fi1]) continue;
       const f0 = editableMesh.faces[fi0], f1 = editableMesh.faces[fi1];
       if (!f0 || !f1 || f0.length !== 3 || f1.length !== 3) continue;
 
-      // Hallar vértices opuestos y orientación consistente en f0 (u->v)
       const iu0 = f0.indexOf(e.a), iv0 = f0.indexOf(e.b);
       if (iu0 < 0 || iv0 < 0) continue;
       const uFirstInF0 = ((iu0 + 1) % 3) === iv0;
@@ -3103,24 +3458,55 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
 
       const t0 = triQuality(vertsArr[a], vertsArr[b], vertsArr[c]);
       const t1 = triQuality(vertsArr[b], vertsArr[a], vertsArr[d]);
-      if (!t0.n || !t1.n) continue;
-      // Nunca voltear aristas sobre filos agudos
-      if (t0.n.x * t1.n.x + t0.n.y * t1.n.y + t0.n.z * t1.n.z < 0.72) continue;
-
+      const minQBefore = Math.min(t0.q, t1.q);
+      const maxQBefore = Math.max(t0.q, t1.q);
       const n0 = triQuality(vertsArr[a], vertsArr[d], vertsArr[c]);
       const n1 = triQuality(vertsArr[d], vertsArr[b], vertsArr[c]);
       if (!n0.n || !n1.n) continue;
-      if (
-        n0.n.x * t0.n.x + n0.n.y * t0.n.y + n0.n.z * t0.n.z < 0.5 ||
-        n1.n.x * t1.n.x + n1.n.y * t1.n.y + n1.n.z * t1.n.z < 0.5
-      ) continue;
+      if (n0.n.x * n1.n.x + n0.n.y * n1.n.y + n0.n.z * n1.n.z < 0.72) continue;
+
+      const regularValid =
+        t0.n && t1.n &&
+        (t0.n.x * t1.n.x + t0.n.y * t1.n.y + t0.n.z * t1.n.z >= 0.72) &&
+        (n0.n.x * t0.n.x + n0.n.y * t0.n.y + n0.n.z * t0.n.z >= 0.55) &&
+        (n1.n.x * t1.n.x + n1.n.y * t1.n.y + n1.n.z * t1.n.z >= 0.55);
+
+      let sliverValid = false;
+      if (!regularValid && minQBefore < 0.03 && maxQBefore >= 0.01) {
+        const refN = t0.q >= t1.q ? t0.n : t1.n;
+        if (
+          refN &&
+          n0.n.x * refN.x + n0.n.y * refN.y + n0.n.z * refN.z >= 0.82 &&
+          n1.n.x * refN.x + n1.n.y * refN.y + n1.n.z * refN.z >= 0.82 &&
+          n0.n.x * n1.n.x + n0.n.y * n1.n.y + n0.n.z * n1.n.z >= 0.85 &&
+          Math.min(n0.q, n1.q) >= Math.max(0.005, minQBefore * 2.5)
+        ) {
+          // Confirmar que los dos triángulos resultantes conservan la misma orientación alrededor de refN
+          const pa = vertsArr[a], pb = vertsArr[b], pc = vertsArr[c], pd = vertsArr[d];
+          const slivV = t0.q < t1.q ? pc : pd;
+          const e1x = pb.x - pa.x, e1y = pb.y - pa.y, e1z = pb.z - pa.z;
+          const e2x = slivV.x - pa.x, e2y = slivV.y - pa.y, e2z = slivV.z - pa.z;
+          const sgn = t0.q < t1.q ? 1 : -1;
+          const cx = (e1y * e2z - e1z * e2y) * sgn;
+          const cy = (e1z * e2x - e1x * e2z) * sgn;
+          const cz = (e1x * e2y - e1y * e2x) * sgn;
+          const refOpp = t0.q < t1.q ? pd : pc;
+          const r1x = pb.x - pa.x, r1y = pb.y - pa.y, r1z = pb.z - pa.z;
+          const r2x = refOpp.x - pa.x, r2y = refOpp.y - pa.y, r2z = refOpp.z - pa.z;
+          const refArea2 = Math.hypot(r1y * r2z - r1z * r2y, r1z * r2x - r1x * r2z, r1x * r2y - r1y * r2x);
+          if (cx * refN.x + cy * refN.y + cz * refN.z >= -0.05 * refArea2) {
+            sliverValid = true;
+          }
+        }
+      }
+      if (!regularValid && !sliverValid) continue;
 
       const errBefore = (deg[a] - 6) ** 2 + (deg[b] - 6) ** 2 + (deg[c] - 6) ** 2 + (deg[d] - 6) ** 2;
       const errAfter = (deg[a] - 7) ** 2 + (deg[b] - 7) ** 2 + (deg[c] - 5) ** 2 + (deg[d] - 5) ** 2;
-      const minQBefore = Math.min(t0.q, t1.q);
       const minQAfter = Math.min(n0.q, n1.q);
-      if (minQAfter < minQBefore * 0.6) continue;
-      if (!(errAfter < errBefore || (errAfter === errBefore && minQAfter > minQBefore * 1.06))) continue;
+      if (minQAfter < minQBefore * 0.65) continue;
+      const fixesSliver = sliverValid || (minQBefore < 0.14 && minQAfter > Math.max(minQBefore * 1.2, 0.05) && errAfter <= errBefore + 4) || minQAfter > minQBefore * 1.75;
+      if (!fixesSliver && !(errAfter < errBefore || (errAfter === errBefore && minQAfter > minQBefore * 1.06))) continue;
 
       const uv0 = editableMesh.faceUvs[fi0] || [[0, 0], [0, 0], [0, 0]];
       const uv1 = editableMesh.faceUvs[fi1] || [[0, 0], [0, 0], [0, 0]];
@@ -3147,8 +3533,9 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
       ({ topo, seamVerts } = collectSeamData());
     }
 
-    // D) Relajación tangencial suave en la banda
+    // D) Relajación tangencial suave en la banda (preservando esquinas y filos)
     ({ dist: geoDist, topo } = computeGeodesicDist(bandRadius));
+    featAdj = buildFeatureMaps();
     const Vrel = editableMesh.verts.length;
     const isBnd = new Uint8Array(Vrel);
     const vNbrs = Array.from({ length: Vrel }, () => new Set());
@@ -3160,6 +3547,9 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
     const fNormalsRel = editableMesh.faces.map((f) => computeFaceUnitNormal(f, editableMesh.verts));
     for (let vi = 0; vi < Vrel; vi++) {
       if (isBnd[vi] || geoDist[vi] >= bandRadius * 0.95) continue;
+      const fList = featAdj[vi] || [];
+      // Preservar filos rígidos originales de la pieza fuera de la costura booleana
+      if (!seamVerts.has(vi) && fList.length > 0) continue;
       const nbrs = vNbrs[vi];
       if (!nbrs.size) continue;
       let ax = 0, ay = 0, az = 0;
@@ -3168,39 +3558,76 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
         ax += pw.x; ay += pw.y; az += pw.z;
       }
       const inv = 1 / nbrs.size;
+      ax *= inv; ay *= inv; az *= inv;
       const p = editableMesh.verts[vi];
-      let dx = ax * inv - p.x, dy = ay * inv - p.y, dz = az * inv - p.z;
+      let dx = ax - p.x, dy = ay - p.y, dz = az - p.z;
       const incF = topo.vertFaces[vi] || [];
-      let vnx = 0, vny = 0, vnz = 0;
-      for (let k = 0; k < incF.length; k++) {
-        const fn = fNormalsRel[incF[k]];
-        if (fn) { vnx += fn.x; vny += fn.y; vnz += fn.z; }
+      if (seamVerts.has(vi) || fList.length === 0) {
+        let vnx = 0, vny = 0, vnz = 0;
+        for (let k = 0; k < incF.length; k++) {
+          const fn = fNormalsRel[incF[k]];
+          if (fn) { vnx += fn.x; vny += fn.y; vnz += fn.z; }
+        }
+        const vnl = Math.hypot(vnx, vny, vnz);
+        if (vnl > 1e-6) {
+          vnx /= vnl; vny /= vnl; vnz /= vnl;
+          const proj = dx * vnx + dy * vny + dz * vnz;
+          dx -= proj * vnx; dy -= proj * vny; dz -= proj * vnz;
+        }
       }
-      const vnl = Math.hypot(vnx, vny, vnz);
-      if (vnl > 1e-6) {
-        vnx /= vnl; vny /= vnl; vnz /= vnl;
-        const proj = dx * vnx + dy * vny + dz * vnz;
-        dx -= proj * vnx; dy -= proj * vny; dz -= proj * vnz;
-      }
+      const faceAreaShape = (f) => {
+        if (!f || f.length !== 3) return 1;
+        const p0 = editableMesh.verts[f[0]], p1 = editableMesh.verts[f[1]], p2 = editableMesh.verts[f[2]];
+        const e1x = p1.x - p0.x, e1y = p1.y - p0.y, e1z = p1.z - p0.z;
+        const e2x = p2.x - p0.x, e2y = p2.y - p0.y, e2z = p2.z - p0.z;
+        const area2 = Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+        const sSq = (e1x * e1x + e1y * e1y + e1z * e1z) + (e2x * e2x + e2y * e2y + e2z * e2z) +
+          ((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2 + (p2.z - p1.z) ** 2);
+        return area2 / (sSq || 1e-12);
+      };
+      const preQRel = incF.map((fi) => faceAreaShape(editableMesh.faces[fi]));
       const ox = p.x, oy = p.y, oz = p.z;
       p.x = ox + dx * 0.35; p.y = oy + dy * 0.35; p.z = oz + dz * 0.35;
+      const incE = topo.vertEdges[vi] || [];
       let flipped = false;
+      const curNormRel = new Map();
       for (let k = 0; k < incF.length; k++) {
         const fi = incF[k];
         const refN = fNormalsRel[fi];
         if (!refN) continue;
         const curN = computeFaceUnitNormal(editableMesh.faces[fi], editableMesh.verts);
-        if (!curN || curN.x * refN.x + curN.y * refN.y + curN.z * refN.z < 0.35) {
+        if (!curN || curN.x * refN.x + curN.y * refN.y + curN.z * refN.z < 0.45) {
           flipped = true; break;
+        }
+        const qAfter = faceAreaShape(editableMesh.faces[fi]);
+        if (qAfter < Math.min(preQRel[k] * 0.45, 0.02)) {
+          flipped = true; break;
+        }
+        curNormRel.set(fi, curN);
+      }
+      if (!flipped) {
+        for (let k = 0; k < incE.length; k++) {
+          const e = topo.edges[incE[k]];
+          if (!e || e.faces.length !== 2 || sharpFeatureEdges.has(e.key)) continue;
+          const [fi0, fi1] = e.faces;
+          const pre0 = fNormalsRel[fi0], pre1 = fNormalsRel[fi1];
+          const preDot = pre0 && pre1 ? (pre0.x * pre1.x + pre0.y * pre1.y + pre0.z * pre1.z) : 1;
+          const cn0 = curNormRel.get(fi0) || pre0;
+          const cn1 = curNormRel.get(fi1) || pre1;
+          const curDot = cn0 && cn1 ? (cn0.x * cn1.x + cn0.y * cn1.y + cn0.z * cn1.z) : 1;
+          if (curDot < -0.1 && preDot > curDot + 0.02) {
+            flipped = true; break;
+          }
         }
       }
       if (flipped) { p.x = ox; p.y = oy; p.z = oz; }
     }
   }
 
-  // 2. Suavizado HC-Smoothing (Vollmer 1999) con caída coseno geodésica y preservación de volumen
+  // 2. Suavizado HC-Smoothing (Vollmer 1999) con caída coseno geodésica y preservación de volumen y filos
   ({ topo, seamVerts } = collectSeamData());
   ({ dist: geoDist } = computeGeodesicDist(filletRadius));
+  featAdj = buildFeatureMaps();
 
   const V = editableMesh.verts.length;
   const boundaryVert = new Uint8Array(V);
@@ -3213,14 +3640,34 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
   }
 
   const smoothWeight = new Float32Array(V);
+  const isFlatRing = new Uint8Array(V);
+  const preSmoothFaceNormals = editableMesh.faces.map((f) => computeFaceUnitNormal(f, editableMesh.verts));
   const activeVerts = [];
   for (let vi = 0; vi < V; vi++) {
     const d = geoDist[vi];
     if (boundaryVert[vi] || d >= filletRadius) continue;
+    const fDeg = featAdj[vi]?.length || 0;
+    // Fijar esquinas y filos rígidos originales de la pieza fuera de la costura
+    if (!seamVerts.has(vi) && fDeg > 0) continue;
     const w = 0.5 * (1 + Math.cos((Math.PI * d) / filletRadius));
     if (w > 1e-3) {
       smoothWeight[vi] = w;
       activeVerts.push(vi);
+      if (!seamVerts.has(vi)) {
+        const incF = topo.vertFaces[vi] || [];
+        let minFD = 1;
+        const fn0 = incF.length ? preSmoothFaceNormals[incF[0]] : null;
+        if (fn0) {
+          for (let k = 1; k < incF.length; k++) {
+            const fnk = preSmoothFaceNormals[incF[k]];
+            if (fnk) {
+              const dt = fn0.x * fnk.x + fn0.y * fnk.y + fn0.z * fnk.z;
+              if (dt < minFD) minFD = dt;
+            }
+          }
+          if (minFD >= 0.992) isFlatRing[vi] = 1;
+        }
+      }
     }
   }
 
@@ -3282,8 +3729,8 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
     return Math.max(0.05, Math.min(8.0, dot / area2));
   };
 
-  const alpha = 0.15;
-  const beta = 0.55;
+  const alpha = 0.2;
+  const beta = 0.6;
   const stepScale = 0.65 * (0.45 + 0.55 * Math.min(1, s / 0.5));
   const hcIters = Math.max(4, Math.round(5 + 12 * s));
 
@@ -3332,25 +3779,35 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
       const sy = accumY[vi] / wSum;
       const sz = accumZ[vi] / wSum;
       smoothX[vi] = sx; smoothY[vi] = sy; smoothZ[vi] = sz;
-      bX[vi] = sx - (alpha * op.x + (1 - alpha) * p.x);
-      bY[vi] = sy - (alpha * op.y + (1 - alpha) * p.y);
-      bZ[vi] = sz - (alpha * op.z + (1 - alpha) * p.z);
+      if (!isFlatRing[vi]) {
+        bX[vi] = sx - (alpha * op.x + (1 - alpha) * p.x);
+        bY[vi] = sy - (alpha * op.y + (1 - alpha) * p.y);
+        bZ[vi] = sz - (alpha * op.z + (1 - alpha) * p.z);
+      }
     }
 
-    // Paso 2 HC: devolver volumen compensando con promedio vecino de b
+    // Paso 2 HC: devolver volumen compensando en zonas curvas sin abultar paredes planas
     for (let i = 0; i < activeVerts.length; i++) {
       const vi = activeVerts[i];
       const p = verts[vi];
-      const nbrs = nbrSets.get(vi) || [];
-      let nbx = 0, nby = 0, nbz = 0;
-      for (let k = 0; k < nbrs.length; k++) {
-        const j = nbrs[k];
-        nbx += bX[j]; nby += bY[j]; nbz += bZ[j];
+      let targetX = smoothX[vi];
+      let targetY = smoothY[vi];
+      let targetZ = smoothZ[vi];
+      if (!isFlatRing[vi]) {
+        const nbrs = nbrSets.get(vi) || [];
+        let nbx = 0, nby = 0, nbz = 0;
+        let nbCnt = 0;
+        for (let k = 0; k < nbrs.length; k++) {
+          const j = nbrs[k];
+          if (isFlatRing[j]) continue;
+          nbx += bX[j]; nby += bY[j]; nbz += bZ[j];
+          nbCnt++;
+        }
+        const inv = nbCnt ? 1 / nbCnt : 0;
+        targetX -= beta * bX[vi] + (1 - beta) * (nbx * inv);
+        targetY -= beta * bY[vi] + (1 - beta) * (nby * inv);
+        targetZ -= beta * bZ[vi] + (1 - beta) * (nbz * inv);
       }
-      const inv = nbrs.length ? 1 / nbrs.length : 0;
-      const targetX = smoothX[vi] - (beta * bX[vi] + (1 - beta) * (nbx * inv));
-      const targetY = smoothY[vi] - (beta * bY[vi] + (1 - beta) * (nby * inv));
-      const targetZ = smoothZ[vi] - (beta * bZ[vi] + (1 - beta) * (nbz * inv));
 
       const blend = smoothWeight[vi] * stepScale;
       nextX[vi] = p.x + (targetX - p.x) * blend;
@@ -3358,7 +3815,7 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
       nextZ[vi] = p.z + (targetZ - p.z) * blend;
     }
 
-    // Aplicar con verificación estricta de no-inversión respecto al estado previo inmediato
+    // Aplicar con verificación estricta de no-inversión y sin pellizcos diedrales
     for (let i = 0; i < activeVerts.length; i++) {
       const vi = activeVerts[i];
       const p = verts[vi];
@@ -3366,21 +3823,62 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
       const tx = nextX[vi], ty = nextY[vi], tz = nextZ[vi];
       if (tx === ox && ty === oy && tz === oz) continue;
       const incF = topo.vertFaces[vi] || [];
+      const incE = topo.vertEdges[vi] || [];
 
+      const triShapeOf = (f) => {
+        if (!f || f.length !== 3) return 1;
+        const p0 = verts[f[0]], p1 = verts[f[1]], p2 = verts[f[2]];
+        const e1x = p1.x - p0.x, e1y = p1.y - p0.y, e1z = p1.z - p0.z;
+        const e2x = p2.x - p0.x, e2y = p2.y - p0.y, e2z = p2.z - p0.z;
+        const area2 = Math.hypot(e1y * e2z - e1z * e2y, e1z * e2x - e1x * e2z, e1x * e2y - e1y * e2x);
+        const sSq = (e1x * e1x + e1y * e1y + e1z * e1z) + (e2x * e2x + e2y * e2y + e2z * e2z) +
+          ((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2 + (p2.z - p1.z) ** 2);
+        return area2 / (sSq || 1e-12);
+      };
+      const preShapes = incF.map((fi) => triShapeOf(editableMesh.faces[fi]));
       let accepted = false;
       for (const frac of [1.0, 0.5]) {
         p.x = ox + (tx - ox) * frac;
         p.y = oy + (ty - oy) * frac;
         p.z = oz + (tz - oz) * frac;
         let flipped = false;
+        const curFaceNorms = new Map();
         for (let k = 0; k < incF.length; k++) {
           const fi = incF[k];
           const refN = preNormals.get(fi);
           if (!refN) continue;
           const curN = computeFaceUnitNormal(editableMesh.faces[fi], verts);
-          if (!curN || curN.x * refN.x + curN.y * refN.y + curN.z * refN.z < 0.25) {
+          if (!curN || curN.x * refN.x + curN.y * refN.y + curN.z * refN.z < 0.35) {
             flipped = true;
             break;
+          }
+          const origN = preSmoothFaceNormals[fi];
+          if (origN && curN.x * origN.x + curN.y * origN.y + curN.z * origN.z < -0.05) {
+            flipped = true;
+            break;
+          }
+          const qAfter = triShapeOf(editableMesh.faces[fi]);
+          if (qAfter < Math.min(preShapes[k] * 0.45, 0.02)) {
+            flipped = true;
+            break;
+          }
+          curFaceNorms.set(fi, curN);
+        }
+        if (!flipped) {
+          for (let k = 0; k < incE.length; k++) {
+            const e = topo.edges[incE[k]];
+            if (!e || e.faces.length !== 2 || sharpFeatureEdges.has(e.key)) continue;
+            const [fi0, fi1] = e.faces;
+            const pre0 = preNormals.get(fi0) || computeFaceUnitNormal(editableMesh.faces[fi0], verts);
+            const pre1 = preNormals.get(fi1) || computeFaceUnitNormal(editableMesh.faces[fi1], verts);
+            const preDot = pre0 && pre1 ? (pre0.x * pre1.x + pre0.y * pre1.y + pre0.z * pre1.z) : 1;
+            const cn0 = curFaceNorms.get(fi0) || pre0;
+            const cn1 = curFaceNorms.get(fi1) || pre1;
+            const curDot = cn0 && cn1 ? (cn0.x * cn1.x + cn0.y * cn1.y + cn0.z * cn1.z) : 1;
+            if (curDot < -0.05 && preDot >= curDot) {
+              flipped = true;
+              break;
+            }
           }
         }
         if (!flipped) {
@@ -3394,7 +3892,125 @@ export function smoothUnionSeam(editableMesh, faceOrigins = null, seamSmooth = 0
     }
   }
 
-  // 3. Limpiar durezas residuales en la costura suavizada para sombreado continuo
+  // 3. Pulido final de aristas en la banda y halo coplanar para eliminar esquirlas tras suavizado HC
+  for (let polPass = 0; polPass < 3; polPass++) {
+    ({ dist: geoDist, topo } = computeGeodesicDist(bandRadius * 1.6));
+    const Vpol = editableMesh.verts.length;
+    const vNbrsPol = Array.from({ length: Vpol }, () => new Set());
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      vNbrsPol[e.a].add(e.b);
+      vNbrsPol[e.b].add(e.a);
+    }
+    const triQPol = (p0, p1, p2) => {
+      const e1x = p1.x - p0.x, e1y = p1.y - p0.y, e1z = p1.z - p0.z;
+      const e2x = p2.x - p0.x, e2y = p2.y - p0.y, e2z = p2.z - p0.z;
+      const cx = e1y * e2z - e1z * e2y;
+      const cy = e1z * e2x - e1x * e2z;
+      const cz = e1x * e2y - e1y * e2x;
+      const area2 = Math.hypot(cx, cy, cz);
+      if (area2 < 1e-12) return { q: 0, n: null };
+      const sumSq =
+        (e1x * e1x + e1y * e1y + e1z * e1z) +
+        (e2x * e2x + e2y * e2y + e2z * e2z) +
+        ((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2 + (p2.z - p1.z) ** 2);
+      return { q: area2 / (sumSq || 1e-12), n: { x: cx / area2, y: cy / area2, z: cz / area2 } };
+    };
+    const vertsPol = editableMesh.verts;
+    const faceTouchedPol = new Uint8Array(editableMesh.faces.length);
+    let flippedPol = false;
+    for (let ei = 0; ei < topo.edges.length; ei++) {
+      const e = topo.edges[ei];
+      if (e.faces.length !== 2 || sharpFeatureEdges.has(e.key)) continue;
+      const [fi0, fi1] = e.faces;
+      if (faceTouchedPol[fi0] || faceTouchedPol[fi1]) continue;
+      const f0 = editableMesh.faces[fi0], f1 = editableMesh.faces[fi1];
+      if (!f0 || !f1 || f0.length !== 3 || f1.length !== 3) continue;
+      const inBand =
+        geoDist[e.a] <= bandRadius * 1.5 ||
+        geoDist[e.b] <= bandRadius * 1.5 ||
+        f0.some((vi) => geoDist[vi] <= bandRadius * 1.5) ||
+        f1.some((vi) => geoDist[vi] <= bandRadius * 1.5) ||
+        Boolean(faceOrigins[fi0]?.wasTouched || faceOrigins[fi1]?.wasTouched);
+      if (!inBand) continue;
+      const iu0 = f0.indexOf(e.a), iv0 = f0.indexOf(e.b);
+      if (iu0 < 0 || iv0 < 0) continue;
+      const uFirst = ((iu0 + 1) % 3) === iv0;
+      const a = uFirst ? e.a : e.b, b = uFirst ? e.b : e.a;
+      const c = f0[3 - f0.indexOf(a) - f0.indexOf(b)];
+      const d = f1[3 - f1.indexOf(a) - f1.indexOf(b)];
+      if (c === d || vNbrsPol[c].has(d)) continue;
+      const t0 = triQPol(vertsPol[a], vertsPol[b], vertsPol[c]);
+      const t1 = triQPol(vertsPol[b], vertsPol[a], vertsPol[d]);
+      const minQBefore = Math.min(t0.q, t1.q);
+      if (minQBefore >= 0.14) continue;
+      // Fuera de la banda directa solo corregir esquirlas muy estrechas coplanares
+      const nearBand = geoDist[e.a] <= bandRadius * 1.5 || geoDist[e.b] <= bandRadius * 1.5;
+      if (!nearBand && minQBefore >= 0.03) continue;
+      const n0 = triQPol(vertsPol[a], vertsPol[d], vertsPol[c]);
+      const n1 = triQPol(vertsPol[d], vertsPol[b], vertsPol[c]);
+      if (!n0.n || !n1.n) continue;
+      if (n0.n.x * n1.n.x + n0.n.y * n1.n.y + n0.n.z * n1.n.z < 0.78) continue;
+
+      const regularPol =
+        nearBand &&
+        t0.n && t1.n &&
+        t0.n.x * t1.n.x + t0.n.y * t1.n.y + t0.n.z * t1.n.z >= 0.86 &&
+        n0.n.x * t0.n.x + n0.n.y * t0.n.y + n0.n.z * t0.n.z >= 0.72 &&
+        n1.n.x * t1.n.x + n1.n.y * t1.n.y + n1.n.z * t1.n.z >= 0.72;
+
+      let sliverPol = false;
+      if (!regularPol && minQBefore < 0.03 && Math.max(t0.q, t1.q) >= 0.01) {
+        const refN = t0.q >= t1.q ? t0.n : t1.n;
+        if (
+          refN &&
+          n0.n.x * refN.x + n0.n.y * refN.y + n0.n.z * refN.z >= 0.84 &&
+          n1.n.x * refN.x + n1.n.y * refN.y + n1.n.z * refN.z >= 0.84 &&
+          n0.n.x * n1.n.x + n0.n.y * n1.n.y + n0.n.z * n1.n.z >= 0.86 &&
+          Math.min(n0.q, n1.q) >= Math.max(0.005, minQBefore * 2.5)
+        ) {
+          const pa = vertsPol[a], pb = vertsPol[b], pc = vertsPol[c], pd = vertsPol[d];
+          const slivV = t0.q < t1.q ? pc : pd;
+          const e1x = pb.x - pa.x, e1y = pb.y - pa.y, e1z = pb.z - pa.z;
+          const e2x = slivV.x - pa.x, e2y = slivV.y - pa.y, e2z = slivV.z - pa.z;
+          const sgn = t0.q < t1.q ? 1 : -1;
+          const cx = (e1y * e2z - e1z * e2y) * sgn;
+          const cy = (e1z * e2x - e1x * e2z) * sgn;
+          const cz = (e1x * e2y - e1y * e2x) * sgn;
+          const refOpp = t0.q < t1.q ? pd : pc;
+          const r2x = refOpp.x - pa.x, r2y = refOpp.y - pa.y, r2z = refOpp.z - pa.z;
+          const refArea2 = Math.hypot(e1y * r2z - e1z * r2y, e1z * r2x - e1x * r2z, e1x * r2y - e1y * r2x);
+          if (cx * refN.x + cy * refN.y + cz * refN.z >= -0.05 * refArea2) {
+            sliverPol = true;
+          }
+        }
+      }
+      if (!regularPol && !sliverPol) continue;
+      const minQAfter = Math.min(n0.q, n1.q);
+      if (minQAfter <= minQBefore * 1.35) continue;
+      const uv0 = editableMesh.faceUvs[fi0] || [[0, 0], [0, 0], [0, 0]];
+      const uv1 = editableMesh.faceUvs[fi1] || [[0, 0], [0, 0], [0, 0]];
+      const getUv = (face, uvs, vi) => {
+        const idx = face.indexOf(vi);
+        return idx >= 0 && uvs[idx] ? uvs[idx].slice() : [0, 0];
+      };
+      const uvA = getUv(f0, uv0, a), uvB = getUv(f0, uv0, b), uvC = getUv(f0, uv0, c), uvD = getUv(f1, uv1, d);
+      editableMesh.faces[fi0] = [a, d, c];
+      editableMesh.faceUvs[fi0] = [uvA, uvD, uvC];
+      editableMesh.faces[fi1] = [d, b, c];
+      editableMesh.faceUvs[fi1] = [uvD.slice(), uvB, uvC.slice()];
+      if (faceOrigins[fi0]) faceOrigins[fi0].wasTouched = true;
+      if (faceOrigins[fi1]) faceOrigins[fi1].wasTouched = true;
+      vNbrsPol[a].delete(b); vNbrsPol[b].delete(a);
+      vNbrsPol[c].add(d); vNbrsPol[d].add(c);
+      faceTouchedPol[fi0] = 1; faceTouchedPol[fi1] = 1;
+      flippedPol = true;
+    }
+    if (!flippedPol) break;
+    editableMesh.invalidateTopology();
+  }
+
+  // 4. Limpiar durezas residuales en la costura suavizada para sombreado continuo
   if (editableMesh.creases && editableMesh.creases.size > 0) {
     for (const ck of [...editableMesh.creases.keys()]) {
       const sep = ck.indexOf('_');

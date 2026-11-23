@@ -7,6 +7,7 @@ import {
   CapsuleGeometry,
   PyramidGeometry,
   ConeGeometry,
+  TorusGeometry,
   StandardMaterial,
   Mesh,
   Scene,
@@ -1090,12 +1091,18 @@ test('decimateMeshQEM y MeshEditor.adjustVertexDensity agrandan y disminuyen la 
   assert.ok(decRes.afterVerts < initVerts);
   assert.equal(countNonFlatEdges(editor.baseMesh), 0);
 
-  // Agrandar densidad (+)
-  const incRes = editor.adjustVertexDensity({ mode: 'inc' });
-  assert.equal(incRes.changed, true);
-  assert.ok(incRes.afterVerts > decRes.afterVerts);
+  // Agrandar densidad (+) desde estado reducido: recupera el objeto original recordado
+  const incRestoreRes = editor.adjustVertexDensity({ mode: 'inc' });
+  assert.equal(incRestoreRes.changed, true);
+  assert.equal(incRestoreRes.afterVerts, initVerts);
   assert.equal(countNonFlatEdges(editor.baseMesh), 0);
-  assert.ok(editor.baseMesh.faces.every((f) => f.length === 4), 'Incrementar densidad debe producir 100% quads');
+
+  // Agrandar densidad (+) desde el original: subdivide en 100% quads
+  const incAboveRes = editor.adjustVertexDensity({ mode: 'inc' });
+  assert.equal(incAboveRes.changed, true);
+  assert.ok(incAboveRes.afterVerts > initVerts);
+  assert.equal(countNonFlatEdges(editor.baseMesh), 0);
+  assert.ok(editor.baseMesh.faces.every((f) => f.length === 4), 'Incrementar densidad por encima del original debe producir 100% quads');
 
   // Escalado porcentual intermedio (~150% desde base reducida o actual)
   const preScaleVerts = editor.baseMesh.verts.length;
@@ -1116,10 +1123,10 @@ test('decimateMeshQEM y MeshEditor.adjustVertexDensity agrandan y disminuyen la 
   for (let i = 0; i < nrm.length; i++) assert.ok(Number.isFinite(nrm[i]));
   for (let i = 0; i < uvs.length; i++) assert.ok(Number.isFinite(uvs[i]));
 
-  assert.equal(commits.length, 4);
+  assert.equal(commits.length, 5);
   restoreMeshModelingState(sphereMesh, commits[0].beforeState);
   assert.equal(editor.baseMesh.verts.length, initVerts);
-  restoreMeshModelingState(sphereMesh, commits[3].afterState);
+  restoreMeshModelingState(sphereMesh, commits[4].afterState);
   assert.equal(editor.baseMesh.verts.length, scaleUpRes.afterVerts);
 
   // 3. Cubo pequeño: incrementar densidad con smoothness=0 conserva geometría exacta del cubo y sus creases
@@ -1135,6 +1142,203 @@ test('decimateMeshQEM y MeshEditor.adjustVertexDensity agrandan y disminuyen la 
     assert.ok(Math.abs(v.x) <= 1.0001 && Math.abs(v.y) <= 1.0001 && Math.abs(v.z) <= 1.0001);
   }
 });
+
+test('adjustMeshVertexDensity recuerda el objeto inicial tras bajar densidad abismalmente y recuperarla', () => {
+  // Malla detallada con relieve fino en superficie que se pierde al reducir drásticamente los vértices
+  const detailed = catmullClark(EditableMesh.fromGeometry(new SphereGeometry(1, 12, 8)), 1, 10000, 1);
+  for (let i = 0; i < detailed.verts.length; i++) {
+    const v = detailed.verts[i];
+    const bump = 1 + 0.12 * Math.sin(v.x * 6) * Math.cos(v.z * 6);
+    v.x *= bump;
+    v.y *= bump;
+    v.z *= bump;
+  }
+  detailed.invalidateTopology();
+
+  const origVerts = detailed.verts.length;
+  const origFaces = detailed.faces.length;
+  const origSnapshot = detailed.verts.map((v) => ({ x: v.x, y: v.y, z: v.z }));
+
+  // Bajar densidad abismalmente en pasos (< 10% de los vértices originales)
+  let decGuard = 0;
+  while (detailed.verts.length > 8 && decGuard++ < 15) {
+    const step = adjustMeshVertexDensity(detailed, { mode: 'dec' });
+    if (!step.changed) break;
+  }
+  assert.ok(detailed.verts.length < origVerts * 0.1, `Se esperaba < 10% de ${origVerts} vértices, obtenido ${detailed.verts.length}`);
+  assert.ok(detailed._densityOrigin);
+  assert.equal(detailed._densityOrigin.verts.length, origVerts);
+
+  // Subir gradualmente con mode='inc' debe reconstruir desde el origen (no subdividir la malla ultra baja)
+  let guard = 0;
+  while (detailed.verts.length < origVerts && guard++ < 25) {
+    const step = adjustMeshVertexDensity(detailed, { mode: 'inc' });
+    assert.equal(step.changed, true);
+    assert.ok(step.afterVerts > step.beforeVerts);
+  }
+  assert.equal(detailed.verts.length, origVerts);
+  assert.equal(detailed.faces.length, origFaces);
+  for (let i = 0; i < origVerts; i++) {
+    const d = Math.hypot(
+      detailed.verts[i].x - origSnapshot[i].x,
+      detailed.verts[i].y - origSnapshot[i].y,
+      detailed.verts[i].z - origSnapshot[i].z
+    );
+    assert.ok(d < 1e-6, `Vértice ${i} debe restaurarse exactamente (diff=${d})`);
+  }
+
+  // Volver a bajar abismalmente y saltar directo a >100% y luego 100% con reference='origin'
+  adjustMeshVertexDensity(detailed, { mode: 'scale', factor: 0.05, reference: 'origin' });
+  assert.ok(detailed.verts.length < origVerts * 0.25);
+
+  const overRes = adjustMeshVertexDensity(detailed, { mode: 'scale', factor: 1.5, reference: 'origin' });
+  assert.equal(overRes.changed, true);
+  assert.ok(detailed.verts.length > origVerts);
+
+  const back100 = adjustMeshVertexDensity(detailed, { mode: 'scale', factor: 1.0, reference: 'origin' });
+  assert.equal(back100.changed, true);
+  assert.equal(detailed.verts.length, origVerts);
+  assert.equal(detailed.faces.length, origFaces);
+
+  // Si el usuario edita manualmente después de reducir densidad, el nuevo estado editado reemplaza el origen
+  adjustMeshVertexDensity(detailed, { mode: 'target', targetVerts: 14 });
+  assert.ok(detailed._densityOrigin);
+  detailed.verts[0].x += 0.5;
+  detailed.invalidateTopology();
+  assert.equal(detailed._densityOrigin, null);
+});
+
+test('mergeMeshes no orgánico (remeshOrganic=false) produce topología limpia, sin esquirlas extremas y normales nítidas', () => {
+  const I = new Mat4();
+  const tx = (x, y = 0, z = 0) => new Mat4().compose(new Vec3(x, y, z), new Quat(), new Vec3(1, 1, 1));
+
+  const inspectRenderStats = (mesh) => {
+    const topo = mesh.getTopology();
+    const fNormals = mesh.faces.map((f) => {
+      let nx = 0, ny = 0, nz = 0;
+      for (let k = 0; k < f.length; k++) {
+        const a = mesh.verts[f[k]];
+        const b = mesh.verts[f[(k + 1) % f.length]];
+        nx += (a.y - b.y) * (a.z + b.z);
+        ny += (a.z - b.z) * (a.x + b.x);
+        nz += (a.x - b.x) * (a.y + b.y);
+      }
+      const l = Math.hypot(nx, ny, nz) || 1;
+      return [nx / l, ny / l, nz / l];
+    });
+    let minDihedralDot = 1;
+    for (const e of topo.edges) {
+      if (e.faces.length !== 2) continue;
+      const a = fNormals[e.faces[0]];
+      const b = fNormals[e.faces[1]];
+      const d = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      if (d < minDihedralDot) minDihedralDot = d;
+    }
+
+    const geo = mesh.toGeometry({ flatShading: false });
+    const pos = geo.attributes.position.array;
+    const nrm = geo.attributes.normal.array;
+    const idx = geo.index.array;
+    let maxAspect = 0;
+    let maxNormErrDeg = 0;
+    let normErrGt30 = 0;
+    for (let t = 0; t < idx.length; t += 3) {
+      const ia = idx[t], ib = idx[t + 1], ic = idx[t + 2];
+      const ax = pos[ia * 3], ay = pos[ia * 3 + 1], az = pos[ia * 3 + 2];
+      const bx = pos[ib * 3], by = pos[ib * 3 + 1], bz = pos[ib * 3 + 2];
+      const cx = pos[ic * 3], cy = pos[ic * 3 + 1], cz = pos[ic * 3 + 2];
+      const la = Math.hypot(bx - ax, by - ay, bz - az);
+      const lb = Math.hypot(cx - bx, cy - by, cz - bz);
+      const lc = Math.hypot(ax - cx, ay - cy, az - cz);
+      const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+      const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+      const nx = e1y * e2z - e1z * e2y;
+      const ny = e1z * e2x - e1x * e2z;
+      const nz = e1x * e2y - e1y * e2x;
+      const area2 = Math.hypot(nx, ny, nz);
+      const maxL = Math.max(la, lb, lc);
+      const asp = area2 > 1e-12 ? (maxL * maxL) / area2 : 99999;
+      if (asp > maxAspect) maxAspect = asp;
+      const unx = area2 > 1e-12 ? nx / area2 : 0;
+      const uny = area2 > 1e-12 ? ny / area2 : 1;
+      const unz = area2 > 1e-12 ? nz / area2 : 0;
+      for (const iv of [ia, ib, ic]) {
+        const vx = nrm[iv * 3], vy = nrm[iv * 3 + 1], vz = nrm[iv * 3 + 2];
+        assert.ok(Number.isFinite(vx) && Number.isFinite(vy) && Number.isFinite(vz), 'Normal debe ser finita');
+        const dot = Math.max(-1, Math.min(1, vx * unx + vy * uny + vz * unz));
+        const deg = (Math.acos(dot) * 180) / Math.PI;
+        if (deg > maxNormErrDeg) maxNormErrDeg = deg;
+        if (deg > 30) normErrGt30++;
+      }
+    }
+    return { minDihedralDot, maxAspect, maxNormErrDeg, normErrGt30 };
+  };
+
+  // 1. Cubos ortogonales con seamSmooth=0 y 0.5: caras planas nítidas en ss=0, bisel suave sin abultamientos ni pliegues en ss=0.5
+  const boxesHard = EditableMesh.mergeMeshes([
+    { geometry: new BoxGeometry(1.5, 1.5, 1.5), matrixWorld: I },
+    { geometry: new BoxGeometry(1.5, 1.5, 1.5), matrixWorld: tx(0.7, 0.4, 0.5) },
+  ], { remeshOrganic: false, seamSmooth: 0 });
+  assert.equal(countNonFlatEdges(boxesHard.mesh), 0);
+  const stBoxesHard = inspectRenderStats(boxesHard.mesh);
+  assert.ok(stBoxesHard.maxNormErrDeg < 1e-3, `Box+Box ss=0 debe conservar esquinas planas nítidas (err=${stBoxesHard.maxNormErrDeg})`);
+  assert.ok(stBoxesHard.maxAspect < 10);
+
+  const boxesSmooth = EditableMesh.mergeMeshes([
+    { geometry: new BoxGeometry(1.5, 1.5, 1.5), matrixWorld: I },
+    { geometry: new BoxGeometry(1.5, 1.5, 1.5), matrixWorld: tx(0.7, 0.4, 0.5) },
+  ], { remeshOrganic: false, seamSmooth: 0.5 });
+  assert.equal(countNonFlatEdges(boxesSmooth.mesh), 0);
+  const stBoxesSmooth = inspectRenderStats(boxesSmooth.mesh);
+  assert.ok(stBoxesSmooth.minDihedralDot > -0.15, `Box+Box ss=0.5 sin pliegues (minDot=${stBoxesSmooth.minDihedralDot})`);
+  assert.ok(stBoxesSmooth.maxAspect < 100, `Box+Box ss=0.5 sin agujas largas (maxAsp=${stBoxesSmooth.maxAspect})`);
+
+  // 2. Caja + Esfera (hard-surface + curva): sin picos de ear-clipping ni sangrado de normales de bisel
+  for (const ss of [0, 0.5]) {
+    const boxSph = EditableMesh.mergeMeshes([
+      { geometry: new BoxGeometry(1.6, 1.6, 1.6), matrixWorld: I },
+      { geometry: new SphereGeometry(1, 24, 16), matrixWorld: tx(0.8, 0.4, 0.3) },
+    ], { remeshOrganic: false, seamSmooth: ss });
+    assert.equal(countNonFlatEdges(boxSph.mesh), 0);
+    const st = inspectRenderStats(boxSph.mesh);
+    assert.ok(st.minDihedralDot > -0.25, `Box+Sph ss=${ss} sin pliegues`);
+    assert.ok(st.maxAspect < 60, `Box+Sph ss=${ss} aspect limpio (${st.maxAspect})`);
+    if (ss === 0) {
+      assert.equal(st.normErrGt30, 0, 'Box+Sph ss=0 sin picos normales > 30°');
+    }
+  }
+
+  // 3. Primitivas curvas/cilíndricas con seamSmooth=0.5: sin tiras gigantes estiradas
+  const mCyl = new Mat4().compose(new Vec3(0.6, 0, 0), new Quat().setFromAxisAngle(new Vec3(0, 0, 1), 0.4), new Vec3(1, 1, 1));
+  const sphCyl = EditableMesh.mergeMeshes([
+    { geometry: new SphereGeometry(1, 24, 16), matrixWorld: I },
+    { geometry: new CylinderGeometry(0.6, 0.6, 2.2, 20), matrixWorld: mCyl },
+  ], { remeshOrganic: false, seamSmooth: 0.5 });
+  assert.equal(countNonFlatEdges(sphCyl.mesh), 0);
+  const stSphCyl = inspectRenderStats(sphCyl.mesh);
+  assert.ok(stSphCyl.minDihedralDot > -0.25);
+  assert.ok(stSphCyl.maxAspect < 350, `Sph+Cyl ss=0.5 sin tiras extremas (maxAsp=${stSphCyl.maxAspect})`);
+
+  const mCylB = new Mat4().compose(new Vec3(0.3, 0.2, 0), new Quat().setFromAxisAngle(new Vec3(1, 0, 0), Math.PI / 2), new Vec3(1, 1, 1));
+  const cylT = EditableMesh.mergeMeshes([
+    { geometry: new CylinderGeometry(0.6, 0.6, 2.2, 20), matrixWorld: I },
+    { geometry: new CylinderGeometry(0.5, 0.5, 2.0, 20), matrixWorld: mCylB },
+  ], { remeshOrganic: false, seamSmooth: 0.5 });
+  assert.equal(countNonFlatEdges(cylT.mesh), 0);
+  const stCylT = inspectRenderStats(cylT.mesh);
+  assert.ok(stCylT.minDihedralDot > -0.15);
+  assert.ok(stCylT.maxAspect < 250, `Cyl+CylT ss=0.5 sin agujas (maxAsp=${stCylT.maxAspect})`);
+
+  const torSph = EditableMesh.mergeMeshes([
+    { geometry: new TorusGeometry(0.9, 0.35, 16, 24), matrixWorld: I },
+    { geometry: new SphereGeometry(0.7, 20, 14), matrixWorld: tx(0.6, 0, 0) },
+  ], { remeshOrganic: false, seamSmooth: 0.5 });
+  assert.equal(countNonFlatEdges(torSph.mesh), 0);
+  const stTorSph = inspectRenderStats(torSph.mesh);
+  assert.ok(stTorSph.minDihedralDot > -0.1);
+  assert.ok(stTorSph.maxAspect < 40);
+});
+
 
 
 

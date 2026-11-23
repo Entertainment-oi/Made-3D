@@ -324,23 +324,40 @@ export function syncEditUI() {
     dom.editSubsurfAlwaysCage.checked = Boolean(mod && mod.alwaysShowCage);
   }
 
-  updateEditDensityPreview(targetMesh);
+  updateEditDensityPreview(targetMesh, { syncInputs: true });
 
   syncSubsurfUI();
   syncGizmoXyzPanel();
 }
 
-export function updateEditDensityPreview(meshOverride = null) {
+export function updateEditDensityPreview(meshOverride = null, { syncInputs = false, forceSyncInputs = false } = {}) {
   const active = Boolean(edit.active);
   const targetMesh = meshOverride || (active ? edit.editor.mesh : getEditablePrimaryMesh());
   const mod = targetMesh ? (targetMesh._subsurf?.baseMesh ? targetMesh._subsurf : ensureEditableBase(targetMesh)) : null;
   const base = active && edit.editor.mesh === targetMesh ? edit.editor.baseMesh : (mod?.baseMesh || null);
   const baseVerts = base ? base.verts.length : 0;
+  const originVerts = base ? (base._densityOrigin ? base._densityOrigin.verts.length : baseVerts) : 0;
+  const currentPct = originVerts > 0 ? Math.max(1, Math.round((baseVerts / originVerts) * 100)) : 100;
+  const maxPct = Math.max(400, currentPct);
 
-  const rawPct = Number(dom.editDensityScaleNum?.value ?? dom.editDensityScale?.value ?? 100);
-  const pct = Number.isFinite(rawPct) ? Math.round(Math.max(20, Math.min(300, rawPct))) : 100;
-  const estTarget = baseVerts
-    ? Math.max(MIN_DENSITY_VERTS, Math.min(MAX_DENSITY_VERTS, Math.round(baseVerts * (pct / 100))))
+  if (dom.editDensityScale) dom.editDensityScale.max = String(maxPct);
+  if (dom.editDensityScaleNum) dom.editDensityScaleNum.max = String(maxPct);
+
+  const isEditingScaleInput =
+    document.activeElement === dom.editDensityScale ||
+    document.activeElement === dom.editDensityScaleNum;
+
+  if (syncInputs && (forceSyncInputs || !isEditingScaleInput)) {
+    const syncVal = String(currentPct);
+    if (dom.editDensityScale) dom.editDensityScale.value = syncVal;
+    if (dom.editDensityScaleNum) dom.editDensityScaleNum.value = syncVal;
+  }
+
+  const rawPct = Number(dom.editDensityScaleNum?.value ?? dom.editDensityScale?.value ?? currentPct);
+  const pct = Number.isFinite(rawPct) ? Math.round(Math.max(1, Math.min(maxPct, rawPct))) : currentPct;
+  const effectiveMaxVerts = Math.max(MAX_DENSITY_VERTS, originVerts);
+  const estTarget = originVerts
+    ? Math.max(MIN_DENSITY_VERTS, Math.min(effectiveMaxVerts, Math.round(originVerts * (pct / 100))))
     : 0;
 
   const canDec = Boolean(active && base && canDecreaseMeshDensity(base));
@@ -348,17 +365,21 @@ export function updateEditDensityPreview(meshOverride = null) {
   const canScale = Boolean(
     active &&
     base &&
-    pct !== 100 &&
     estTarget !== baseVerts &&
     ((estTarget < baseVerts && canDecreaseMeshDensity(base)) ||
-      (estTarget > baseVerts && canIncreaseMeshDensity(base)))
+      (estTarget > baseVerts && (estTarget <= originVerts || canIncreaseMeshDensity(base._densityOrigin || base))))
   );
 
-  if (dom.editDensityBadge) dom.editDensityBadge.textContent = `${baseVerts} V`;
+  if (dom.editDensityBadge) {
+    dom.editDensityBadge.textContent =
+      originVerts && originVerts !== baseVerts
+        ? `${baseVerts} / ${originVerts} V`
+        : `${baseVerts} V`;
+  }
   if (dom.editDensityVal) {
-    dom.editDensityVal.textContent = !baseVerts || pct === 100
+    dom.editDensityVal.textContent = !baseVerts || estTarget === baseVerts
       ? `${baseVerts} V`
-      : `${baseVerts} → ~${estTarget} V`;
+      : `${baseVerts} → ${estTarget === originVerts ? originVerts : `~${estTarget}`} V`;
   }
   if (dom.btnEditDensityDec) dom.btnEditDensityDec.disabled = !canDec;
   if (dom.btnEditDensityInc) dom.btnEditDensityInc.disabled = !canInc;
@@ -367,22 +388,22 @@ export function updateEditDensityPreview(meshOverride = null) {
   if (dom.btnEditDensityApply) dom.btnEditDensityApply.disabled = !canScale;
 }
 
-function resetDensityScaleInputs() {
-  if (dom.editDensityScale) dom.editDensityScale.value = '100';
-  if (dom.editDensityScaleNum) dom.editDensityScaleNum.value = '100';
+function syncDensityScaleInputsToCurrent() {
+  updateEditDensityPreview(null, { syncInputs: true, forceSyncInputs: true });
 }
 
 export function runEditDensityStep(delta) {
   if (!edit.active && !setEditMode(true)) return;
   const mode = delta > 0 ? 'inc' : 'dec';
   const res = edit.editor.adjustVertexDensity({ mode });
-  resetDensityScaleInputs();
   if (!res.changed) {
+    syncDensityScaleInputsToCurrent();
     setStatus(res.error || 'No se pudo modificar la densidad de vértices.', true);
     syncEditUI();
     return;
   }
   syncEditUI();
+  syncDensityScaleInputsToCurrent();
   syncSelectedUI();
   setStatus(
     `Densidad ${delta > 0 ? 'aumentada' : 'disminuida'}: ${res.beforeVerts} → ${res.afterVerts} vértices.`
@@ -392,20 +413,17 @@ export function runEditDensityStep(delta) {
 export function runEditDensityScale(rawPct) {
   if (!edit.active && !setEditMode(true)) return;
   const parsed = Number(rawPct);
-  const pct = Number.isFinite(parsed) ? Math.round(Math.max(20, Math.min(300, parsed))) : 100;
-  if (pct === 100) {
-    resetDensityScaleInputs();
-    updateEditDensityPreview();
-    return;
-  }
-  const res = edit.editor.adjustVertexDensity({ mode: 'scale', factor: pct / 100 });
-  resetDensityScaleInputs();
+  const maxPct = Math.max(400, Number(dom.editDensityScale?.max) || 400);
+  const pct = Number.isFinite(parsed) ? Math.round(Math.max(1, Math.min(maxPct, parsed))) : 100;
+  const res = edit.editor.adjustVertexDensity({ mode: 'scale', factor: pct / 100, reference: 'origin' });
   if (!res.changed) {
+    syncDensityScaleInputsToCurrent();
     setStatus(res.error || 'No se pudo ajustar la densidad de vértices.', true);
     syncEditUI();
     return;
   }
   syncEditUI();
+  syncDensityScaleInputsToCurrent();
   syncSelectedUI();
   setStatus(`Densidad ajustada (${pct}%): ${res.beforeVerts} → ${res.afterVerts} vértices.`);
 }

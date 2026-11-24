@@ -1,9 +1,11 @@
 pub mod bitstream;
+pub mod bvh;
 pub mod connectivity;
 pub mod corner_table;
 pub mod decoder;
 pub mod encoder;
 pub mod error;
+pub mod lod;
 pub mod meshopt;
 pub mod metadata;
 pub mod optimize;
@@ -14,9 +16,11 @@ pub mod transform;
 use core::slice;
 use std::alloc::{alloc, dealloc, Layout};
 
+use bvh::SceneBvh;
 use decoder::{decode_draco, DecodedGeometry, GeometryType};
 use encoder::{encode_draco_mesh, EncodeAttributeInput, EncodeMeshInput};
 use error::ErrorCode;
+use lod::{build_meshlets, simplify_mesh_qem, MeshletsResult, SimplifiedMesh};
 use meshopt::{
     decode_index_buffer, decode_index_sequence, decode_vertex_buffer, MeshoptFilter, MeshoptMode,
 };
@@ -589,6 +593,303 @@ pub extern "C" fn mo_opt_positions_ptr(handle: *const OptimizeHandle) -> *const 
 
 #[no_mangle]
 pub extern "C" fn mo_opt_free(handle: *mut OptimizeHandle) {
+    if !handle.is_null() {
+        unsafe { drop(Box::from_raw(handle)) };
+    }
+}
+
+// ============================================================================
+// 5. BVH + FRUSTUM CULLING + SELECCIÓN DE LOD DE ESCENA
+// ============================================================================
+
+pub struct BvhHandle {
+    bvh: SceneBvh,
+}
+
+#[no_mangle]
+pub extern "C" fn mo_bvh_create(spheres_ptr: *const f32, item_count: usize) -> *mut BvhHandle {
+    let spheres = if spheres_ptr.is_null() || item_count == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(spheres_ptr, item_count * 4) }
+    };
+    let bvh = SceneBvh::from_spheres(spheres, item_count);
+    Box::into_raw(Box::new(BvhHandle { bvh }))
+}
+
+#[no_mangle]
+pub extern "C" fn mo_bvh_rebuild(
+    handle: *mut BvhHandle,
+    spheres_ptr: *const f32,
+    item_count: usize,
+) {
+    let Some(h) = (unsafe { handle.as_mut() }) else {
+        return;
+    };
+    let spheres = if spheres_ptr.is_null() || item_count == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(spheres_ptr, item_count * 4) }
+    };
+    h.bvh.rebuild(spheres, item_count);
+}
+
+#[no_mangle]
+pub extern "C" fn mo_bvh_update_item(
+    handle: *mut BvhHandle,
+    index: usize,
+    cx: f32,
+    cy: f32,
+    cz: f32,
+    radius: f32,
+) -> u32 {
+    let Some(h) = (unsafe { handle.as_mut() }) else {
+        return 0;
+    };
+    if h.bvh.update_item(index, cx, cy, cz, radius) {
+        1
+    } else {
+        0
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mo_bvh_refit(handle: *mut BvhHandle) {
+    if let Some(h) = unsafe { handle.as_mut() } {
+        h.bvh.refit();
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn mo_bvh_query_frustum(
+    handle: *mut BvhHandle,
+    planes_ptr: *const f32,
+    cam_x: f32,
+    cam_y: f32,
+    cam_z: f32,
+    thresholds_ptr: *const f32,
+    threshold_count: usize,
+) -> usize {
+    let Some(h) = (unsafe { handle.as_mut() }) else {
+        return 0;
+    };
+    if planes_ptr.is_null() {
+        return 0;
+    }
+    let planes = unsafe { slice::from_raw_parts(planes_ptr, 24) };
+    let thresholds = if thresholds_ptr.is_null() || threshold_count == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(thresholds_ptr, threshold_count) }
+    };
+    h.bvh.query_frustum(planes, [cam_x, cam_y, cam_z], thresholds)
+}
+
+#[no_mangle]
+pub extern "C" fn mo_bvh_visible_count(handle: *const BvhHandle) -> usize {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return 0;
+    };
+    h.bvh.visible_indices.len()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_bvh_visible_indices_ptr(handle: *const BvhHandle) -> *const u32 {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return core::ptr::null();
+    };
+    h.bvh.visible_indices.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_bvh_visible_lods_ptr(handle: *const BvhHandle) -> *const u32 {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return core::ptr::null();
+    };
+    h.bvh.visible_lods.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_bvh_free(handle: *mut BvhHandle) {
+    if !handle.is_null() {
+        unsafe { drop(Box::from_raw(handle)) };
+    }
+}
+
+// ============================================================================
+// 6. GENERADOR DE LODS (SIMPLIFICACIÓN QEM)
+// ============================================================================
+
+pub struct LodHandle {
+    mesh: SimplifiedMesh,
+}
+
+#[no_mangle]
+pub extern "C" fn mo_lod_simplify(
+    pos_ptr: *const f32,
+    pos_len: usize,
+    indices_ptr: *const u32,
+    indices_len: usize,
+    target_index_count: usize,
+    max_error: f32,
+    preserve_borders: u32,
+) -> *mut LodHandle {
+    let positions = if pos_ptr.is_null() || pos_len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(pos_ptr, pos_len) }
+    };
+    let indices = if indices_ptr.is_null() || indices_len == 0 {
+        None
+    } else {
+        Some(unsafe { slice::from_raw_parts(indices_ptr, indices_len) })
+    };
+    let mesh = simplify_mesh_qem(
+        positions,
+        indices,
+        target_index_count,
+        max_error,
+        preserve_borders != 0,
+    );
+    Box::into_raw(Box::new(LodHandle { mesh }))
+}
+
+#[no_mangle]
+pub extern "C" fn mo_lod_num_points(handle: *const LodHandle) -> usize {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return 0;
+    };
+    h.mesh.num_points
+}
+
+#[no_mangle]
+pub extern "C" fn mo_lod_positions_ptr(handle: *const LodHandle) -> *const f32 {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return core::ptr::null();
+    };
+    h.mesh.positions.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_lod_indices_len(handle: *const LodHandle) -> usize {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return 0;
+    };
+    h.mesh.indices.len()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_lod_indices_ptr(handle: *const LodHandle) -> *const u32 {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return core::ptr::null();
+    };
+    h.mesh.indices.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_lod_remap_ptr(handle: *const LodHandle) -> *const u32 {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return core::ptr::null();
+    };
+    h.mesh.vertex_remap.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_lod_error(handle: *const LodHandle) -> f32 {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return 0.0;
+    };
+    h.mesh.max_error_reached
+}
+
+#[no_mangle]
+pub extern "C" fn mo_lod_free(handle: *mut LodHandle) {
+    if !handle.is_null() {
+        unsafe { drop(Box::from_raw(handle)) };
+    }
+}
+
+// ============================================================================
+// 7. PARTICIONADO EN MESHLETS / CLUSTERS PARA WEBGPU / STREAMING
+// ============================================================================
+
+pub struct MeshletsHandle {
+    result: MeshletsResult,
+}
+
+#[no_mangle]
+pub extern "C" fn mo_meshlets_build(
+    pos_ptr: *const f32,
+    pos_len: usize,
+    indices_ptr: *const u32,
+    indices_len: usize,
+    max_vertices: usize,
+    max_triangles: usize,
+) -> *mut MeshletsHandle {
+    let positions = if pos_ptr.is_null() || pos_len == 0 {
+        &[]
+    } else {
+        unsafe { slice::from_raw_parts(pos_ptr, pos_len) }
+    };
+    let indices = if indices_ptr.is_null() || indices_len == 0 {
+        None
+    } else {
+        Some(unsafe { slice::from_raw_parts(indices_ptr, indices_len) })
+    };
+    let result = build_meshlets(positions, indices, max_vertices, max_triangles);
+    Box::into_raw(Box::new(MeshletsHandle { result }))
+}
+
+#[no_mangle]
+pub extern "C" fn mo_meshlets_count(handle: *const MeshletsHandle) -> usize {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return 0;
+    };
+    h.result.meshlet_count
+}
+
+#[no_mangle]
+pub extern "C" fn mo_meshlets_bounds_ptr(handle: *const MeshletsHandle) -> *const f32 {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return core::ptr::null();
+    };
+    h.result.bounds.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_meshlets_cones_ptr(handle: *const MeshletsHandle) -> *const f32 {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return core::ptr::null();
+    };
+    h.result.cones.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_meshlets_ranges_ptr(handle: *const MeshletsHandle) -> *const u32 {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return core::ptr::null();
+    };
+    h.result.ranges.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_meshlets_indices_len(handle: *const MeshletsHandle) -> usize {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return 0;
+    };
+    h.result.indices.len()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_meshlets_indices_ptr(handle: *const MeshletsHandle) -> *const u32 {
+    let Some(h) = (unsafe { handle.as_ref() }) else {
+        return core::ptr::null();
+    };
+    h.result.indices.as_ptr()
+}
+
+#[no_mangle]
+pub extern "C" fn mo_meshlets_free(handle: *mut MeshletsHandle) {
     if !handle.is_null() {
         unsafe { drop(Box::from_raw(handle)) };
     }

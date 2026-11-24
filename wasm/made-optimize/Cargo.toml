@@ -1,8 +1,8 @@
 [package]
 name = "made-optimize"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
-description = "MadeOptimize: motor WebAssembly 100% propio en Rust para compresión/descompresión Draco, Meshopt y optimización GPU de mallas en Made3D"
+description = "MadeOptimize: motor WebAssembly 100% propio en Rust para compresión/descompresión Draco, Meshopt, optimización GPU, BVH + Frustum Culling, LOD (QEM) y Meshlets en Made3D"
 license = "MIT"
 
 [lib]

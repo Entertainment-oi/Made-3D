@@ -1,0 +1,21 @@
+[package]
+name = "made-texture"
+version = "0.1.0"
+edition = "2021"
+description = "MadeTexture: motor WebAssembly 100% propio en Rust para KTX2 (UASTC 4x4, ETC1S/BasisLZ, Zstd, Zlib) y transcodificación GPU en Made3D"
+license = "MIT"
+
+[lib]
+name = "made_texture"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+ruzstd = { version = "0.8", default-features = false, features = ["std"] }
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

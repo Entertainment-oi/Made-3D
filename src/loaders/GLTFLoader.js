@@ -251,13 +251,11 @@ class GLTFParser {
       const bv = this.json.bufferViews[i];
       const mc = bv.extensions && bv.extensions.EXT_meshopt_compression;
       if (mc) {
-        const { MeshoptDecoder } = await import('../libs/meshopt/meshopt_decoder.module.js');
-        await MeshoptDecoder.ready;
+        const { decodeMeshopt } = await import('../libs/made-optimize/made_optimize.js');
         const buf = await this.buffer(mc.buffer);
         const src = new Uint8Array(buf, mc.byteOffset || 0, mc.byteLength);
-        const dst = new Uint8Array(mc.count * mc.byteStride);
-        MeshoptDecoder.decodeGltfBuffer(dst, mc.count, mc.byteStride, src, mc.mode, mc.filter || 'NONE');
-        return dst.buffer;
+        const decoded = await decodeMeshopt(src, mc.count, mc.byteStride, mc.mode, mc.filter || 'NONE');
+        return decoded.buffer;
       }
       const buf = await this.buffer(bv.buffer);
       return buf.slice(bv.byteOffset || 0, (bv.byteOffset || 0) + bv.byteLength);

@@ -1,13 +1,31 @@
 import { Texture } from '../textures/Texture.js';
+import {
+  hasMadeTextureBinary,
+  loadMadeTexture,
+  loadMadeTextureWasmBytes,
+  transcodeKtx2WithWasm,
+} from '../libs/made-texture/made_texture.js';
 
-const DEFAULT_JS_URL = new URL('../libs/basis/basis_transcoder.js', import.meta.url).href;
-const DEFAULT_WASM_URL = new URL('../libs/basis/basis_transcoder.wasm', import.meta.url).href;
+const DEFAULT_MADE_TEXTURE_WASM_URL = new URL('../libs/made-texture/made_texture.wasm', import.meta.url).href;
+const DEFAULT_BASIS_JS_URL = new URL('../libs/basis/basis_transcoder.js', import.meta.url).href;
+const DEFAULT_BASIS_WASM_URL = new URL('../libs/basis/basis_transcoder.wasm', import.meta.url).href;
 
-const _moduleCache = new Map();
-const _assetsCache = new Map();
+const _basisModuleCache = new Map();
+const _basisAssetsCache = new Map();
 let _cachedCaps = null;
 
 async function readResourceBytes(url) {
+  if (
+    url.startsWith('file://') &&
+    typeof process !== 'undefined' &&
+    process.versions &&
+    process.versions.node
+  ) {
+    const fs = await import('fs/promises');
+    const { fileURLToPath } = await import('url');
+    const buf = await fs.readFile(fileURLToPath(url));
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  }
   if (typeof fetch === 'function') {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`KTX2Loader: no se pudo cargar ${url} (${res.status})`);
@@ -17,6 +35,16 @@ async function readResourceBytes(url) {
 }
 
 async function readResourceText(url) {
+  if (
+    url.startsWith('file://') &&
+    typeof process !== 'undefined' &&
+    process.versions &&
+    process.versions.node
+  ) {
+    const fs = await import('fs/promises');
+    const { fileURLToPath } = await import('url');
+    return fs.readFile(fileURLToPath(url), 'utf8');
+  }
   if (typeof fetch === 'function') {
     const res = await fetch(url);
     if (!res.ok) throw new Error(`KTX2Loader: no se pudo cargar ${url} (${res.status})`);
@@ -27,18 +55,18 @@ async function readResourceText(url) {
 
 function loadBasisAssets(jsUrl, wasmUrl) {
   const key = `${jsUrl}|${wasmUrl}`;
-  if (_assetsCache.has(key)) return _assetsCache.get(key);
+  if (_basisAssetsCache.has(key)) return _basisAssetsCache.get(key);
   const p = Promise.all([readResourceText(jsUrl), readResourceBytes(wasmUrl)]).then(([jsCode, wasmBinary]) => ({
     jsCode,
     wasmBinary,
   }));
-  _assetsCache.set(key, p);
+  _basisAssetsCache.set(key, p);
   return p;
 }
 
 function loadBasisModule(jsUrl, wasmUrl) {
   const key = `${jsUrl}|${wasmUrl}`;
-  if (_moduleCache.has(key)) return _moduleCache.get(key);
+  if (_basisModuleCache.has(key)) return _basisModuleCache.get(key);
 
   const p = (async () => {
     const { jsCode, wasmBinary } = await loadBasisAssets(jsUrl, wasmUrl);
@@ -51,7 +79,7 @@ function loadBasisModule(jsUrl, wasmUrl) {
     return mod;
   })();
 
-  _moduleCache.set(key, p);
+  _basisModuleCache.set(key, p);
   return p;
 }
 
@@ -155,7 +183,7 @@ function isPOT(n) {
   return n > 0 && (n & (n - 1)) === 0;
 }
 
-function chooseTargetFromInfo(tf, caps, w, h, hasAlpha, colorSpace) {
+function chooseTargetFromBasis(tf, caps, w, h, hasAlpha, colorSpace) {
   const mult4 = w % 4 === 0 && h % 4 === 0;
   const potSquare = isPOT(w) && isPOT(h) && w === h;
   const wantSrgb = colorSpace === 'srgb';
@@ -242,11 +270,128 @@ function chooseTargetFromInfo(tf, caps, w, h, hasAlpha, colorSpace) {
   };
 }
 
-// Código autocontenido del Web Worker (recibe jsCode + wasmBinary de Basis una sola vez)
-const WORKER_SCRIPT = `
+// Worker WebAssembly puro para MadeTexture (cero eval, cero new Function, cero Emscripten y sin .toString())
+const MADE_TEXTURE_WORKER_SCRIPT = `
+let wasmPromise = null;
+const TARGET_FORMAT = { ETC1_RGB: 0, ETC2_RGBA: 1, BC1_RGB: 2, BC3_RGBA: 3, BC7_RGBA: 6, ASTC_4x4_RGBA: 10, RGBA32: 13 };
+
+function chooseTargetFromCaps(caps, width, height, hasAlpha, colorSpace, forceRgba) {
+  if (forceRgba) return { basisFormat: TARGET_FORMAT.RGBA32, compressed: false, formatId: null, glFormat: null, glSrgbFormat: null };
+  const c = caps || {};
+  const mult4 = width % 4 === 0 && height % 4 === 0;
+  const wantSrgb = colorSpace === 'srgb';
+  const e = c.enums || {};
+  if (c.astc) return { basisFormat: TARGET_FORMAT.ASTC_4x4_RGBA, compressed: true, formatId: 'astc-4x4', glFormat: e.astcRgba ?? null, glSrgbFormat: e.astcSrgb ?? null };
+  if (c.bptc && mult4) return { basisFormat: TARGET_FORMAT.BC7_RGBA, compressed: true, formatId: 'bc7', glFormat: e.bptcRgba ?? null, glSrgbFormat: e.bptcSrgb ?? null };
+  if (c.etc) {
+    if (hasAlpha) return { basisFormat: TARGET_FORMAT.ETC2_RGBA, compressed: true, formatId: 'etc2-rgba', glFormat: e.etc2Rgba ?? null, glSrgbFormat: e.etc2SrgbRgba ?? null };
+    return { basisFormat: TARGET_FORMAT.ETC1_RGB, compressed: true, formatId: 'etc2-rgb', glFormat: e.etc2Rgb ?? null, glSrgbFormat: e.etc2SrgbRgb ?? null };
+  }
+  if (c.s3tc && mult4 && (!wantSrgb || c.s3tcSrgb)) {
+    if (hasAlpha) return { basisFormat: TARGET_FORMAT.BC3_RGBA, compressed: true, formatId: 'bc3', glFormat: e.s3tcRgba ?? null, glSrgbFormat: e.s3tcSrgbRgba ?? null };
+    return { basisFormat: TARGET_FORMAT.BC1_RGB, compressed: true, formatId: 'bc1', glFormat: e.s3tcRgb ?? null, glSrgbFormat: e.s3tcSrgbRgb ?? null };
+  }
+  if (c.etc1 && !hasAlpha && !wantSrgb) return { basisFormat: TARGET_FORMAT.ETC1_RGB, compressed: true, formatId: null, glFormat: e.etc1Rgb ?? null, glSrgbFormat: null };
+  return { basisFormat: TARGET_FORMAT.RGBA32, compressed: false, formatId: null, glFormat: null, glSrgbFormat: null };
+}
+
+function readKtx2Error(wasm, handle) {
+  const ptr = wasm.mt_ktx2_error_ptr(handle);
+  const len = wasm.mt_ktx2_error_len(handle);
+  if (!ptr || !len) return 'Error desconocido en MadeTexture';
+  return new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, ptr, len));
+}
+
+function readBytesResult(wasm, handle, label) {
+  try {
+    const status = wasm.mt_bytes_status(handle);
+    if (status !== 0) {
+      const ptr = wasm.mt_bytes_error_ptr(handle);
+      const len = wasm.mt_bytes_error_len(handle);
+      const msg = ptr && len
+        ? new TextDecoder().decode(new Uint8Array(wasm.memory.buffer, ptr, len))
+        : ('status=' + status);
+      throw new Error(label + ' (' + status + '): ' + msg);
+    }
+    const ptr = wasm.mt_bytes_ptr(handle);
+    const len = wasm.mt_bytes_len(handle);
+    return new Uint8Array(wasm.memory.buffer, ptr, len).slice();
+  } finally {
+    if (handle) wasm.mt_bytes_free(handle);
+  }
+}
+
+function transcodeWithMadeTexture(wasm, bytes, caps, optColorSpace, forceRgba) {
+  const inPtr = wasm.mt_alloc(bytes.byteLength);
+  if (!inPtr) throw new Error('MadeTexture: fallo al asignar memoria.');
+  let handle = 0;
+  try {
+    new Uint8Array(wasm.memory.buffer, inPtr, bytes.byteLength).set(bytes);
+    handle = wasm.mt_ktx2_open(inPtr, bytes.byteLength);
+  } finally {
+    wasm.mt_free(inPtr, bytes.byteLength);
+  }
+  try {
+    if (wasm.mt_ktx2_status(handle) !== 0) throw new Error(readKtx2Error(wasm, handle));
+    const width = wasm.mt_ktx2_width(handle);
+    const height = wasm.mt_ktx2_height(handle);
+    const levels = Math.max(1, wasm.mt_ktx2_levels(handle));
+    const hasAlpha = wasm.mt_ktx2_has_alpha(handle) !== 0;
+    const isSrgb = wasm.mt_ktx2_is_srgb(handle) !== 0;
+    const colorSpace = optColorSpace || (isSrgb ? 'srgb' : 'linear');
+    const target = chooseTargetFromCaps(caps, width, height, hasAlpha, colorSpace, forceRgba);
+    const mipmaps = [];
+    const transfers = [];
+    for (let level = 0; level < levels; level++) {
+      const levelW = Math.max(1, wasm.mt_ktx2_level_width(handle, level));
+      const levelH = Math.max(1, wasm.mt_ktx2_level_height(handle, level));
+      const bh = wasm.mt_ktx2_transcode_level(handle, level, 0, 0, target.basisFormat);
+      const out = readBytesResult(wasm, bh, 'MadeTexture mip ' + level);
+      mipmaps.push({ data: out, width: levelW, height: levelH });
+      transfers.push(out.buffer);
+    }
+    return { width, height, colorSpace, target, mipmaps, transfers };
+  } finally {
+    if (handle) wasm.mt_ktx2_close(handle);
+  }
+}
+
+self.onmessage = async (ev) => {
+  const msg = ev.data;
+  if (msg.type === 'init') {
+    wasmPromise = WebAssembly.instantiate(msg.wasmBinary, {}).then((res) => res.instance.exports);
+    try {
+      await wasmPromise;
+      self.postMessage({ type: 'ready' });
+    } catch (err) {
+      self.postMessage({ type: 'init-error', error: err.message || String(err) });
+    }
+    return;
+  }
+  if (msg.type === 'transcode') {
+    try {
+      const wasm = await wasmPromise;
+      const bytes = new Uint8Array(msg.buffer);
+      const { width, height, colorSpace, target, mipmaps, transfers } = transcodeWithMadeTexture(
+        wasm,
+        bytes,
+        msg.caps,
+        msg.colorSpace,
+        msg.forceRgba
+      );
+      self.postMessage({ type: 'done', id: msg.id, result: { width, height, colorSpace, target, mipmaps } }, transfers);
+    } catch (err) {
+      self.postMessage({ type: 'error', id: msg.id, error: err.message || String(err) });
+    }
+  }
+};
+`;
+
+// Worker de respaldo temporal con Basis únicamente mientras no exista made_texture.wasm compilado
+const BASIS_WORKER_SCRIPT = `
 let basisPromise = null;
 const isPOT = (n) => n > 0 && (n & (n - 1)) === 0;
-const chooseTarget = ${chooseTargetFromInfo.toString()};
+const chooseTarget = ${chooseTargetFromBasis.toString()};
 
 function transcodeWithBasis(basis, bytes, caps, optColorSpace, forceRgba) {
   const ktx2 = new basis.KTX2File(bytes);
@@ -317,13 +462,16 @@ self.onmessage = async (ev) => {
 `;
 
 /**
- * Cargador de texturas KTX2 (Basis Universal: ETC1S y UASTC) usando los archivos oficiales de Three.js
- * (`basis_transcoder.js` y `basis_transcoder.wasm`) y un pool de Web Workers para no bloquear la UI.
+ * Cargador de texturas KTX2 (UASTC y ETC1S/BasisLZ) usando MadeTexture (`made_texture.wasm`, Rust puro)
+ * con pool de Web Workers nativos WebAssembly y respaldo temporal a Basis mientras no exista `made_texture.wasm`.
  */
 export class KTX2Loader {
   constructor(opts = {}) {
-    this.jsUrl = opts.jsUrl || DEFAULT_JS_URL;
-    this.wasmUrl = opts.wasmUrl || DEFAULT_WASM_URL;
+    this.madeTextureWasmUrl = opts.madeTextureWasmUrl || DEFAULT_MADE_TEXTURE_WASM_URL;
+    this.useMadeTexture = opts.useMadeTexture !== undefined ? !!opts.useMadeTexture : true;
+    this.useBasisFallback = opts.useBasisFallback !== undefined ? !!opts.useBasisFallback : true;
+    this.jsUrl = opts.jsUrl || DEFAULT_BASIS_JS_URL;
+    this.wasmUrl = opts.wasmUrl || DEFAULT_BASIS_WASM_URL;
     if (opts.transcoderPath) this.setTranscoderPath(opts.transcoderPath);
     this._caps = null;
     this.workerLimit = Math.max(
@@ -335,6 +483,7 @@ export class KTX2Loader {
         ? !!opts.useWorker
         : typeof Worker !== 'undefined' && typeof Blob !== 'undefined' && typeof URL?.createObjectURL === 'function';
     this._workerUrl = null;
+    this._workerBackend = null;
     this._workers = [];
     this._queue = [];
     this._pending = new Map();
@@ -342,6 +491,14 @@ export class KTX2Loader {
     this._workersBroken = false;
     this._creatingWorkers = 0;
     this._disposeEpoch = 0;
+  }
+
+  setMadeTextureWasmUrl(url) {
+    if (this.madeTextureWasmUrl !== url) {
+      this.madeTextureWasmUrl = url;
+      this._workerBackend = null;
+    }
+    return this;
   }
 
   setTranscoderPath(dirUrl) {
@@ -354,6 +511,16 @@ export class KTX2Loader {
   setWorkerLimit(limit) {
     this.workerLimit = Math.max(1, limit | 0);
     return this;
+  }
+
+  async getActiveBackend() {
+    if (this.useMadeTexture && (await hasMadeTextureBinary(this.madeTextureWasmUrl))) {
+      return 'made-texture';
+    }
+    if (this.useBasisFallback) {
+      return 'basis-fallback';
+    }
+    return 'none';
   }
 
   detectSupport(rendererOrGl) {
@@ -380,7 +547,7 @@ export class KTX2Loader {
     return this.parse(buffer, opts);
   }
 
-  _transcodeMainThread(basis, bytes, caps, optColorSpace, forceRgba = false) {
+  _transcodeMainThreadBasis(basis, bytes, caps, optColorSpace, forceRgba = false) {
     const ktx2 = new basis.KTX2File(bytes);
     try {
       if (!ktx2.isValid()) throw new Error('KTX2Loader: archivo KTX2 inválido o corrupto.');
@@ -394,7 +561,7 @@ export class KTX2Loader {
 
       const target = forceRgba
         ? { basisFormat: basis.transcoder_texture_format.cTFRGBA32.value, compressed: false, glFormat: null, glSrgbFormat: null }
-        : chooseTargetFromInfo(basis.transcoder_texture_format, caps, width, height, hasAlpha, colorSpace);
+        : chooseTargetFromBasis(basis.transcoder_texture_format, caps, width, height, hasAlpha, colorSpace);
 
       if (!ktx2.startTranscoding()) {
         throw new Error('KTX2Loader: no se pudo iniciar la transcodificación Basis.');
@@ -420,11 +587,30 @@ export class KTX2Loader {
   }
 
   async _createWorker(epoch = this._disposeEpoch) {
-    const { jsCode, wasmBinary } = await loadBasisAssets(this.jsUrl, this.wasmUrl);
-    if (epoch !== this._disposeEpoch) throw new Error('KTX2Loader: liberado');
-    if (!this._workerUrl) {
-      this._workerUrl = URL.createObjectURL(new Blob([WORKER_SCRIPT], { type: 'text/javascript' }));
+    const useMt = this.useMadeTexture && (await hasMadeTextureBinary(this.madeTextureWasmUrl));
+    let wasmBinary;
+    let jsCode = null;
+    let backend = 'made-texture';
+
+    if (useMt) {
+      wasmBinary = await loadMadeTextureWasmBytes(this.madeTextureWasmUrl);
+    } else if (this.useBasisFallback) {
+      backend = 'basis';
+      const assets = await loadBasisAssets(this.jsUrl, this.wasmUrl);
+      wasmBinary = assets.wasmBinary;
+      jsCode = assets.jsCode;
+    } else {
+      throw new Error('MadeTexture: made_texture.wasm no encontrado y el respaldo Basis está desactivado.');
     }
+
+    if (epoch !== this._disposeEpoch) throw new Error('KTX2Loader: liberado');
+    if (!this._workerUrl || this._workerBackend !== backend) {
+      if (this._workerUrl) URL.revokeObjectURL(this._workerUrl);
+      const src = backend === 'made-texture' ? MADE_TEXTURE_WORKER_SCRIPT : BASIS_WORKER_SCRIPT;
+      this._workerUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+      this._workerBackend = backend;
+    }
+
     const w = new Worker(this._workerUrl);
     const slot = { worker: w, busy: true };
 
@@ -438,18 +624,21 @@ export class KTX2Loader {
         } else if (d.type === 'init-error') {
           w.removeEventListener('message', onInitMsg);
           w.removeEventListener('error', onInitErr);
-          reject(new Error(d.error || 'Error iniciando worker Basis'));
+          reject(new Error(d.error || 'Error iniciando worker KTX2'));
         }
       };
       const onInitErr = (err) => {
         w.removeEventListener('message', onInitMsg);
         w.removeEventListener('error', onInitErr);
-        reject(new Error(err.message || 'Error en worker Basis'));
+        reject(new Error(err.message || 'Error en worker KTX2'));
       };
       w.addEventListener('message', onInitMsg);
       w.addEventListener('error', onInitErr);
       const copyWasm = wasmBinary.slice(0);
-      w.postMessage({ type: 'init', jsCode, wasmBinary: copyWasm }, [copyWasm]);
+      const payload = backend === 'made-texture'
+        ? { type: 'init', wasmBinary: copyWasm }
+        : { type: 'init', jsCode, wasmBinary: copyWasm };
+      w.postMessage(payload, [copyWasm]);
     });
 
     w.addEventListener('message', (ev) => {
@@ -469,7 +658,7 @@ export class KTX2Loader {
       for (const [id, entry] of this._pending.entries()) {
         if (entry.slot === slot) {
           this._pending.delete(id);
-          entry.reject(new Error(err.message || 'Error en worker Basis'));
+          entry.reject(new Error(err.message || 'Error en worker KTX2'));
         }
       }
       this._pumpQueue();
@@ -517,7 +706,6 @@ export class KTX2Loader {
                 task.reject(err instanceof Error ? err : new Error('KTX2Loader: liberado'));
                 return;
               }
-              // Fallback silencioso al hilo principal si el navegador bloquea Blob Workers
               this._workersBroken = true;
               this._runTaskOnMain(task);
               while (this._queue.length) this._runTaskOnMain(this._queue.shift());
@@ -552,12 +740,31 @@ export class KTX2Loader {
   async _runTaskOnMain(task) {
     const epoch = this._disposeEpoch;
     try {
+      if (this.useMadeTexture && (await hasMadeTextureBinary(this.madeTextureWasmUrl))) {
+        const wasm = await loadMadeTexture(this.madeTextureWasmUrl);
+        if (epoch !== this._disposeEpoch) {
+          task.reject(new Error('KTX2Loader: liberado'));
+          return;
+        }
+        const res = transcodeKtx2WithWasm(wasm, task.bytes, {
+          caps: task.caps,
+          colorSpace: task.colorSpace,
+          forceRgba: task.forceRgba,
+        });
+        task.resolve(res);
+        return;
+      }
+
+      if (!this.useBasisFallback) {
+        throw new Error('MadeTexture: made_texture.wasm no disponible y respaldo Basis desactivado.');
+      }
+
       const basis = await loadBasisModule(this.jsUrl, this.wasmUrl);
       if (epoch !== this._disposeEpoch) {
         task.reject(new Error('KTX2Loader: liberado'));
         return;
       }
-      const res = this._transcodeMainThread(basis, task.bytes, task.caps, task.colorSpace, task.forceRgba);
+      const res = this._transcodeMainThreadBasis(basis, task.bytes, task.caps, task.colorSpace, task.forceRgba);
       task.resolve(res);
     } catch (err) {
       task.reject(err);
@@ -636,6 +843,7 @@ export class KTX2Loader {
     }
     this._workers = [];
     this._creatingWorkers = 0;
+    this._workerBackend = null;
     if (this._workerUrl) {
       URL.revokeObjectURL(this._workerUrl);
       this._workerUrl = null;

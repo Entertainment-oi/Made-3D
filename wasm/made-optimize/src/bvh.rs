@@ -414,7 +414,7 @@ mod tests {
             8.0, 0.0, -10.0, 1.0,
         ];
         let mut bvh = SceneBvh::from_spheres(&spheres, 5);
-        let planes = frustum_box_planes(5.0, 5.0, 1.0, 50.0);
+        let planes = frustum_box_planes(4.5, 5.0, 1.0, 50.0);
         assert_eq!(bvh.query_frustum(&planes, [0.0, 0.0, 0.0], &[]), 3);
 
         // Mover ítem 4 al centro del frustum

@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { deflateSync } from 'node:zlib';
 import {
   BoxGeometry,
   Geometry,
@@ -453,16 +454,224 @@ test('MadeTexture: selección de formatos objetivo y detección segura de backen
   assert.equal(chooseTargetFromCaps({}, 16, 16, false, 'linear').basisFormat, MADE_TEXTURE_TARGET_FORMAT.RGBA32);
 
   const hasBin = await hasMadeTextureBinary();
-  assert.equal(typeof hasBin, 'boolean');
+  assert.equal(hasBin, true);
 
-  const ktx2 = new KTX2Loader({ useWorker: false, useBasisFallback: false });
+  const ktx2 = new KTX2Loader({ useWorker: false });
   const backend = await ktx2.getActiveBackend();
-  assert.equal(backend, hasBin ? 'made-texture' : 'none');
+  assert.equal(backend, 'made-texture');
 
-  if (!hasBin) {
-    assert.equal(getMadeTextureCapabilities().loaded, false);
-    await assert.rejects(ktx2.parse(new Uint8Array([0xab, 0x4b, 0x54, 0x58])), /MadeTexture/);
+  // Helper para construir DFD + KTX2 v2 mínimos
+  const buildMinimalDfd = (colorModel, transfer, bytesPlane0, withAlphaSample) => {
+    const sampleCount = withAlphaSample ? 2 : 1;
+    const blockSize = 24 + sampleCount * 16;
+    const totalSize = 4 + blockSize;
+    const buf = new ArrayBuffer(totalSize);
+    const dv = new DataView(buf);
+    dv.setUint32(0, totalSize, true);
+    dv.setUint16(4, 0, true);
+    dv.setUint16(6, 2, true);
+    dv.setUint16(8, 2, true);
+    dv.setUint16(10, blockSize, true);
+    dv.setUint8(12, colorModel);
+    dv.setUint8(13, 1); // BT709
+    dv.setUint8(14, transfer);
+    dv.setUint8(15, 0);
+    dv.setUint8(16, 3); // 4x4
+    dv.setUint8(17, 3);
+    dv.setUint8(18, 0);
+    dv.setUint8(19, 0);
+    dv.setUint8(20, bytesPlane0);
+
+    const writeSample = (off, bitLen, channelType) => {
+      dv.setUint16(off, 0, true);
+      dv.setUint8(off + 2, bitLen);
+      dv.setUint8(off + 3, channelType);
+      dv.setUint32(off + 8, 0, true);
+      dv.setUint32(off + 12, 255, true);
+    };
+    writeSample(28, 63, 0);
+    if (withAlphaSample) {
+      writeSample(44, 63, 15);
+    }
+    return new Uint8Array(buf);
+  };
+
+  const buildKtx2SingleLevel = (w, h, ss, dfd, sgd, levelData, uncompressedLen) => {
+    const magic = [0xab, 0x4b, 0x54, 0x58, 0x20, 0x32, 0x30, 0xbb, 0x0d, 0x0a, 0x1a, 0x0a];
+    const dfdOff = 80 + 24;
+    const sgdOff = dfdOff + dfd.length;
+    const lvlOff = sgdOff + sgd.length;
+    const out = new Uint8Array(lvlOff + levelData.length);
+    const dv = new DataView(out.buffer);
+    out.set(magic, 0);
+    dv.setUint32(12, 0, true); // vkFormat=0
+    dv.setUint32(16, 1, true); // typeSize=1
+    dv.setUint32(20, w, true);
+    dv.setUint32(24, h, true);
+    dv.setUint32(36, 1, true); // faces
+    dv.setUint32(40, 1, true); // levels
+    dv.setUint32(44, ss, true);
+    dv.setUint32(48, dfdOff, true);
+    dv.setUint32(52, dfd.length, true);
+    if (sgd.length > 0) {
+      dv.setBigUint64(64, BigInt(sgdOff), true);
+      dv.setBigUint64(72, BigInt(sgd.length), true);
+    }
+    dv.setBigUint64(80, BigInt(lvlOff), true);
+    dv.setBigUint64(88, BigInt(levelData.length), true);
+    dv.setBigUint64(96, BigInt(uncompressedLen), true);
+    out.set(dfd, dfdOff);
+    if (sgd.length > 0) out.set(sgd, sgdOff);
+    out.set(levelData, lvlOff);
+    return out;
+  };
+
+  // 1. KTX2 UASTC Mode 8 (sólido R=10, G=200, B=40, A=255) comprimido con Zlib (sRGB)
+  let uastcVal = 23n; // UASTC_HUFF_MODES[23] == 8
+  uastcVal |= 10n << 5n;
+  uastcVal |= 200n << 13n;
+  uastcVal |= 40n << 21n;
+  uastcVal |= 255n << 29n;
+  const uastcBlock = new Uint8Array(16);
+  for (let i = 0; i < 16; i++) {
+    uastcBlock[i] = Number((uastcVal >> BigInt(i * 8)) & 0xffn);
   }
+  const uastcZlib = new Uint8Array(deflateSync(uastcBlock));
+  const uastcDfd = buildMinimalDfd(166 /* UASTC */, 2 /* sRGB */, 16, false);
+  const uastcKtx2 = buildKtx2SingleLevel(4, 4, 3 /* Zlib */, uastcDfd, new Uint8Array(0), uastcZlib, 16);
+
+  const uastcRgbaTex = await ktx2.parse(uastcKtx2);
+  assert.equal(uastcRgbaTex.width, 4);
+  assert.equal(uastcRgbaTex.height, 4);
+  assert.equal(uastcRgbaTex.colorSpace, 'srgb');
+  assert.equal(uastcRgbaTex.compressed, false);
+  assert.equal(uastcRgbaTex.mipmaps.length, 1);
+  assert.deepEqual(Array.from(uastcRgbaTex.mipmaps[0].data.slice(0, 4)), [10, 200, 40, 255]);
+
+  // Transcodificación directa a formato GPU comprimido (ASTC 4x4) + fallback RGBA nivel 0
+  ktx2._caps = { astc: true, enums: { astcRgba: 0x93b0, astcSrgb: 0x93d0 } };
+  const uastcAstcTex = await ktx2.parse(uastcKtx2);
+  assert.equal(uastcAstcTex.compressed, true);
+  assert.equal(uastcAstcTex.formatId, 'astc-4x4');
+  assert.deepEqual(
+    Array.from(uastcAstcTex.mipmaps[0].data),
+    [0xfc, 0xfd, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 10, 10, 200, 200, 40, 40, 255, 255]
+  );
+  const decodedLvl0 = await uastcAstcTex._decodeRgbaLevel0();
+  assert.deepEqual(Array.from(decodedLvl0.data.slice(0, 4)), [10, 200, 40, 255]);
+
+  // 2. KTX2 BasisLZ / ETC1S con canal Alpha (linear)
+  const makeBitWriter = () => {
+    const bytes = [];
+    let cur = 0;
+    let bitPos = 0;
+    const writeBits = (val, n) => {
+      for (let i = 0; i < n; i++) {
+        if ((val >>> i) & 1) cur |= 1 << bitPos;
+        bitPos++;
+        if (bitPos === 8) {
+          bytes.push(cur);
+          cur = 0;
+          bitPos = 0;
+        }
+      }
+    };
+    const writeSingleSymHuffman = (sym) => {
+      const total = sym + 1;
+      writeBits(total, 14);
+      writeBits(19, 5);
+      for (let slot = 0; slot < 19; slot++) {
+        const cl = slot === 0 || slot === 1 || slot === 4 || slot === 18 ? 2 : 0;
+        writeBits(cl, 3);
+      }
+      let left = sym;
+      while (left > 0) {
+        if (left >= 11) {
+          const run = Math.min(left, 138);
+          writeBits(0b11, 2);
+          writeBits(run - 11, 7);
+          left -= run;
+        } else if (left >= 3) {
+          const run = Math.min(left, 10);
+          writeBits(0b01, 2);
+          writeBits(run - 3, 3);
+          left -= run;
+        } else {
+          writeBits(0b00, 2);
+          left -= 1;
+        }
+      }
+      writeBits(0b10, 2);
+    };
+    const finish = () => {
+      if (bitPos > 0) bytes.push(cur);
+      return new Uint8Array(bytes);
+    };
+    return { writeBits, writeSingleSymHuffman, finish };
+  };
+
+  const epW = makeBitWriter();
+  for (let i = 0; i < 4; i++) epW.writeSingleSymHuffman(0);
+  epW.writeBits(0, 1);
+  epW.writeBits(0, 4);
+  const epBytes = epW.finish();
+
+  const selW = makeBitWriter();
+  selW.writeBits(0, 1);
+  selW.writeBits(0, 1);
+  selW.writeBits(1, 1);
+  for (let i = 0; i < 4; i++) selW.writeBits(0xaa, 8);
+  const selBytes = selW.finish();
+
+  const tblW = makeBitWriter();
+  tblW.writeSingleSymHuffman(0xff);
+  tblW.writeSingleSymHuffman(0);
+  tblW.writeSingleSymHuffman(0);
+  tblW.writeSingleSymHuffman(0);
+  tblW.writeBits(64, 13);
+  const tblBytes = tblW.finish();
+
+  const slice = new Uint8Array([0, 0]);
+  const levelBlob = new Uint8Array(4);
+  levelBlob.set(slice, 0);
+  levelBlob.set(slice, 2);
+
+  const sgd = new Uint8Array(20 + 20 + epBytes.length + selBytes.length + tblBytes.length);
+  const sgdDv = new DataView(sgd.buffer);
+  sgdDv.setUint16(0, 1, true); // endpointCount
+  sgdDv.setUint16(2, 1, true); // selectorCount
+  sgdDv.setUint32(4, epBytes.length, true);
+  sgdDv.setUint32(8, selBytes.length, true);
+  sgdDv.setUint32(12, tblBytes.length, true);
+  sgdDv.setUint32(16, 0, true); // extendedByteLength
+  sgdDv.setUint32(20, 0, true); // flags
+  sgdDv.setUint32(24, 0, true); // rgbSliceByteOffset
+  sgdDv.setUint32(28, 2, true); // rgbSliceByteLength
+  sgdDv.setUint32(32, 2, true); // alphaSliceByteOffset
+  sgdDv.setUint32(36, 2, true); // alphaSliceByteLength
+  let sgdCursor = 40;
+  sgd.set(epBytes, sgdCursor); sgdCursor += epBytes.length;
+  sgd.set(selBytes, sgdCursor); sgdCursor += selBytes.length;
+  sgd.set(tblBytes, sgdCursor);
+
+  const etc1sDfd = buildMinimalDfd(163 /* ETC1S */, 1 /* Linear */, 0, true);
+  const etc1sKtx2 = buildKtx2SingleLevel(4, 4, 1 /* BasisLZ */, etc1sDfd, sgd, levelBlob, 0);
+
+  ktx2._caps = { enums: {} };
+  const etc1sRgbaTex = await ktx2.parse(etc1sKtx2);
+  assert.equal(etc1sRgbaTex.colorSpace, 'linear');
+  assert.equal(etc1sRgbaTex.compressed, false);
+  assert.deepEqual(Array.from(etc1sRgbaTex.mipmaps[0].data.slice(0, 4)), [134, 134, 134, 134]);
+
+  ktx2._caps = { etc: true, enums: { etc2Rgba: 0x9278, etc2SrgbRgba: 0x9279 } };
+  const etc1sEtc2Tex = await ktx2.parse(etc1sKtx2);
+  assert.equal(etc1sEtc2Tex.compressed, true);
+  assert.equal(etc1sEtc2Tex.formatId, 'etc2-rgba');
+  assert.equal(etc1sEtc2Tex.mipmaps[0].data[0], 134);
+  assert.equal(etc1sEtc2Tex.mipmaps[0].data[8], 16 << 3);
+
+  assert.equal(getMadeTextureCapabilities().loaded, true);
+  await assert.rejects(ktx2.parse(new Uint8Array([0xab, 0x4b, 0x54, 0x58])), /KTX2|truncado|inválido|MadeTexture/i);
   ktx2.dispose();
 });
 

@@ -7,11 +7,7 @@ import {
 } from '../libs/made-texture/made_texture.js';
 
 const DEFAULT_MADE_TEXTURE_WASM_URL = new URL('../libs/made-texture/made_texture.wasm', import.meta.url).href;
-const DEFAULT_BASIS_JS_URL = new URL('../libs/basis/basis_transcoder.js', import.meta.url).href;
-const DEFAULT_BASIS_WASM_URL = new URL('../libs/basis/basis_transcoder.wasm', import.meta.url).href;
 
-const _basisModuleCache = new Map();
-const _basisAssetsCache = new Map();
 let _cachedCaps = null;
 
 async function readResourceBytes(url) {
@@ -34,54 +30,7 @@ async function readResourceBytes(url) {
   throw new Error('KTX2Loader: fetch no disponible en este entorno.');
 }
 
-async function readResourceText(url) {
-  if (
-    url.startsWith('file://') &&
-    typeof process !== 'undefined' &&
-    process.versions &&
-    process.versions.node
-  ) {
-    const fs = await import('fs/promises');
-    const { fileURLToPath } = await import('url');
-    return fs.readFile(fileURLToPath(url), 'utf8');
-  }
-  if (typeof fetch === 'function') {
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`KTX2Loader: no se pudo cargar ${url} (${res.status})`);
-    return res.text();
-  }
-  throw new Error('KTX2Loader: fetch no disponible en este entorno.');
-}
 
-function loadBasisAssets(jsUrl, wasmUrl) {
-  const key = `${jsUrl}|${wasmUrl}`;
-  if (_basisAssetsCache.has(key)) return _basisAssetsCache.get(key);
-  const p = Promise.all([readResourceText(jsUrl), readResourceBytes(wasmUrl)]).then(([jsCode, wasmBinary]) => ({
-    jsCode,
-    wasmBinary,
-  }));
-  _basisAssetsCache.set(key, p);
-  return p;
-}
-
-function loadBasisModule(jsUrl, wasmUrl) {
-  const key = `${jsUrl}|${wasmUrl}`;
-  if (_basisModuleCache.has(key)) return _basisModuleCache.get(key);
-
-  const p = (async () => {
-    const { jsCode, wasmBinary } = await loadBasisAssets(jsUrl, wasmUrl);
-    let factory = typeof globalThis.BASIS === 'function' ? globalThis.BASIS : null;
-    if (!factory) {
-      factory = new Function(`${jsCode}\nreturn BASIS;`)();
-    }
-    const mod = await factory({ wasmBinary: wasmBinary.slice(0) });
-    if (mod.initializeBasis) mod.initializeBasis();
-    return mod;
-  })();
-
-  _basisModuleCache.set(key, p);
-  return p;
-}
 
 function probeWebGL2Caps(gl) {
   if (!gl) {
@@ -179,96 +128,7 @@ function getDefaultCaps() {
   return _cachedCaps;
 }
 
-function isPOT(n) {
-  return n > 0 && (n & (n - 1)) === 0;
-}
 
-function chooseTargetFromBasis(tf, caps, w, h, hasAlpha, colorSpace) {
-  const mult4 = w % 4 === 0 && h % 4 === 0;
-  const potSquare = isPOT(w) && isPOT(h) && w === h;
-  const wantSrgb = colorSpace === 'srgb';
-  const e = caps.enums || {};
-
-  if (caps.astc) {
-    return {
-      basisFormat: tf.cTFASTC_4x4_RGBA.value,
-      compressed: true,
-      formatId: 'astc-4x4',
-      glFormat: e.astcRgba,
-      glSrgbFormat: e.astcSrgb,
-    };
-  }
-  if (caps.bptc && mult4) {
-    return {
-      basisFormat: tf.cTFBC7_RGBA.value,
-      compressed: true,
-      formatId: 'bc7',
-      glFormat: e.bptcRgba,
-      glSrgbFormat: e.bptcSrgb,
-    };
-  }
-  if (caps.etc) {
-    if (hasAlpha) {
-      return {
-        basisFormat: tf.cTFETC2_RGBA.value,
-        compressed: true,
-        formatId: 'etc2-rgba',
-        glFormat: e.etc2Rgba,
-        glSrgbFormat: e.etc2SrgbRgba,
-      };
-    }
-    return {
-      basisFormat: tf.cTFETC1_RGB.value,
-      compressed: true,
-      formatId: 'etc2-rgb',
-      glFormat: e.etc2Rgb,
-      glSrgbFormat: e.etc2SrgbRgb,
-    };
-  }
-  if (caps.s3tc && mult4 && (!wantSrgb || caps.s3tcSrgb)) {
-    if (hasAlpha) {
-      return {
-        basisFormat: tf.cTFBC3_RGBA.value,
-        compressed: true,
-        formatId: 'bc3',
-        glFormat: e.s3tcRgba,
-        glSrgbFormat: e.s3tcSrgbRgba,
-      };
-    }
-    return {
-      basisFormat: tf.cTFBC1_RGB.value,
-      compressed: true,
-      formatId: 'bc1',
-      glFormat: e.s3tcRgb,
-      glSrgbFormat: e.s3tcSrgbRgb,
-    };
-  }
-  if (caps.etc1 && !hasAlpha && !wantSrgb) {
-    return {
-      basisFormat: tf.cTFETC1_RGB.value,
-      compressed: true,
-      formatId: null,
-      glFormat: e.etc1Rgb,
-      glSrgbFormat: null,
-    };
-  }
-  if (caps.pvrtc && potSquare && !wantSrgb) {
-    return {
-      basisFormat: (hasAlpha ? tf.cTFPVRTC1_4_RGBA : tf.cTFPVRTC1_4_RGB).value,
-      compressed: true,
-      formatId: null,
-      glFormat: hasAlpha ? e.pvrtcRgba : e.pvrtcRgb,
-      glSrgbFormat: null,
-    };
-  }
-  return {
-    basisFormat: tf.cTFRGBA32.value,
-    compressed: false,
-    formatId: null,
-    glFormat: null,
-    glSrgbFormat: null,
-  };
-}
 
 // Worker WebAssembly puro para MadeTexture (cero eval, cero new Function, cero Emscripten y sin .toString())
 const MADE_TEXTURE_WORKER_SCRIPT = `
@@ -387,92 +247,14 @@ self.onmessage = async (ev) => {
 };
 `;
 
-// Worker de respaldo temporal con Basis únicamente mientras no exista made_texture.wasm compilado
-const BASIS_WORKER_SCRIPT = `
-let basisPromise = null;
-const isPOT = (n) => n > 0 && (n & (n - 1)) === 0;
-const chooseTarget = ${chooseTargetFromBasis.toString()};
-
-function transcodeWithBasis(basis, bytes, caps, optColorSpace, forceRgba) {
-  const ktx2 = new basis.KTX2File(bytes);
-  try {
-    if (!ktx2.isValid()) throw new Error('KTX2Loader: archivo KTX2 inválido o corrupto.');
-    const width = ktx2.getWidth();
-    const height = ktx2.getHeight();
-    const levels = Math.max(1, ktx2.getLevels());
-    const hasAlpha = ktx2.getHasAlpha();
-    const dfdColorSpace = ktx2.getDFDTransferFunc() === basis.KTX2_KHR_DF_TRANSFER_SRGB ? 'srgb' : 'linear';
-    const colorSpace = optColorSpace || dfdColorSpace;
-
-    const target = forceRgba
-      ? { basisFormat: basis.transcoder_texture_format.cTFRGBA32.value, compressed: false, glFormat: null, glSrgbFormat: null }
-      : chooseTarget(basis.transcoder_texture_format, caps, width, height, hasAlpha, colorSpace);
-
-    if (!ktx2.startTranscoding()) throw new Error('KTX2Loader: no se pudo iniciar la transcodificación Basis.');
-
-    const mipmaps = [];
-    const transfers = [];
-    for (let level = 0; level < levels; level++) {
-      const info = ktx2.getImageLevelInfo(level, 0, 0);
-      const levelW = Math.max(1, info.origWidth || (width >> level));
-      const levelH = Math.max(1, info.origHeight || (height >> level));
-      const size = ktx2.getImageTranscodedSizeInBytes(level, 0, 0, target.basisFormat);
-      const dst = new Uint8Array(size);
-      if (!ktx2.transcodeImage(dst, level, 0, 0, target.basisFormat, 0, -1, -1)) {
-        throw new Error('KTX2Loader: falló la transcodificación del nivel mip ' + level);
-      }
-      mipmaps.push({ data: dst, width: levelW, height: levelH });
-      transfers.push(dst.buffer);
-    }
-    return { result: { width, height, colorSpace, target, mipmaps }, transfers };
-  } finally {
-    ktx2.close();
-    ktx2.delete();
-  }
-}
-
-self.onmessage = async (ev) => {
-  const msg = ev.data;
-  if (msg.type === 'init') {
-    basisPromise = (async () => {
-      const factory = new Function(msg.jsCode + '\\nreturn BASIS;')();
-      const mod = await factory({ wasmBinary: msg.wasmBinary });
-      if (mod.initializeBasis) mod.initializeBasis();
-      return mod;
-    })();
-    try {
-      await basisPromise;
-      self.postMessage({ type: 'ready' });
-    } catch (err) {
-      self.postMessage({ type: 'init-error', error: err.message || String(err) });
-    }
-    return;
-  }
-  if (msg.type === 'transcode') {
-    try {
-      const basis = await basisPromise;
-      const bytes = new Uint8Array(msg.buffer);
-      const { result, transfers } = transcodeWithBasis(basis, bytes, msg.caps, msg.colorSpace, msg.forceRgba);
-      self.postMessage({ type: 'done', id: msg.id, result }, transfers);
-    } catch (err) {
-      self.postMessage({ type: 'error', id: msg.id, error: err.message || String(err) });
-    }
-  }
-};
-`;
-
 /**
  * Cargador de texturas KTX2 (UASTC y ETC1S/BasisLZ) usando MadeTexture (`made_texture.wasm`, Rust puro)
- * con pool de Web Workers nativos WebAssembly y respaldo temporal a Basis mientras no exista `made_texture.wasm`.
+ * con pool de Web Workers nativos WebAssembly.
  */
 export class KTX2Loader {
   constructor(opts = {}) {
     this.madeTextureWasmUrl = opts.madeTextureWasmUrl || DEFAULT_MADE_TEXTURE_WASM_URL;
     this.useMadeTexture = opts.useMadeTexture !== undefined ? !!opts.useMadeTexture : true;
-    this.useBasisFallback = opts.useBasisFallback !== undefined ? !!opts.useBasisFallback : true;
-    this.jsUrl = opts.jsUrl || DEFAULT_BASIS_JS_URL;
-    this.wasmUrl = opts.wasmUrl || DEFAULT_BASIS_WASM_URL;
-    if (opts.transcoderPath) this.setTranscoderPath(opts.transcoderPath);
     this._caps = null;
     this.workerLimit = Math.max(
       1,
@@ -501,10 +283,7 @@ export class KTX2Loader {
     return this;
   }
 
-  setTranscoderPath(dirUrl) {
-    const base = dirUrl.endsWith('/') ? dirUrl : dirUrl + '/';
-    this.jsUrl = base + 'basis_transcoder.js';
-    this.wasmUrl = base + 'basis_transcoder.wasm';
+  setTranscoderPath() {
     return this;
   }
 
@@ -516,9 +295,6 @@ export class KTX2Loader {
   async getActiveBackend() {
     if (this.useMadeTexture && (await hasMadeTextureBinary(this.madeTextureWasmUrl))) {
       return 'made-texture';
-    }
-    if (this.useBasisFallback) {
-      return 'basis-fallback';
     }
     return 'none';
   }
@@ -547,67 +323,19 @@ export class KTX2Loader {
     return this.parse(buffer, opts);
   }
 
-  _transcodeMainThreadBasis(basis, bytes, caps, optColorSpace, forceRgba = false) {
-    const ktx2 = new basis.KTX2File(bytes);
-    try {
-      if (!ktx2.isValid()) throw new Error('KTX2Loader: archivo KTX2 inválido o corrupto.');
-      const levels = Math.max(1, ktx2.getLevels());
-      const width = ktx2.getWidth();
-      const height = ktx2.getHeight();
-      const hasAlpha = ktx2.getHasAlpha();
-      const dfdColorSpace =
-        ktx2.getDFDTransferFunc() === basis.KTX2_KHR_DF_TRANSFER_SRGB ? 'srgb' : 'linear';
-      const colorSpace = optColorSpace || dfdColorSpace;
-
-      const target = forceRgba
-        ? { basisFormat: basis.transcoder_texture_format.cTFRGBA32.value, compressed: false, glFormat: null, glSrgbFormat: null }
-        : chooseTargetFromBasis(basis.transcoder_texture_format, caps, width, height, hasAlpha, colorSpace);
-
-      if (!ktx2.startTranscoding()) {
-        throw new Error('KTX2Loader: no se pudo iniciar la transcodificación Basis.');
-      }
-
-      const mipmaps = [];
-      for (let level = 0; level < levels; level++) {
-        const info = ktx2.getImageLevelInfo(level, 0, 0);
-        const levelW = Math.max(1, info.origWidth || (width >> level));
-        const levelH = Math.max(1, info.origHeight || (height >> level));
-        const size = ktx2.getImageTranscodedSizeInBytes(level, 0, 0, target.basisFormat);
-        const dst = new Uint8Array(size);
-        if (!ktx2.transcodeImage(dst, level, 0, 0, target.basisFormat, 0, -1, -1)) {
-          throw new Error(`KTX2Loader: falló la transcodificación del nivel mip ${level}.`);
-        }
-        mipmaps.push({ data: dst, width: levelW, height: levelH });
-      }
-      return { width, height, colorSpace, target, mipmaps };
-    } finally {
-      ktx2.close();
-      ktx2.delete();
-    }
-  }
-
   async _createWorker(epoch = this._disposeEpoch) {
     const useMt = this.useMadeTexture && (await hasMadeTextureBinary(this.madeTextureWasmUrl));
-    let wasmBinary;
-    let jsCode = null;
-    let backend = 'made-texture';
-
-    if (useMt) {
-      wasmBinary = await loadMadeTextureWasmBytes(this.madeTextureWasmUrl);
-    } else if (this.useBasisFallback) {
-      backend = 'basis';
-      const assets = await loadBasisAssets(this.jsUrl, this.wasmUrl);
-      wasmBinary = assets.wasmBinary;
-      jsCode = assets.jsCode;
-    } else {
-      throw new Error('MadeTexture: made_texture.wasm no encontrado y el respaldo Basis está desactivado.');
+    if (!useMt) {
+      throw new Error('MadeTexture: made_texture.wasm no encontrado.');
     }
+
+    const wasmBinary = await loadMadeTextureWasmBytes(this.madeTextureWasmUrl);
+    const backend = 'made-texture';
 
     if (epoch !== this._disposeEpoch) throw new Error('KTX2Loader: liberado');
     if (!this._workerUrl || this._workerBackend !== backend) {
       if (this._workerUrl) URL.revokeObjectURL(this._workerUrl);
-      const src = backend === 'made-texture' ? MADE_TEXTURE_WORKER_SCRIPT : BASIS_WORKER_SCRIPT;
-      this._workerUrl = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+      this._workerUrl = URL.createObjectURL(new Blob([MADE_TEXTURE_WORKER_SCRIPT], { type: 'text/javascript' }));
       this._workerBackend = backend;
     }
 
@@ -635,10 +363,7 @@ export class KTX2Loader {
       w.addEventListener('message', onInitMsg);
       w.addEventListener('error', onInitErr);
       const copyWasm = wasmBinary.slice(0);
-      const payload = backend === 'made-texture'
-        ? { type: 'init', wasmBinary: copyWasm }
-        : { type: 'init', jsCode, wasmBinary: copyWasm };
-      w.postMessage(payload, [copyWasm]);
+      w.postMessage({ type: 'init', wasmBinary: copyWasm }, [copyWasm]);
     });
 
     w.addEventListener('message', (ev) => {
@@ -755,17 +480,7 @@ export class KTX2Loader {
         return;
       }
 
-      if (!this.useBasisFallback) {
-        throw new Error('MadeTexture: made_texture.wasm no disponible y respaldo Basis desactivado.');
-      }
-
-      const basis = await loadBasisModule(this.jsUrl, this.wasmUrl);
-      if (epoch !== this._disposeEpoch) {
-        task.reject(new Error('KTX2Loader: liberado'));
-        return;
-      }
-      const res = this._transcodeMainThreadBasis(basis, task.bytes, task.caps, task.colorSpace, task.forceRgba);
-      task.resolve(res);
+      throw new Error('MadeTexture: made_texture.wasm no disponible.');
     } catch (err) {
       task.reject(err);
     }

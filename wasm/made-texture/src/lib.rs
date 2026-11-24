@@ -126,7 +126,8 @@ pub extern "C" fn mt_ktx2_error_len(handle: *const Ktx2Handle) -> usize {
     if handle.is_null() {
         return 0;
     }
-    unsafe { (*handle).error_message.len() }
+    let h = unsafe { &*handle };
+    h.error_message.len()
 }
 
 #[no_mangle]
@@ -340,7 +341,8 @@ pub extern "C" fn mt_bytes_len(handle: *const BytesHandle) -> usize {
     if handle.is_null() {
         return 0;
     }
-    unsafe { (*handle).data.len() }
+    let h = unsafe { &*handle };
+    h.data.len()
 }
 
 #[no_mangle]
@@ -361,7 +363,8 @@ pub extern "C" fn mt_bytes_error_len(handle: *const BytesHandle) -> usize {
     if handle.is_null() {
         return 0;
     }
-    unsafe { (*handle).error_message.len() }
+    let h = unsafe { &*handle };
+    h.error_message.len()
 }
 
 #[no_mangle]

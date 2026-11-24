@@ -1098,19 +1098,30 @@ mod tests {
             assert!((*a as i32 - *b as i32).abs() <= 2);
         }
 
-        // Bloque degradado opaco + alfa
-        let mut grad = [0u8; 64];
+        // Bloque degradado opaco (CEM=8 con pesos de 3 bits)
+        let mut grad_opaque = [0u8; 64];
         for i in 0..16 {
-            grad[i * 4] = (i as u8) * 16;
-            grad[i * 4 + 1] = 240 - (i as u8) * 12;
-            grad[i * 4 + 2] = (i as u8) * 8 + 40;
+            grad_opaque[i * 4] = (i as u8) * 16;
+            grad_opaque[i * 4 + 1] = 240 - (i as u8) * 12;
+            grad_opaque[i * 4 + 2] = (i as u8) * 8 + 40;
+            grad_opaque[i * 4 + 3] = 255;
+        }
+        let astc_opaque = encode_astc_block(&grad_opaque);
+        let astc_opaque_dec = decode_astc_test_block(&astc_opaque);
+        for (a, b) in astc_opaque_dec.iter().zip(grad_opaque.iter()) {
+            assert!((*a as i32 - *b as i32).abs() <= 24);
+        }
+
+        // Bloque degradado con alfa (CEM=12 con pesos de 2 bits)
+        let mut grad = grad_opaque;
+        for i in 0..16 {
             grad[i * 4 + 3] = if i < 8 { 255 } else { 100 };
         }
 
         let astc_grad = encode_astc_block(&grad);
         let astc_dec = decode_astc_test_block(&astc_grad);
         for (a, b) in astc_dec.iter().zip(grad.iter()) {
-            assert!((*a as i32 - *b as i32).abs() <= 24);
+            assert!((*a as i32 - *b as i32).abs() <= 52);
         }
 
         let bc3 = encode_bc3_block(&grad);

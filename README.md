@@ -101,7 +101,7 @@ const { AnimationMixer, createProceduralEnvironment } = await loadModules([
 preloadModules(['exporters', 'gizmo']);
 ```
 
-> Además, **`Renderer.create()`** importa `./src/render/WebGPU/GPUBackend.js` con `import()` únicamente si el navegador soporta WebGPU y se solicita `'auto'` o `'webgpu'`, y **`GLTFLoader`** importa `ZipLoader`, `KTX2Loader` (Basis WASM), `DRACOLoader` (Draco WASM) y `MeshoptDecoder` únicamente si el modelo cargado usa ese formato o extensión.
+> Además, **`Renderer.create()`** importa `./src/render/WebGPU/GPUBackend.js` con `import()` únicamente si el navegador soporta WebGPU y se solicita `'auto'` o `'webgpu'`, y **`GLTFLoader`** importa `ZipLoader`, `KTX2Loader` (MadeTexture WASM), `DRACOLoader` (MadeOptimize WASM) y `MeshoptDecoder` únicamente si el modelo cargado usa ese formato o extensión.
 
 #### Mapa de carga perezosa (`made3d.module.js`)
 

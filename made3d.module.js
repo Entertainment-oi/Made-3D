@@ -71,6 +71,7 @@ const _moduleRegistry = {
   objLoader: () => import('./src/loaders/OBJLoader.js'),
   ktx2Loader: () => import('./src/loaders/KTX2Loader.js'),
   dracoLoader: () => import('./src/loaders/DRACOLoader.js'),
+  madeOptimize: () => import('./src/libs/made-optimize/made_optimize.js'),
   zipLoader: () => import('./src/loaders/ZipLoader.js'),
   exporters: () => import('./src/modules/exporters.js'),
   gltfExporter: () => import('./src/exporters/GLTFExporter.js'),
@@ -139,6 +140,7 @@ export const loadGLTFLoader = () => loadModule('gltfLoader');
 export const loadOBJLoader = () => loadModule('objLoader');
 export const loadKTX2Loader = () => loadModule('ktx2Loader');
 export const loadDRACOLoader = () => loadModule('dracoLoader');
+export const loadMadeOptimizeModule = () => loadModule('madeOptimize');
 export const loadZipLoader = () => loadModule('zipLoader');
 
 export const loadExporters = () => loadModule('exporters');

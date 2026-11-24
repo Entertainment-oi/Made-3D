@@ -163,6 +163,10 @@ export class GLTFExporter {
   async parse(input, opts = {}) {
     const binary = opts.binary !== undefined ? !!opts.binary : true;
     const onlyVisible = opts.onlyVisible !== undefined ? !!opts.onlyVisible : true;
+    const useDraco = Boolean(opts.draco);
+    const dracoOpts = typeof opts.draco === 'object' && opts.draco ? opts.draco : {};
+    const useOptimize = Boolean(opts.optimize);
+    const optimizeOpts = typeof opts.optimize === 'object' && opts.optimize ? opts.optimize : {};
     const roots = Array.isArray(input) ? input : [input];
     const rootSet = new Set(roots.filter(Boolean));
 
@@ -188,6 +192,7 @@ export class GLTFExporter {
     };
 
     const extensionsUsed = new Set();
+    const extensionsRequired = new Set();
     const chunks = [];
     let byteLength = 0;
 
@@ -213,6 +218,19 @@ export class GLTFExporter {
       return idx;
     };
 
+    const computeAccessorMinMax = (typed, itemSize, count) => {
+      const min = new Array(itemSize).fill(Infinity);
+      const max = new Array(itemSize).fill(-Infinity);
+      for (let i = 0; i < count; i++) {
+        for (let k = 0; k < itemSize; k++) {
+          const v = typed[i * itemSize + k];
+          if (v < min[k]) min[k] = v;
+          if (v > max[k]) max[k] = v;
+        }
+      }
+      return { min, max };
+    };
+
     const addAccessor = (typed, type, componentType, target = null, computeMinMax = false) => {
       const bvIdx = addBufferView(typed, target);
       const itemSize = type === 'SCALAR' ? 1 : type === 'VEC2' ? 2 : type === 'VEC3' ? 3 : type === 'VEC4' ? 4 : 16;
@@ -224,15 +242,20 @@ export class GLTFExporter {
         type,
       };
       if (computeMinMax && count > 0) {
-        const min = new Array(itemSize).fill(Infinity);
-        const max = new Array(itemSize).fill(-Infinity);
-        for (let i = 0; i < count; i++) {
-          for (let k = 0; k < itemSize; k++) {
-            const v = typed[i * itemSize + k];
-            if (v < min[k]) min[k] = v;
-            if (v > max[k]) max[k] = v;
-          }
-        }
+        const { min, max } = computeAccessorMinMax(typed, itemSize, count);
+        acc.min = min;
+        acc.max = max;
+      }
+      const idx = json.accessors.length;
+      json.accessors.push(acc);
+      return idx;
+    };
+
+    const addVirtualAccessor = (count, type, componentType, typedForMinMax = null) => {
+      const itemSize = type === 'SCALAR' ? 1 : type === 'VEC2' ? 2 : type === 'VEC3' ? 3 : type === 'VEC4' ? 4 : 16;
+      const acc = { componentType, count, type };
+      if (typedForMinMax && count > 0) {
+        const { min, max } = computeAccessorMinMax(typedForMinMax, itemSize, count);
         acc.min = min;
         acc.max = max;
       }
@@ -413,48 +436,62 @@ export class GLTFExporter {
           targetNames = names;
         }
       }
-      const key = `${geo.id || ''}|${mat ? mat.id : ''}|${drawMode}|${includeSkinAttrs ? maxJointIndex : -2}|${targetNames ? targetNames.join(',') : ''}`;
-      if (geo.id && meshCache.has(key)) return meshCache.get(key);
+      const sourceGeoId = geo.id;
+      const key = `${sourceGeoId || ''}|${mat ? mat.id : ''}|${drawMode}|${includeSkinAttrs ? maxJointIndex : -2}|${targetNames ? targetNames.join(',') : ''}`;
+      if (sourceGeoId && meshCache.has(key)) return meshCache.get(key);
+
+      if (useOptimize && drawMode === 'triangles' && morphCount === 0) {
+        const { optimizeGeometry } = await import('../libs/made-optimize/made_optimize.js');
+        geo = await optimizeGeometry(geo, {
+          dedupStep: optimizeOpts.dedupStep || 0,
+          weldPositionsOnly: !!optimizeOpts.weldPositionsOnly,
+          inPlace: false,
+          wasmUrl: optimizeOpts.wasmUrl,
+        });
+      }
 
       const attrs = {};
       const pos = geo.attributes.position;
       if (!pos) return undefined;
 
       const posArr = pos.array instanceof Float32Array ? pos.array : Float32Array.from(pos.array);
-      attrs.POSITION = addAccessor(posArr, 'VEC3', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER, true);
+      const nArr = geo.attributes.normal
+        ? geo.attributes.normal.array instanceof Float32Array
+          ? geo.attributes.normal.array
+          : Float32Array.from(geo.attributes.normal.array)
+        : null;
+      const uArr = geo.attributes.uv
+        ? geo.attributes.uv.array instanceof Float32Array
+          ? geo.attributes.uv.array
+          : Float32Array.from(geo.attributes.uv.array)
+        : null;
+      const u1Arr = geo.attributes.uv1
+        ? geo.attributes.uv1.array instanceof Float32Array
+          ? geo.attributes.uv1.array
+          : Float32Array.from(geo.attributes.uv1.array)
+        : null;
 
-      if (geo.attributes.normal) {
-        const n = geo.attributes.normal;
-        const nArr = n.array instanceof Float32Array ? n.array : Float32Array.from(n.array);
-        attrs.NORMAL = addAccessor(nArr, 'VEC3', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
-      }
-      if (geo.attributes.uv) {
-        const u = geo.attributes.uv;
-        const uArr = u.array instanceof Float32Array ? u.array : Float32Array.from(u.array);
-        attrs.TEXCOORD_0 = addAccessor(uArr, 'VEC2', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
-      }
-      if (geo.attributes.uv1) {
-        const u1 = geo.attributes.uv1;
-        const u1Arr = u1.array instanceof Float32Array ? u1.array : Float32Array.from(u1.array);
-        attrs.TEXCOORD_1 = addAccessor(u1Arr, 'VEC2', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
-      }
+      let cArr = null;
+      let cItemSize = 3;
       if (geo.attributes.color) {
         const col = geo.attributes.color;
-        const cArr = Float32Array.from(col.array);
+        cItemSize = col.itemSize === 4 ? 4 : 3;
+        cArr = Float32Array.from(col.array);
         for (let i = 0; i < cArr.length; i += col.itemSize) {
           cArr[i] = s2l(cArr[i]);
           cArr[i + 1] = s2l(cArr[i + 1]);
           cArr[i + 2] = s2l(cArr[i + 2]);
         }
-        const vecType = col.itemSize === 4 ? 'VEC4' : 'VEC3';
-        attrs.COLOR_0 = addAccessor(cArr, vecType, COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
       }
+
+      let jArr = null;
+      let wArr = null;
       if (includeSkinAttrs && geo.attributes.skinIndex && geo.attributes.skinWeight) {
         const si = geo.attributes.skinIndex;
         const sw = geo.attributes.skinWeight;
         const count4 = Math.min(si.array.length, sw.array.length);
-        const jArr = new Uint16Array(count4);
-        const wArr = new Float32Array(count4);
+        jArr = new Uint16Array(count4);
+        wArr = new Float32Array(count4);
         for (let i = 0; i + 3 < count4; i += 4) {
           let sum = 0;
           for (let k = 0; k < 4; k++) {
@@ -464,59 +501,203 @@ export class GLTFExporter {
             sum += w;
             if (w > 0) {
               const rawJ = Math.round(si.array[i + k]) || 0;
-              jArr[i + k] = maxJointIndex >= 0
-                ? Math.max(0, Math.min(maxJointIndex, rawJ))
-                : Math.max(0, rawJ);
+              jArr[i + k] =
+                maxJointIndex >= 0 ? Math.max(0, Math.min(maxJointIndex, rawJ)) : Math.max(0, rawJ);
             } else {
               jArr[i + k] = 0;
             }
           }
           if (sum > 0 && Math.abs(sum - 1) > 1e-4) {
             const inv = 1 / sum;
-            wArr[i] *= inv; wArr[i + 1] *= inv; wArr[i + 2] *= inv; wArr[i + 3] *= inv;
+            wArr[i] *= inv;
+            wArr[i + 1] *= inv;
+            wArr[i + 2] *= inv;
+            wArr[i + 3] *= inv;
           }
         }
-        attrs.JOINTS_0 = addAccessor(jArr, 'VEC4', COMPONENT_USHORT, TARGET_ARRAY_BUFFER);
-        attrs.WEIGHTS_0 = addAccessor(wArr, 'VEC4', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
       }
+
+      const rawIdx = geo.index && geo.index.array && geo.index.array.length ? geo.index.array : null;
+      const dracoIndicesU32 =
+        rawIdx
+          ? rawIdx instanceof Uint32Array
+            ? rawIdx
+            : Uint32Array.from(rawIdx)
+          : pos.count >= 3 && pos.count % 3 === 0
+          ? Uint32Array.from({ length: pos.count }, (_, k) => k)
+          : null;
+
+      const canDraco =
+        useDraco &&
+        drawMode === 'triangles' &&
+        morphCount === 0 &&
+        pos.count > 0 &&
+        dracoIndicesU32 &&
+        dracoIndicesU32.length >= 3 &&
+        dracoIndicesU32.length % 3 === 0;
 
       const prim = {
         attributes: attrs,
         mode: drawMode === 'lines' ? 1 : drawMode === 'points' ? 0 : 4,
       };
 
-      const morphPos = geo.morphAttributes && geo.morphAttributes.position;
-      const morphNor = geo.morphAttributes && geo.morphAttributes.normal;
-      if (Array.isArray(morphPos) && morphPos.length > 0) {
-        prim.targets = [];
-        for (let t = 0; t < morphPos.length; t++) {
-          const tgt = {};
-          const mp = morphPos[t];
-          const mpArr = mp.array instanceof Float32Array ? mp.array : Float32Array.from(mp.array);
-          tgt.POSITION = addAccessor(mpArr, 'VEC3', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER, true);
-          if (morphNor && morphNor[t]) {
-            const mn = morphNor[t];
-            const mnArr = mn.array instanceof Float32Array ? mn.array : Float32Array.from(mn.array);
-            tgt.NORMAL = addAccessor(mnArr, 'VEC3', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
-          }
-          prim.targets.push(tgt);
-        }
-      }
+      if (canDraco) {
+        const { encodeDraco } = await import('../libs/made-optimize/made_optimize.js');
+        const q = dracoOpts.quantization || {};
+        const dracoInputs = [];
+        const dracoAttrIds = {};
+        let nextUid = 0;
 
-      if (geo.index && geo.index.array && geo.index.array.length) {
-        const rawIdx = geo.index.array;
-        let maxIdx = 0;
-        for (let i = 0; i < rawIdx.length; i++) if (rawIdx[i] > maxIdx) maxIdx = rawIdx[i];
-        const useUint = maxIdx > 65535;
-        const iArr = useUint
-          ? rawIdx instanceof Uint32Array ? rawIdx : Uint32Array.from(rawIdx)
-          : rawIdx instanceof Uint16Array ? rawIdx : Uint16Array.from(rawIdx);
-        prim.indices = addAccessor(
-          iArr,
-          'SCALAR',
-          useUint ? COMPONENT_UINT : COMPONENT_USHORT,
-          TARGET_ELEMENT_ARRAY_BUFFER
+        attrs.POSITION = addVirtualAccessor(pos.count, 'VEC3', COMPONENT_FLOAT, posArr);
+        dracoAttrIds.POSITION = nextUid;
+        dracoInputs.push({
+          attributeType: 0,
+          numComponents: 3,
+          uniqueId: nextUid++,
+          quantizationBits: q.POSITION ?? dracoOpts.positionQuantization ?? 14,
+          values: posArr,
+        });
+
+        if (nArr) {
+          attrs.NORMAL = addVirtualAccessor(pos.count, 'VEC3', COMPONENT_FLOAT);
+          dracoAttrIds.NORMAL = nextUid;
+          dracoInputs.push({
+            attributeType: 1,
+            numComponents: 3,
+            uniqueId: nextUid++,
+            quantizationBits: q.NORMAL ?? dracoOpts.normalQuantization ?? 10,
+            values: nArr,
+          });
+        }
+        if (uArr) {
+          attrs.TEXCOORD_0 = addVirtualAccessor(pos.count, 'VEC2', COMPONENT_FLOAT);
+          dracoAttrIds.TEXCOORD_0 = nextUid;
+          dracoInputs.push({
+            attributeType: 3,
+            numComponents: 2,
+            uniqueId: nextUid++,
+            quantizationBits: q.TEXCOORD_0 ?? dracoOpts.uvQuantization ?? 12,
+            values: uArr,
+          });
+        }
+        if (u1Arr) {
+          attrs.TEXCOORD_1 = addVirtualAccessor(pos.count, 'VEC2', COMPONENT_FLOAT);
+          dracoAttrIds.TEXCOORD_1 = nextUid;
+          dracoInputs.push({
+            attributeType: 3,
+            numComponents: 2,
+            uniqueId: nextUid++,
+            quantizationBits: q.TEXCOORD_1 ?? dracoOpts.uvQuantization ?? 12,
+            values: u1Arr,
+          });
+        }
+        if (cArr) {
+          attrs.COLOR_0 = addVirtualAccessor(pos.count, cItemSize === 4 ? 'VEC4' : 'VEC3', COMPONENT_FLOAT);
+          dracoAttrIds.COLOR_0 = nextUid;
+          dracoInputs.push({
+            attributeType: 2,
+            numComponents: cItemSize,
+            uniqueId: nextUid++,
+            quantizationBits: q.COLOR_0 ?? dracoOpts.colorQuantization ?? 8,
+            values: cArr,
+          });
+        }
+        if (jArr && wArr) {
+          attrs.JOINTS_0 = addVirtualAccessor(pos.count, 'VEC4', COMPONENT_USHORT);
+          dracoAttrIds.JOINTS_0 = nextUid;
+          dracoInputs.push({
+            attributeType: 4,
+            numComponents: 4,
+            uniqueId: nextUid++,
+            quantizationBits: 0,
+            values: Float32Array.from(jArr),
+          });
+
+          attrs.WEIGHTS_0 = addVirtualAccessor(pos.count, 'VEC4', COMPONENT_FLOAT);
+          dracoAttrIds.WEIGHTS_0 = nextUid;
+          dracoInputs.push({
+            attributeType: 4,
+            numComponents: 4,
+            uniqueId: nextUid++,
+            quantizationBits: q.WEIGHTS_0 ?? 8,
+            values: wArr,
+          });
+        }
+
+        const dracoBytes = await encodeDraco(
+          {
+            numPoints: pos.count,
+            indices: dracoIndicesU32,
+            attributes: dracoInputs,
+          },
+          dracoOpts.wasmUrl
         );
+        const dracoBvIdx = addBufferView(dracoBytes);
+
+        let maxIdx = 0;
+        for (let i = 0; i < dracoIndicesU32.length; i++) if (dracoIndicesU32[i] > maxIdx) maxIdx = dracoIndicesU32[i];
+        prim.indices = addVirtualAccessor(
+          dracoIndicesU32.length,
+          'SCALAR',
+          maxIdx > 65535 ? COMPONENT_UINT : COMPONENT_USHORT
+        );
+        prim.extensions = {
+          KHR_draco_mesh_compression: {
+            bufferView: dracoBvIdx,
+            attributes: dracoAttrIds,
+          },
+        };
+        extensionsUsed.add('KHR_draco_mesh_compression');
+        extensionsRequired.add('KHR_draco_mesh_compression');
+      } else {
+        attrs.POSITION = addAccessor(posArr, 'VEC3', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER, true);
+        if (nArr) attrs.NORMAL = addAccessor(nArr, 'VEC3', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
+        if (uArr) attrs.TEXCOORD_0 = addAccessor(uArr, 'VEC2', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
+        if (u1Arr) attrs.TEXCOORD_1 = addAccessor(u1Arr, 'VEC2', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
+        if (cArr) {
+          attrs.COLOR_0 = addAccessor(cArr, cItemSize === 4 ? 'VEC4' : 'VEC3', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
+        }
+        if (jArr && wArr) {
+          attrs.JOINTS_0 = addAccessor(jArr, 'VEC4', COMPONENT_USHORT, TARGET_ARRAY_BUFFER);
+          attrs.WEIGHTS_0 = addAccessor(wArr, 'VEC4', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
+        }
+
+        const morphPos = geo.morphAttributes && geo.morphAttributes.position;
+        const morphNor = geo.morphAttributes && geo.morphAttributes.normal;
+        if (Array.isArray(morphPos) && morphPos.length > 0) {
+          prim.targets = [];
+          for (let t = 0; t < morphPos.length; t++) {
+            const tgt = {};
+            const mp = morphPos[t];
+            const mpArr = mp.array instanceof Float32Array ? mp.array : Float32Array.from(mp.array);
+            tgt.POSITION = addAccessor(mpArr, 'VEC3', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER, true);
+            if (morphNor && morphNor[t]) {
+              const mn = morphNor[t];
+              const mnArr = mn.array instanceof Float32Array ? mn.array : Float32Array.from(mn.array);
+              tgt.NORMAL = addAccessor(mnArr, 'VEC3', COMPONENT_FLOAT, TARGET_ARRAY_BUFFER);
+            }
+            prim.targets.push(tgt);
+          }
+        }
+
+        if (rawIdx) {
+          let maxIdx = 0;
+          for (let i = 0; i < rawIdx.length; i++) if (rawIdx[i] > maxIdx) maxIdx = rawIdx[i];
+          const useUint = maxIdx > 65535;
+          const iArr = useUint
+            ? rawIdx instanceof Uint32Array
+              ? rawIdx
+              : Uint32Array.from(rawIdx)
+            : rawIdx instanceof Uint16Array
+            ? rawIdx
+            : Uint16Array.from(rawIdx);
+          prim.indices = addAccessor(
+            iArr,
+            'SCALAR',
+            useUint ? COMPONENT_UINT : COMPONENT_USHORT,
+            TARGET_ELEMENT_ARRAY_BUFFER
+          );
+        }
       }
 
       const matIdx = await exportMaterial(mat);
@@ -529,7 +710,7 @@ export class GLTFExporter {
         meshDef.extras = { targetNames };
       }
       json.meshes.push(meshDef);
-      if (geo.id) meshCache.set(key, meshIdx);
+      if (sourceGeoId) meshCache.set(key, meshIdx);
       return meshIdx;
     };
 
@@ -737,6 +918,7 @@ export class GLTFExporter {
       if (!json[k].length) delete json[k];
     }
     if (extensionsUsed.size) json.extensionsUsed = Array.from(extensionsUsed);
+    if (extensionsRequired.size) json.extensionsRequired = Array.from(extensionsRequired);
 
     const binBytes = new Uint8Array(byteLength);
     let cursor = 0;

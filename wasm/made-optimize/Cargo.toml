@@ -1,0 +1,17 @@
+[package]
+name = "made-optimize"
+version = "0.2.0"
+edition = "2021"
+description = "MadeOptimize: motor WebAssembly 100% propio en Rust para compresión/descompresión Draco, Meshopt y optimización GPU de mallas en Made3D"
+license = "MIT"
+
+[lib]
+name = "made_optimize"
+crate-type = ["cdylib", "rlib"]
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -9,7 +9,14 @@ import {
   Vec3,
 } from '../made3d.module.js';
 import { Bone, Skeleton, SkinnedMesh } from '../src/modules/rigging.js';
-import { GLTFLoader, OBJLoader, KTX2Loader } from '../src/modules/loaders.js';
+import {
+  GLTFLoader,
+  OBJLoader,
+  KTX2Loader,
+  DRACOLoader,
+  encodeDraco,
+  optimizeGeometry,
+} from '../src/modules/loaders.js';
 import { GLTFExporter, OBJExporter } from '../src/modules/exporters.js';
 
 test('GLTFExporter y GLTFLoader realizan ida y vuelta GLB binaria preservando geometría y PBR', async () => {
@@ -178,5 +185,101 @@ test('OBJLoader conserva vn parciales, OBJExporter conserva normales con skinnin
   });
   ktx2.dispose();
   await assert.rejects(pendingPromise, /liberado/i);
+});
+
+test('MadeOptimize: GLTFExporter (draco: true) y GLTFLoader/DRACOLoader realizan ida y vuelta con KHR_draco_mesh_compression', async () => {
+  const scene = new Scene();
+  const box = new BoxGeometry(2, 2, 2);
+  const mesh = new Mesh(box, new StandardMaterial({ color: 0x4499ff, roughness: 0.4, metalness: 0.2 }));
+  mesh.name = 'CajaDraco';
+  scene.add(mesh);
+
+  const exporter = new GLTFExporter();
+  const gltfJson = await exporter.parse(scene, { binary: false, draco: true });
+  assert.ok(gltfJson.extensionsUsed.includes('KHR_draco_mesh_compression'));
+  assert.ok(gltfJson.extensionsRequired.includes('KHR_draco_mesh_compression'));
+  const prim = gltfJson.meshes[0].primitives[0];
+  assert.ok(prim.extensions?.KHR_draco_mesh_compression);
+  assert.equal(gltfJson.accessors[prim.attributes.POSITION].bufferView, undefined);
+  assert.ok(Array.isArray(gltfJson.accessors[prim.attributes.POSITION].min));
+  assert.ok(Array.isArray(gltfJson.accessors[prim.attributes.POSITION].max));
+
+  const glb = await exporter.parse(scene, { binary: true, draco: true });
+  const loader = new GLTFLoader();
+  const imported = await loader.parse(glb);
+  const meshes = [];
+  imported.scene.traverse((n) => {
+    if (n && n.isMesh) meshes.push(n);
+  });
+
+  assert.equal(meshes.length, 1);
+  const outGeo = meshes[0].geometry;
+  assert.equal(outGeo.attributes.position.count, 24);
+  assert.equal(outGeo.attributes.normal.count, 24);
+  assert.equal(outGeo.attributes.uv.count, 24);
+  assert.equal(outGeo.index.count, 36);
+
+  // Verificar precisión dentro de la tolerancia de cuantización de 14 bits
+  const srcPos = box.attributes.position.array;
+  const dstPos = outGeo.attributes.position.array;
+  for (let i = 0; i < srcPos.length; i++) {
+    assert.ok(Math.abs(srcPos[i] - dstPos[i]) < 1e-3);
+  }
+});
+
+test('MadeOptimize: optimizeGeometry deduplica vértices en sopa de triángulos y conserva costuras de BoxGeometry', async () => {
+  const quad = new Geometry();
+  quad.setAttribute(
+    'position',
+    new Float32Array([
+      0, 0, 0, 1, 0, 0, 1, 1, 0,
+      0, 0, 0, 1, 1, 0, 0, 1, 0,
+    ]),
+    3
+  );
+  quad.setAttribute(
+    'normal',
+    new Float32Array([
+      0, 0, 1, 0, 0, 1, 0, 0, 1,
+      0, 0, 1, 0, 0, 1, 0, 0, 1,
+    ]),
+    3
+  );
+
+  const optimized = await optimizeGeometry(quad, { inPlace: false });
+  assert.equal(optimized.attributes.position.count, 4);
+  assert.equal(optimized.attributes.normal.count, 4);
+  assert.equal(optimized.index.count, 6);
+
+  // BoxGeometry tiene 24 vértices con normales distintas en cada esquina: optimize: true no debe colapsarlos a 8
+  const scene = new Scene();
+  scene.add(new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial({ color: 0xffffff })));
+  const glbOpt = await new GLTFExporter().parse(scene, { binary: true, optimize: true });
+  const reloaded = await new GLTFLoader().parse(glbOpt);
+  let outBox = null;
+  reloaded.scene.traverse((n) => {
+    if (n && n.isMesh) outBox = n;
+  });
+  assert.equal(outBox.geometry.attributes.position.count, 24);
+
+  // DRACOLoader sin attributeMap (modo .drc) y manejo de errores sin fallback clásico
+  const drcBytes = await encodeDraco({
+    numPoints: 4,
+    indices: [0, 1, 2, 0, 2, 3],
+    attributes: [
+      {
+        attributeType: 0,
+        numComponents: 3,
+        uniqueId: 0,
+        quantizationBits: 14,
+        values: [0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 1, 0],
+      },
+    ],
+  });
+  const dracoLoader = new DRACOLoader({ useLegacyFallback: false });
+  const decodedGeo = await dracoLoader.decodeGeometry(drcBytes);
+  assert.equal(decodedGeo.attributes.position.count, 4);
+  assert.equal(decodedGeo.index.count, 6);
+  await assert.rejects(dracoLoader.decodeGeometry(new Uint8Array([1, 2, 3, 4])), /MadeOptimize/);
 });
 

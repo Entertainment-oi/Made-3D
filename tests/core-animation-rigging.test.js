@@ -24,9 +24,18 @@ import {
   loadRigging,
 } from '../made3d.module.js';
 import { InstancedMesh } from '../src/objects/InstancedMesh.js';
+import { ChunkedInstances } from '../src/objects/ChunkedInstances.js';
 import { cloneSkinned } from '../src/modules/rigging.js';
 import { ensureEditableBase, canIncrementSubsurf } from '../src/modules/modeling.js';
 import { CameraHelper, drawCamerasOverlay } from '../src/modules/helpers.js';
+import { GizmoBase } from '../src/modules/gizmo.js';
+import {
+  isCssLandscape90,
+  getLogicalViewportSize,
+  clientToViewportPoint,
+  clientToLocalPointFromRect,
+  isMobilePhoneDevice,
+} from '../src/core/viewportCoords.js';
 
 test('made3d.module.js mantiene núcleo ligero y carga submódulos pesados bajo demanda con import()', async () => {
   // 1. El punto de entrada principal no debe re-exportar clases pesadas síncronamente
@@ -594,7 +603,191 @@ test('HistoryManager nativo de la librería deshace y rehace transform + auto-ke
   assert.ok(events.includes('push') && events.includes('undo') && events.includes('redo'));
 });
 
+test('Regresión: Geometry.setIndex(null), HistoryManager vacío, ChunkedInstances BVH/fallback, SkinnedMesh CPU/unbound, Skeleton, morph tracks y GizmoBase cleanup', async () => {
+  const { Bone, Skeleton, SkinnedMesh } = await loadRigging();
+  const { AnimationClip, NumberArrayKeyframeTrack } = await loadAnimation();
+  const { HistoryManager } = MadeCore;
 
+  // 1. Geometry.setIndex(null) limpia índice sin lanzar excepción
+  const boxGeo = new BoxGeometry(1, 1, 1);
+  assert.ok(boxGeo.index);
+  assert.equal(boxGeo.setIndex(null), boxGeo);
+  assert.equal(boxGeo.index, null);
 
+  // 2. HistoryManager no dispara onBeforeUndo/onBeforeRedo cuando la pila está vacía
+  let beforeUndoCalls = 0;
+  let beforeRedoCalls = 0;
+  const hm = new HistoryManager();
+  hm.setHooks({
+    onBeforeUndo: () => { beforeUndoCalls++; },
+    onBeforeRedo: () => { beforeRedoCalls++; },
+  });
+  assert.equal(hm.undo(), null);
+  assert.equal(hm.redo(), null);
+  assert.equal(beforeUndoCalls, 0);
+  assert.equal(beforeRedoCalls, 0);
 
+  // 3. ChunkedInstances sincroniza _visibleChunks al alternar entre ruta fallback y ruta BVH
+  await MadeCore.loadMadeOptimizeModule();
+  const chunked = new ChunkedInstances(new BoxGeometry(1, 1, 1), new StandardMaterial(), { chunkSize: 10 });
+  for (let i = 0; i < 8; i++) {
+    chunked.addInstance(new Vec3(i * 20, 0, 0), new Quat(), new Vec3(1, 1, 1));
+  }
+  chunked.build();
+  chunked.updateMatrixWorld();
+
+  const cam = new PerspectiveCamera(50, 1, 0.1, 100);
+  cam.position.set(0, 0, 10);
+  cam.lookAt(0, 0, 0);
+  cam.updateMatrixWorld();
+  cam.updateProjection();
+
+  const farChunk = chunked.chunks.get(chunked._key(14, 0, 0));
+  assert.ok(farChunk);
+
+  // Ruta fallback (sin _viewProj): marca visibles todos los chunks y debe registrarlos en _visibleChunks
+  chunked.onBeforeRender({}, cam);
+  assert.equal(chunked._visibleChunks.length, 8);
+  assert.equal(farChunk.meshes[0].visible, true);
+
+  // Ruta BVH (con _viewProj): los chunks fuera del frustum deben ocultarse
+  const viewProj = cam.projectionMatrix.clone().multiply(cam.matrixWorldInverse);
+  chunked.onBeforeRender({ _viewProj: viewProj }, cam);
+  assert.equal(farChunk.meshes[0].visible, false);
+
+  // 4. SkinnedMesh sin esqueleto hace fallback a super.raycast y copy/cloneSkinned preservan _bind en CPU skinning
+  const unboundGeo = new BoxGeometry(1, 1, 1);
+  const unboundSkinned = new SkinnedMesh(unboundGeo, new StandardMaterial());
+  unboundSkinned.updateMatrixWorld();
+  const rc = new Raycaster().set(new Vec3(0, 0, 5), new Vec3(0, 0, -1));
+  const unboundHits = [];
+  unboundSkinned.raycast(rc, unboundHits);
+  assert.ok(unboundHits.length > 0);
+
+  const skinGeo = new Geometry();
+  skinGeo.setAttribute('position', new Float32Array([0, 0, 0, 0, 2, 0, 1, 2, 0]), 3);
+  skinGeo.setAttribute('normal', new Float32Array([0, 0, 1, 0, 0, 1, 0, 0, 1]), 3);
+  skinGeo.setAttribute('skinIndex', new Float32Array([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), 4);
+  skinGeo.setAttribute('skinWeight', new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]), 4);
+  const bone = new Bone();
+  const skel = new Skeleton([bone]);
+  const cpuSkinned = new SkinnedMesh(skinGeo, new StandardMaterial());
+  cpuSkinned.gpuSkinning = false;
+  cpuSkinned.add(bone);
+  cpuSkinned.bind(skel);
+  bone.position.set(5, 0, 0);
+  cpuSkinned.updateWorldMatrix(true, true);
+  skel.update();
+  cpuSkinned.updateSkinnedVertices();
+  assert.equal(cpuSkinned.geometry.attributes.position.array[0], 5);
+
+  const copiedCpu = new SkinnedMesh(cpuSkinned.geometry.clone(), cpuSkinned.material).copy(cpuSkinned, false);
+  assert.equal(copiedCpu._bind[0], 0);
+  const clonedRoot = cloneSkinned(cpuSkinned, { copyGeometry: true });
+  assert.equal(clonedRoot._bind[0], 0);
+
+  // 5. Skeleton.update tolera huecos en bones / boneInverses
+  const sparseSkel = new Skeleton([bone, null], [skel.boneInverses[0].clone()]);
+  sparseSkel.update();
+  assert.equal(sparseSkel.boneMatrices[16], 1);
+
+  // 6. AnimationClip.getOrCreateTrack/setObjectKeyframe crea NumberArrayKeyframeTrack para morphTargetInfluences/weights
+  const morphMesh = new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial());
+  morphMesh.name = 'CaraMorph';
+  morphMesh.morphTargetInfluences = [0.25, 0.75];
+  const morphClip = new AnimationClip('Morphs', 2.0);
+  morphClip.setObjectKeyframe(morphMesh, 0, ['morphTargetInfluences']);
+  const morphTrack = morphClip.getTrackByTarget(morphMesh, 'morphTargetInfluences');
+  assert.ok(morphTrack instanceof NumberArrayKeyframeTrack);
+  assert.equal(morphTrack.valueSize, 2);
+  const morphSnap = morphTrack.captureSnapshot();
+  morphTrack.valueSize = 99;
+  morphTrack.restoreSnapshot(morphSnap);
+  assert.equal(morphTrack.valueSize, 2);
+
+  // 7. GizmoBase.dispose limpia temporizador de long-press pendiente
+  const noop = () => {};
+  const mockDom = { addEventListener: noop, removeEventListener: noop, getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }) };
+  const mockOverlay = { width: 100, height: 100, style: {}, getContext: () => ({}) };
+  const gizmo = new GizmoBase(cam, mockDom, { overlay: mockOverlay });
+  let timerFired = false;
+  gizmo._longPressTimer = setTimeout(() => { timerFired = true; }, 10);
+  gizmo.dispose();
+  assert.equal(gizmo._longPressTimer, 0);
+  await new Promise((r) => setTimeout(r, 25));
+  assert.equal(timerFired, false);
+});
+
+test('viewportCoords detecta teléfonos móviles y transforma punteros en modo horizontal 90°', () => {
+  // 1. Detección de teléfono vs escritorio/tablet
+  assert.equal(
+    isMobilePhoneDevice({
+      navigator: { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148' },
+      window: { innerWidth: 390, innerHeight: 844, screen: { width: 390, height: 844 } },
+    }),
+    true
+  );
+  assert.equal(
+    isMobilePhoneDevice({
+      navigator: { userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Mobile Safari/537.36' },
+      window: { innerWidth: 412, innerHeight: 915, screen: { width: 412, height: 915 } },
+    }),
+    true
+  );
+  assert.equal(
+    isMobilePhoneDevice({
+      navigator: {
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126.0.0.0 Safari/537.36',
+        userAgentData: { mobile: false },
+        maxTouchPoints: 0,
+      },
+      window: {
+        innerWidth: 380,
+        innerHeight: 700,
+        screen: { width: 1920, height: 1080 },
+        matchMedia: () => ({ matches: false }),
+      },
+    }),
+    false
+  );
+  assert.equal(
+    isMobilePhoneDevice({
+      navigator: {
+        userAgent: 'Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15',
+        maxTouchPoints: 5,
+      },
+      window: {
+        innerWidth: 820,
+        innerHeight: 1180,
+        screen: { width: 820, height: 1180 },
+        matchMedia: () => ({ matches: true }),
+      },
+    }),
+    false
+  );
+
+  // 2. Transformación de coordenadas y tamaño lógico en rotación CSS de 90°
+  const fakeWin = { innerWidth: 400, innerHeight: 800 };
+  const fakeDocOff = { documentElement: { classList: { contains: () => false } } };
+  const fakeDocOn = { documentElement: { classList: { contains: (c) => c === 'is-mobile-landscape-90' } } };
+
+  assert.equal(isCssLandscape90(fakeDocOff), false);
+  assert.equal(isCssLandscape90(fakeDocOn), true);
+  assert.deepEqual(getLogicalViewportSize(fakeWin, fakeDocOff), { width: 400, height: 800 });
+  assert.deepEqual(getLogicalViewportSize(fakeWin, fakeDocOn), { width: 800, height: 400 });
+
+  // Con rotate(90deg) + translateX(100vw):
+  // Esquina superior derecha de pantalla (clientX=400, clientY=0) -> origen local (0, 0)
+  assert.deepEqual(clientToViewportPoint({ clientX: 400, clientY: 0 }, fakeWin, fakeDocOn), { x: 0, y: 0 });
+  // Esquina inferior izquierda de pantalla (clientX=0, clientY=800) -> esquina opuesta local (800, 400)
+  assert.deepEqual(clientToViewportPoint({ clientX: 0, clientY: 800 }, fakeWin, fakeDocOn), { x: 800, y: 400 });
+
+  // Rectángulo del visor en pantalla vertical (42px de barra superior en lado derecho de pantalla):
+  // En local sin rotar: topbar = 42px -> viewport tiene x0=42..800 (W=758), y0=0..400 (H=400).
+  // En pantalla rotada: left=0, right=400 (width=400), top=42, bottom=800 (height=758).
+  const rotRect = { left: 0, right: 400, top: 42, bottom: 800, width: 400, height: 758 };
+  assert.deepEqual(clientToLocalPointFromRect(rotRect, { clientX: 400, clientY: 42 }, 758, 400, fakeDocOn), [0, 0]);
+  assert.deepEqual(clientToLocalPointFromRect(rotRect, { clientX: 0, clientY: 800 }, 758, 400, fakeDocOn), [758, 400]);
+  assert.deepEqual(clientToLocalPointFromRect(rotRect, { clientX: 200, clientY: 421 }, 758, 400, fakeDocOn), [379, 200]);
+});
 

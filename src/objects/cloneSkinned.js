@@ -93,6 +93,8 @@ export function cloneSkinned(source, opts = {}) {
     const c = map.get(o);
     c.gpuSkinning = o.gpuSkinning;
     c.bind(sk, o.bindMatrix, o.skinPad);
+    if (o._bind) c._bind = o._bind.slice();
+    if (o._bindNormal) c._bindNormal = o._bindNormal.slice();
   });
   return root;
 }

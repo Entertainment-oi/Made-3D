@@ -60,6 +60,8 @@ export const dom = {
   btnSculptMore: el('btn-sculpt-more'),
   popSculptMore: el('pop-sculpt-more'),
   undoRedoBar: el('undo-redo-bar'),
+  bottomDock: el('bottom-dock'),
+  dockUndoSep: el('dock-undo-sep'),
 
   // Gizmo XYZ mini-panel & Bottom Dock
   gizmoXyzPanel: el('gizmo-xyz-panel'),
@@ -379,6 +381,14 @@ export const dom = {
   exportAnimList: el('export-anim-list'),
   btnExportAnimCancel: el('btn-export-anim-cancel'),
   btnExportAnimConfirm: el('btn-export-anim-confirm'),
+
+  // Modo móvil horizontal 90°
+  btnMobileLandscape: el('btn-mobile-landscape'),
+  mobileLandscapeState: el('mobile-landscape-state'),
+  mobileRotateModal: el('mobile-rotate-modal'),
+  mobileRotateCountdown: el('mobile-rotate-countdown'),
+  btnMobileRotateCancel: el('btn-mobile-rotate-cancel'),
+  btnMobileRotateNow: el('btn-mobile-rotate-now'),
 };
 
 let _statusTimer = 0;

@@ -1,4 +1,4 @@
-import { PerspectiveCamera, Vec3, Quat } from '../made3d.module.js';
+import { PerspectiveCamera } from '../made3d.module.js';
 import { CameraHelper } from '../src/modules/helpers.js';
 import { dom, DEFAULT_HUD_HINT, setStatus, downloadBlob } from './dom.js';
 import {
@@ -109,16 +109,22 @@ export function getCameraResolution(cam) {
 }
 
 export function addSceneCamera(opts = {}) {
-  const srcCam = cameraView.activeSceneCam || viewport.camera;
   if (cameraView.activeSceneCam) {
     exitCameraView({ restoreSnapshot: false });
   }
-  srcCam.updateWorldMatrix(true, false);
 
   sceneStore.cameraCounter++;
   const cam = new PerspectiveCamera(viewport.perspCam ? viewport.perspCam.fov : 50, 16 / 9, 0.1, 400);
-  cam.position.copy(srcCam.getWorldPosition(new Vec3()));
-  cam.quaternion.copy(srcCam.getWorldQuaternion(new Quat()));
+  if (opts.position) {
+    cam.position.set(opts.position[0], opts.position[1], opts.position[2]);
+  } else {
+    cam.position.set(0, 0, 0);
+  }
+  if (opts.quaternion) {
+    cam.quaternion.copy(opts.quaternion);
+  } else if (opts.rotation) {
+    cam.rotation.set(opts.rotation[0], opts.rotation[1], opts.rotation[2]);
+  }
   const initRes = getCameraResolution({ renderWidth: opts.width || 1920, renderHeight: opts.height || 1080 });
   cam.renderWidth = initRes.w;
   cam.renderHeight = initRes.h;
@@ -129,21 +135,10 @@ export function addSceneCamera(opts = {}) {
   cam.add(helper);
   setCameraMeta(cam, { showThirds: true, includeGrid: false, helper });
 
-  // Alejar ligeramente la cámara libre del editor para ver de inmediato la cámara colocada y su pirámide
-  const back = new Vec3(0, 0, 1).applyQuaternion(cam.quaternion).normalize();
-  const right = new Vec3(1, 0, 0).applyQuaternion(cam.quaternion).normalize();
-  viewport.camera.position
-    .copy(cam.position)
-    .addScaledVector(back, 2.4)
-    .addScaledVector(right, 0.85);
-  viewport.camera.position.y += 0.65;
-  viewport.controls.target.copy(cam.position);
-  viewport.controls.syncFromCamera();
-
   const camName = opts.name || `Cámara ${sceneStore.cameraCounter}`;
   registerUserObject(cam, camName, opts.recordHistory !== false);
   selectObject(cam);
-  setStatus(`"${camName}" colocada en tu vista. Muévela con el gizmo o pulsa "Entrar a cámara".`);
+  setStatus(`"${camName}" creada en (0, 0, 0). Muévela con el gizmo o pulsa "Alinear a vista" / "Entrar a cámara".`);
   return cam;
 }
 

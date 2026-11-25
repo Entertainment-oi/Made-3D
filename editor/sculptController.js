@@ -15,6 +15,7 @@ import { exitCameraView } from './cameraView.js';
 import { registerUserObject } from './sceneActions.js';
 import { syncSelectedUI, syncAppModeUI, syncGizmoXyzPanel, renderObjectList } from './inspectorUI.js';
 import { setEditMode, syncEditUI } from './editController.js';
+import { syncRangeVisual } from './ui/rangeControls.js';
 
 export function getSculptTargets() {
   if (Sculptor.isSculptable(sceneStore.selected)) return [sceneStore.selected];
@@ -54,10 +55,12 @@ export function syncSculptUI() {
 
   if (dom.sculptRadius) {
     dom.sculptRadius.value = sculpt.sculptor.radius;
+    syncRangeVisual(dom.sculptRadius);
     if (dom.sculptRadiusVal) dom.sculptRadiusVal.textContent = sculpt.sculptor.radius.toFixed(2);
   }
   if (dom.sculptStrength) {
     dom.sculptStrength.value = sculpt.sculptor.strength;
+    syncRangeVisual(dom.sculptStrength);
     if (dom.sculptStrengthVal) dom.sculptStrengthVal.textContent = sculpt.sculptor.strength.toFixed(2);
   }
   if (dom.sculptFalloff) dom.sculptFalloff.value = sculpt.sculptor.falloff;
@@ -155,8 +158,7 @@ export function addClaySphere(opts = {}) {
   if (opts.position) {
     mesh.position.set(opts.position[0], opts.position[1], opts.position[2]);
   } else {
-    const spread = sceneStore.userObjects.length ? ((sceneStore.objectCounter % 5) - 2) * 1.4 : 0;
-    mesh.position.set(spread, 1.05, 0);
+    mesh.position.set(0, 0, 0);
   }
 
   const name = opts.name || `Arcilla ${sceneStore.objectCounter + 1}`;

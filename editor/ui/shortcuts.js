@@ -347,8 +347,14 @@ export function bindShortcutsAndModes() {
       }
     }
 
-    const tag = document.activeElement?.tagName;
-    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
+    const activeEl = document.activeElement;
+    const tag = activeEl?.tagName;
+    if (
+      activeEl?.isContentEditable ||
+      tag === 'SELECT' ||
+      tag === 'TEXTAREA' ||
+      (tag === 'INPUT' && !['range', 'checkbox', 'radio', 'button', 'submit', 'reset', 'file', 'color'].includes((activeEl.type || 'text').toLowerCase()))
+    ) return;
 
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
       e.preventDefault();

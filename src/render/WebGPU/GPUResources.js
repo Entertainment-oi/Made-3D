@@ -553,6 +553,13 @@ export class GPUResources {
       gg.indexed = true;
       gg.count = ia.array.length;
     } else {
+      if (gg.indexBuf) {
+        gg.indexBuf.destroy();
+        gg.indexBuf = null;
+      }
+      gg.indexAttr = null;
+      gg.indexVersion = -1;
+      gg.indexByteSize = 0;
       gg.indexed = false;
       gg.count = g.vertexCount;
     }

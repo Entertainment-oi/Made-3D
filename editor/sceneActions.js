@@ -20,7 +20,6 @@ import {
   DirectionalLight,
   PointLight,
   autoScaleObject,
-  computeBounds,
   loadTextGeometry,
 } from '../made3d.module.js';
 import {
@@ -161,8 +160,8 @@ export function addSceneLight(kind = 'point', opts = {}) {
       setStatus('Aviso: el motor renderiza hasta 4 luces direccionales activas simultáneamente.');
     }
     light = new DirectionalLight(opts.color ?? 0xfff5e4, opts.intensity ?? 1.1);
-    light.position.set(opts.x ?? -5 + (n % 4) * 2.5, opts.y ?? 8, opts.z ?? 5);
-    light.target.set(0, 0, 0);
+    light.position.set(opts.x ?? 0, opts.y ?? 0, opts.z ?? 0);
+    light.target.set(0, -1, 0);
     light.castShadow = false;
     light.name = opts.name || `Luz direccional ${n + 1}`;
     if (!lighting.dirLight) lighting.dirLight = light;
@@ -173,8 +172,7 @@ export function addSceneLight(kind = 'point', opts = {}) {
       setStatus('Aviso: el motor renderiza hasta 4 luces puntuales activas simultáneamente.');
     }
     light = new PointLight(opts.color ?? 0xffe4b5, opts.intensity ?? 8, opts.distance ?? 10, opts.decay ?? 2);
-    const spread = ((sceneStore.objectCounter % 5) - 2) * 1.1;
-    light.position.set(opts.x ?? spread, opts.y ?? 2.6, opts.z ?? 1.2);
+    light.position.set(opts.x ?? 0, opts.y ?? 0, opts.z ?? 0);
     light.name = opts.name || `Luz puntual ${n + 1}`;
     if (!lighting.pointLight) lighting.pointLight = light;
   }
@@ -201,18 +199,13 @@ export function duplicateSelected() {
   }
 
   const isTopLevel = !o.parent || o.parent === viewport.scene;
-  const bounds = o.isLight || o.isCamera ? null : computeBounds(o);
-  const step = bounds && !bounds.empty ? Math.max(0.25, bounds.size.x * 0.65) : 0.8;
   copy.name = `${o.name || 'Objeto'} copia`;
+  copy.position.copy(o.position);
 
   if (isTopLevel) {
-    copy.position.x += step;
     const reg = registerUserObject(copy, copy.name, true);
     if (reg?.cmd) reg.cmd.prevSelected = prevSelected;
   } else {
-    o.parent.updateWorldMatrix(true, false);
-    const pScale = o.parent.matrixWorld.getMaxScale() || 1;
-    copy.position.x += step / pScale;
     o.parent.add(copy);
     copy.updateMatrixWorld();
     history.push({
@@ -325,7 +318,6 @@ export function addPrimitive(kind, opts = {}) {
   let geo;
   let defaultName;
   let doubleSided = false;
-  let defaultY = 0.85;
 
   switch (kind) {
     case 'sphere':
@@ -336,7 +328,6 @@ export function addPrimitive(kind, opts = {}) {
       geo = new PlaneGeometry(2.2, 2.2);
       defaultName = `Plano ${num}`;
       doubleSided = true;
-      defaultY = 1.1;
       break;
     case 'cylinder':
       geo = new CylinderGeometry(0.55, 0.55, 1.4, 28, 1);
@@ -353,24 +344,20 @@ export function addPrimitive(kind, opts = {}) {
     case 'torus':
       geo = new TorusGeometry(0.65, 0.22, 18, 40);
       defaultName = `Toroide ${num}`;
-      defaultY = 1.0;
       break;
     case 'torusKnot':
       geo = new TorusKnotGeometry(0.52, 0.16, 80, 14, 2, 3);
       defaultName = `Nudo ${num}`;
-      defaultY = 1.05;
       break;
     case 'circle':
       geo = new CircleGeometry(0.85, 32);
       defaultName = `Círculo ${num}`;
       doubleSided = true;
-      defaultY = 1.0;
       break;
     case 'ring':
       geo = new RingGeometry(0.42, 0.9, 32, 1);
       defaultName = `Anillo ${num}`;
       doubleSided = true;
-      defaultY = 1.0;
       break;
     case 'pyramid':
       geo = new PyramidGeometry(1.3, 1.3, 1.3);
@@ -421,8 +408,7 @@ export function addPrimitive(kind, opts = {}) {
   if (opts.position) {
     mesh.position.set(opts.position[0], opts.position[1], opts.position[2]);
   } else {
-    const spread = ((sceneStore.objectCounter % 5) - 2) * 1.3;
-    mesh.position.set(spread, defaultY, 0);
+    mesh.position.set(0, 0, 0);
   }
   if (opts.rotation) {
     mesh.rotation.set(opts.rotation[0], opts.rotation[1], opts.rotation[2]);
@@ -461,8 +447,7 @@ export async function addText3D(opts = {}) {
   if (opts.position) {
     mesh.position.set(opts.position[0], opts.position[1], opts.position[2]);
   } else {
-    const spread = ((sceneStore.objectCounter % 5) - 2) * 0.45;
-    mesh.position.set(spread, 0.9, 0);
+    mesh.position.set(0, 0, 0);
   }
   if (opts.rotation) {
     mesh.rotation.set(opts.rotation[0], opts.rotation[1], opts.rotation[2]);
@@ -483,25 +468,27 @@ export function addTestRig(opts = {}) {
   const skinIndex = new Float32Array(count * 4);
   const skinWeight = new Float32Array(count * 4);
 
+  const yCenterOffset = 1.2325;
   for (let i = 0; i < count; i++) {
     const x = arr[i * 3] * 0.72;
-    const y = (arr[i * 3 + 1] + 0.85) * 1.45;
+    const yRaw = (arr[i * 3 + 1] + 0.85) * 1.45;
+    const y = yRaw - yCenterOffset;
     const z = arr[i * 3 + 2] * 0.72;
     arr[i * 3] = x;
     arr[i * 3 + 1] = y;
     arr[i * 3 + 2] = z;
 
-    if (y < 0.95) {
+    if (yRaw < 0.95) {
       skinIndex[i * 4] = 2;
       skinWeight[i * 4] = 1;
-    } else if (y < 1.75) {
-      const t = (y - 0.95) / 0.8;
+    } else if (yRaw < 1.75) {
+      const t = (yRaw - 0.95) / 0.8;
       skinIndex[i * 4] = 2;
       skinIndex[i * 4 + 1] = 3;
       skinWeight[i * 4] = 1 - t;
       skinWeight[i * 4 + 1] = t;
     } else {
-      const t = Math.min(1, (y - 1.75) / 0.7);
+      const t = Math.min(1, (yRaw - 1.75) / 0.7);
       skinIndex[i * 4] = 3;
       skinIndex[i * 4 + 1] = 4;
       skinWeight[i * 4] = 1 - t;
@@ -519,7 +506,7 @@ export function addTestRig(opts = {}) {
 
   const boneRaiz = new Bone();
   boneRaiz.name = 'Raiz';
-  boneRaiz.position.set(0, 0.4, 0);
+  boneRaiz.position.set(0, 0.4 - yCenterOffset, 0);
 
   const boneCadera = new Bone();
   boneCadera.name = 'Cadera';
@@ -544,8 +531,11 @@ export function addTestRig(opts = {}) {
   boneTorso.add(boneCabeza);
 
   skinned.add(boneRaiz);
-  const spread = sceneStore.userObjects.length ? ((sceneStore.objectCounter % 5) - 2) * 1.6 : 0;
-  skinned.position.set(spread, 0, 0);
+  if (opts.position) {
+    skinned.position.set(opts.position[0], opts.position[1], opts.position[2]);
+  } else {
+    skinned.position.set(0, 0, 0);
+  }
   skinned.bind(new Skeleton([boneRaiz, boneCadera, boneBaseFK, boneTorso, boneCabeza]));
 
   registerUserObject(skinned, 'Rig prueba', Boolean(opts.recordHistory));
@@ -618,42 +608,7 @@ export function initDefaultScene() {
 
   applyEnvironmentPreset('studio', { intensity: 0.65 });
 
-  const box = addPrimitive('box', {
-    name: 'Cubo principal',
-    color: 0x4f86f7,
-    shininess: 48,
-    position: [0, 0.85, 0],
-    select: false,
-  });
-  box.rotation.set(0.18, 0.55, 0);
-
-  addPrimitive('sphere', {
-    name: 'Esfera metálica',
-    color: 0xf59e0b,
-    hasPbr: true,
-    roughness: 0.14,
-    metalness: 0.92,
-    position: [-2.4, 0.95, 0.6],
-    select: false,
-  });
-
-  addPrimitive('box', {
-    name: 'Cubo con textura',
-    color: 0xffffff,
-    textured: true,
-    shininess: 20,
-    position: [2.4, 0.75, -0.5],
-    select: false,
-  });
-
-  if (lighting.dirLight && !sceneStore.userObjects.includes(lighting.dirLight)) {
-    sceneStore.userObjects.push(lighting.dirLight);
-  }
-  if (lighting.pointLight && !sceneStore.userObjects.includes(lighting.pointLight)) {
-    sceneStore.userObjects.push(lighting.pointLight);
-  }
-
-  selectObject(box);
+  selectObject(null);
   resetCamera();
 }
 

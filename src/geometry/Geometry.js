@@ -29,6 +29,10 @@ export class Geometry extends EventEmitter {
     return this;
   }
   setIndex(array) {
+    if (!array) {
+      this.index = null;
+      return this;
+    }
     if (array instanceof BufferAttribute) this.index = array;
     else {
       if (!(array instanceof Uint16Array || array instanceof Uint32Array)) {

@@ -18,6 +18,7 @@ import {
 } from '../animationController.js';
 import { syncGizmoXyzPanel } from './gizmoPanel.js';
 import { switchObjectSubtab } from './objectInspector.js';
+import { syncAllRanges } from './rangeControls.js';
 
 const POPOVER_IDS = ['menu-scene', 'menu-object', 'menu-mode', 'menu-settings', 'menu-outliner'];
 const POPOVER_BTNS = {
@@ -59,6 +60,7 @@ export function openPopover(id, toggle = true) {
   }
   closeAllPopovers();
   target.hidden = false;
+  syncAllRanges(target);
   viewport.openPopover = id;
   const btn = POPOVER_BTNS[id]?.();
   if (btn) {

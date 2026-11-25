@@ -764,6 +764,7 @@ export class HistoryManager extends EventEmitter {
   }
 
   undo() {
+    if (!this.undoStack.length) return null;
     this._hooks.onBeforeUndo?.();
     const cmd = this.undoStack.pop();
     if (!cmd) return null;
@@ -778,6 +779,7 @@ export class HistoryManager extends EventEmitter {
   }
 
   redo() {
+    if (!this.redoStack.length) return null;
     this._hooks.onBeforeRedo?.();
     const cmd = this.redoStack.pop();
     if (!cmd) return null;

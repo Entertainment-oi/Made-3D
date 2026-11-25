@@ -244,6 +244,7 @@ export class ChunkedInstances extends Object3D {
       return;
     }
 
+    this._visibleChunks.length = 0;
     const e = this.matrixWorld.elements, gs = this.matrixWorld.getMaxScale();
     const lv = this.levels, last = lv.length - 1;
     for (const ch of this.chunks.values()) {
@@ -253,14 +254,17 @@ export class ChunkedInstances extends Object3D {
       const d = Math.max(0, Math.hypot(wx - ce[12], wy - ce[13], wz - ce[14]) - ch.radius * gs);
       let k = 0;
       for (let i = last; i > 0; i--) if (d >= lv[i].distance) { k = i; break; }
+      let anyVis = false;
       for (let i = 0; i < ch.meshes.length; i++) {
         const m = ch.meshes[i];
         if (m) {
           m.visible = i === k;
           m.castShadow = this.castShadow;
           m.receiveShadow = this.receiveShadow;
+          if (m.visible) anyVis = true;
         }
       }
+      if (anyVis) this._visibleChunks.push(ch);
     }
   }
 }

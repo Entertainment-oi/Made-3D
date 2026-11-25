@@ -25,6 +25,7 @@ import { history } from './history.js';
 import { setSculptMode } from './sculptController.js';
 import { exitCameraView } from './cameraView.js';
 import { syncSelectedUI, syncAppModeUI, syncGizmoXyzPanel, renderObjectList } from './inspectorUI.js';
+import { syncAllRanges } from './ui/rangeControls.js';
 
 const mergeTargetMeshes = new Set();
 let _lastMergePrimary = null;
@@ -168,6 +169,7 @@ export function toggleEditFlyout(flyoutEl) {
   if (willOpen && flyoutEl === dom.popEditMerge) {
     renderMergeTargetsList();
   }
+  if (willOpen) syncAllRanges(flyoutEl);
   dom.btnEditSmoothToggle?.classList.toggle('is-active', Boolean(dom.popEditSmooth && !dom.popEditSmooth.hidden));
   dom.btnEditMergeToggle?.classList.toggle('is-active', Boolean(dom.popEditMerge && !dom.popEditMerge.hidden));
   dom.btnEditMore?.classList.toggle('is-active', Boolean(dom.popEditMore && !dom.popEditMore.hidden));
@@ -328,6 +330,7 @@ export function syncEditUI() {
 
   syncSubsurfUI();
   syncGizmoXyzPanel();
+  syncAllRanges();
 }
 
 export function updateEditDensityPreview(meshOverride = null, { syncInputs = false, forceSyncInputs = false } = {}) {

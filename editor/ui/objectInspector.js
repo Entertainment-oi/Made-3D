@@ -43,6 +43,7 @@ import { recordAutoKeyframeIfNeeded } from '../animationController.js';
 import { closeAllPopovers, syncViewCameraQuickBtn } from './popovers.js';
 import { renderObjectList } from './outliner.js';
 import { syncGizmoXyzPanel } from './gizmoPanel.js';
+import { syncAllRanges } from './rangeControls.js';
 
 const forEachMat = (fn) => sceneStore.selected?.collectMaterials?.().forEach(fn);
 
@@ -380,6 +381,7 @@ export function syncSelectedUI() {
   }
   if (dom.objCastShadow) dom.objCastShadow.checked = castShadow;
   if (dom.objAutoSpin) dom.objAutoSpin.checked = sceneStore.spinObjects.has(o);
+  syncAllRanges(dom.objectEditor || document);
 }
 
 export function bindObjectInspector() {

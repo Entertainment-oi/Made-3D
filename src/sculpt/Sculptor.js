@@ -1,6 +1,7 @@
 import { Vec3 } from '../math/Vec3.js';
 import { Mat4 } from '../math/Mat4.js';
 import { Raycaster } from '../core/Raycaster.js';
+import { clientToLocalPoint } from '../core/viewportCoords.js';
 import { Geometry } from '../geometry/Geometry.js';
 import { BufferAttribute } from '../geometry/BufferAttribute.js';
 import { syncEditableBaseFromGeometry } from '../modeling/SubdivisionSurface.js';
@@ -1169,10 +1170,10 @@ export class Sculptor {
       typeof opts.getControlsEnabled === 'function' ? Boolean(opts.getControlsEnabled()) : true;
     const toNdc = (e) => {
       const rectEl = resolveTarget() || domElement;
-      const rect = rectEl.getBoundingClientRect();
+      const [nx, ny] = clientToLocalPoint(rectEl, e, 1, 1);
       return {
-        x: ((e.clientX - rect.left) / Math.max(1, rect.width)) * 2 - 1,
-        y: -((e.clientY - rect.top) / Math.max(1, rect.height)) * 2 + 1,
+        x: nx * 2 - 1,
+        y: -ny * 2 + 1,
       };
     };
 

@@ -371,13 +371,13 @@ export class SkinnedMesh extends Mesh {
   // Picking contra la malla deformada (con descarte previo por esfera del esqueleto y caché por pose).
   raycast(raycaster, intersects) {
     const mat = this.material;
-    if (mat && mat.visible === false) return;
+    if (Array.isArray(mat) ? mat.length > 0 && mat.every((m) => m && m.visible === false) : (mat && mat.visible === false)) return;
     if (this.isPickable ? !this.isPickable() : (this.userData && this.userData.pickable === false)) return;
     const geo = this.geometry;
-    if (!geo || !geo.attributes.position || !this.skeleton) return;
+    if (!geo || !geo.attributes.position) return;
     const sk = this.skeleton;
-    if (!sk.bones.length) return super.raycast(raycaster, intersects);
-    for (let i = 0; i < sk.bones.length; i++) sk.bones[i].updateWorldMatrix(true, false);
+    if (!sk || !sk.bones || !sk.bones.length) return super.raycast(raycaster, intersects);
+    for (let i = 0; i < sk.bones.length; i++) if (sk.bones[i]) sk.bones[i].updateWorldMatrix(true, false);
     sk.update();
     const r = raycaster.ray;
     const boundR = sk.radius + this.skinPad * sk.maxScale;
@@ -422,6 +422,8 @@ export class SkinnedMesh extends Mesh {
     if (source.skeleton) {
       this.bind(source.skeleton, source.bindMatrix, source.skinPad);
     }
+    this._bind = source._bind ? source._bind.slice() : (this._bind || null);
+    this._bindNormal = source._bindNormal ? source._bindNormal.slice() : (this._bindNormal || null);
     return this;
   }
 }

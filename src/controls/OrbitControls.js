@@ -1,6 +1,7 @@
 import { EventEmitter } from '../core/EventEmitter.js';
 import { Vec3 } from '../math/Vec3.js';
 import { clamp } from '../math/utils.js';
+import { clientToViewportPoint } from '../core/viewportCoords.js';
 
 const _v = new Vec3();
 const _r = new Vec3();
@@ -125,17 +126,19 @@ export class OrbitControls extends EventEmitter {
   _onDown(e) {
     if (!this.enabled) return;
     try { this.dom.setPointerCapture(e.pointerId); } catch (_) { /* sin captura */ }
-    this._ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY, button: e.button });
+    const pt = clientToViewportPoint(e);
+    this._ptrs.set(e.pointerId, { x: pt.x, y: pt.y, button: e.button });
     if (this._ptrs.size === 2) { const [a, b] = [...this._ptrs.values()]; this._pinch = Math.hypot(a.x - b.x, a.y - b.y); this._mid = [(a.x + b.x) / 2, (a.y + b.y) / 2]; }
   }
   _onMove(e) {
     const p = this._ptrs.get(e.pointerId);
     if (!p || !this.enabled) return;
-    const dx = e.clientX - p.x, dy = e.clientY - p.y;
+    const pt = clientToViewportPoint(e);
+    const dx = pt.x - p.x, dy = pt.y - p.y;
     if (this._ptrs.size === 1) {
       if (p.button === 2 || e.shiftKey) this._pan(dx, dy); else this._rotate(dx, dy);
     }
-    p.x = e.clientX; p.y = e.clientY;
+    p.x = pt.x; p.y = pt.y;
     if (this._ptrs.size === 2) {
       const [a, b] = [...this._ptrs.values()];
       const d = Math.hypot(a.x - b.x, a.y - b.y), mx = (a.x + b.x) / 2, my = (a.y + b.y) / 2;

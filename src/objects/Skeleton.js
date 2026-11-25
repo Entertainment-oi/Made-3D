@@ -39,7 +39,7 @@ export class Skeleton extends EventEmitter {
 
   // Captura la pose actual como pose de unión.
   calculateInverses() {
-    this.boneInverses = this.bones.map((b) => new Mat4().copyInverse(b.matrixWorld));
+    this.boneInverses = this.bones.map((b) => (b ? new Mat4().copyInverse(b.matrixWorld) : new Mat4()));
     return this;
   }
 
@@ -48,23 +48,34 @@ export class Skeleton extends EventEmitter {
     const n = this.bones.length;
     if (this.boneMatrices.length !== n * 16) this.boneMatrices = new Float32Array(n * 16);
     const bm = this.boneMatrices;
-    let cx = 0, cy = 0, cz = 0, ms = 0;
+    let cx = 0, cy = 0, cz = 0, ms = 0, validCount = 0;
     for (let i = 0; i < n; i++) {
-      const we = this.bones[i].matrixWorld.elements;
-      _m.multiplyMatrices(this.bones[i].matrixWorld, this.boneInverses[i]);
-      bm.set(_m.elements, i * 16);
-      cx += we[12]; cy += we[13]; cz += we[14];
+      const bone = this.bones[i];
       const o = i * 16;
+      if (!bone) {
+        bm.fill(0, o, o + 16);
+        bm[o] = 1; bm[o + 5] = 1; bm[o + 10] = 1; bm[o + 15] = 1;
+        continue;
+      }
+      const we = bone.matrixWorld.elements;
+      const inv = this.boneInverses[i];
+      if (inv) _m.multiplyMatrices(bone.matrixWorld, inv);
+      else _m.copy(bone.matrixWorld);
+      bm.set(_m.elements, o);
+      cx += we[12]; cy += we[13]; cz += we[14];
+      validCount++;
       const s = Math.max(bm[o] * bm[o] + bm[o + 1] * bm[o + 1] + bm[o + 2] * bm[o + 2],
         bm[o + 4] * bm[o + 4] + bm[o + 5] * bm[o + 5] + bm[o + 6] * bm[o + 6],
         bm[o + 8] * bm[o + 8] + bm[o + 9] * bm[o + 9] + bm[o + 10] * bm[o + 10]);
       if (s > ms) ms = s;
     }
-    if (n) {
-      cx /= n; cy /= n; cz /= n;
+    if (validCount) {
+      cx /= validCount; cy /= validCount; cz /= validCount;
       let r = 0;
       for (let i = 0; i < n; i++) {
-        const we = this.bones[i].matrixWorld.elements;
+        const bone = this.bones[i];
+        if (!bone) continue;
+        const we = bone.matrixWorld.elements;
         const d = Math.hypot(we[12] - cx, we[13] - cy, we[14] - cz);
         if (d > r) r = d;
       }

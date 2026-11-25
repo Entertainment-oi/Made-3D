@@ -30,7 +30,7 @@ export class Mesh extends Object3D {
    */
   raycast(raycaster, intersects) {
     const mat = this.material;
-    if (mat && mat.visible === false) return;
+    if (Array.isArray(mat) ? mat.length > 0 && mat.every((m) => m && m.visible === false) : (mat && mat.visible === false)) return;
     if (this.isPickable ? !this.isPickable() : (this.userData && this.userData.pickable === false)) return;
     if (!this.geometry || !this.geometry.attributes.position) return;
 

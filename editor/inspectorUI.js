@@ -20,6 +20,7 @@ import {
 } from './ui/objectInspector.js';
 import { bindSettingsPanel } from './ui/settingsPanel.js';
 import { bindShortcutsAndModes } from './ui/shortcuts.js';
+import { bindRangeControls } from './ui/rangeControls.js';
 
 export {
   closeAllPopovers,
@@ -41,5 +42,6 @@ export function bindUI() {
   bindObjectInspector();
   bindSettingsPanel();
   bindShortcutsAndModes();
+  bindRangeControls();
   bindRenderPreviewModal();
 }

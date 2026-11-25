@@ -68,7 +68,7 @@ export function drawLightsOverlay(ctx, camera, scene, W, H, options = {}) {
   const pMat = camera.projectionMatrix;
   const lights = [];
   scene.traverse((n) => {
-    if (n && n.visible && (n.isPointLight || n.isDirectionalLight)) lights.push(n);
+    if (n && n.visible && n.showOverlay !== false && (n.isPointLight || n.isDirectionalLight)) lights.push(n);
   });
   if (!lights.length) return;
 

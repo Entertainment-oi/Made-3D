@@ -86,6 +86,7 @@ export const animState = {
   snap: true,
   snapStep: 0.05,
   timelineHeight: 148,
+  mobileTimelineHeight: 90,
   copiedKeyframe: null,
 };
 

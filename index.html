@@ -748,6 +748,8 @@
                 <span class="dock-label">Centrar</span>
               </button>
             </div>
+
+            <span id="dock-undo-sep" class="dock-sep dock-undo-sep" hidden></span>
           </div>
 
           <!-- ========================== MENÚS DESPLEGABLES ANIMADOS SUPERIORES ========================== -->
@@ -1214,6 +1216,25 @@
                 </div>
               </div>
             </div>
+
+            <div class="settings-foot">
+              <button
+                type="button"
+                id="btn-mobile-landscape"
+                class="menu-item-btn mobile-landscape-btn"
+                aria-pressed="false"
+                title="Solo disponible en teléfonos móviles"
+              >
+                <span class="mobile-landscape-label">
+                  <svg class="btn-inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+                    <rect x="6" y="3" width="12" height="18" rx="2.5" />
+                    <path d="M12 17h.01" />
+                  </svg>
+                  <span>Móvil 90 grados</span>
+                </span>
+                <small id="mobile-landscape-state">Solo teléfono</small>
+              </button>
+            </div>
           </section>
 
           <!-- Drawer derecho: MENÚ HAMBURGUESA (☰ Outliner: Renombrar, Mostrar/Ocultar, Borrar) -->
@@ -1268,6 +1289,28 @@
               <div class="studio-modal-foot">
                 <button type="button" id="btn-export-anim-cancel" class="action-btn">Cancelar</button>
                 <button type="button" id="btn-export-anim-confirm" class="action-btn is-accent">Exportar</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Pantalla de aviso: giro de 90 grados a modo horizontal móvil -->
+          <div id="mobile-rotate-modal" class="studio-modal" role="dialog" aria-modal="true" aria-labelledby="mobile-rotate-title" hidden>
+            <div class="studio-modal-card mobile-rotate-card">
+              <div class="mobile-rotate-visual" aria-hidden="true">
+                <div class="mobile-rotate-phone">
+                  <span class="mobile-rotate-screen"></span>
+                  <span class="mobile-rotate-dot"></span>
+                </div>
+                <span class="mobile-rotate-deg">90°</span>
+              </div>
+              <h2 id="mobile-rotate-title" class="mobile-rotate-title">La web girará 90 grados</h2>
+              <p class="mobile-rotate-desc">
+                La interfaz pasará a modo horizontal para que puedas usar el estudio cómodamente en tu teléfono.
+              </p>
+              <p id="mobile-rotate-countdown" class="mobile-rotate-countdown">Girando automáticamente en 2 s...</p>
+              <div class="studio-modal-foot mobile-rotate-foot">
+                <button type="button" id="btn-mobile-rotate-cancel" class="action-btn">Cancelar</button>
+                <button type="button" id="btn-mobile-rotate-now" class="action-btn is-accent">Girar ahora</button>
               </div>
             </div>
           </div>

@@ -42,11 +42,18 @@ import { setEditMode, syncEditUI } from './editController.js';
 import { syncSelectedUI, syncGizmoXyzPanel, syncViewCameraQuickBtn, renderObjectList } from './inspectorUI.js';
 import { recordAutoKeyframeIfNeeded, syncAnimationUI, syncAnimationHeader } from './animationController.js';
 
+function getWrapSize() {
+  const el = dom.viewportWrap;
+  const cw = el?.clientWidth || 0;
+  const ch = el?.clientHeight || 0;
+  if (cw > 0 && ch > 0) return { w: Math.floor(cw), h: Math.floor(ch) };
+  const rect = el?.getBoundingClientRect?.() || { width: 1, height: 1 };
+  return { w: Math.max(1, Math.floor(rect.width)), h: Math.max(1, Math.floor(rect.height)) };
+}
+
 export function resizeRenderer() {
   if (!viewport.renderer || !dom.viewportWrap) return;
-  const rect = dom.viewportWrap.getBoundingClientRect();
-  const w = Math.max(1, Math.floor(rect.width));
-  const h = Math.max(1, Math.floor(rect.height));
+  const { w, h } = getWrapSize();
   viewport.renderer.setSize(w, h, false);
   const aspect = w / h;
   if (viewport.perspCam) {
@@ -117,7 +124,7 @@ export function resetCamera() {
     exitCameraView({ restoreSnapshot: false });
   }
   viewport.camera.position.set(6.5, 4.8, 8.2);
-  viewport.controls.target.set(0, 0.8, 0);
+  viewport.controls.target.set(0, 0, 0);
   viewport.controls.syncFromCamera();
 }
 
@@ -353,8 +360,8 @@ export async function initEngine(backendPref = 'auto') {
   scene.fog = new Fog(lighting.fogColorHex, 10, lighting.fogFar);
   viewport.scene = scene;
 
-  const rect = dom.viewportWrap.getBoundingClientRect();
-  const aspect = Math.max(1, rect.width) / Math.max(1, rect.height);
+  const { w: initW, h: initH } = getWrapSize();
+  const aspect = Math.max(1, initW) / Math.max(1, initH);
   viewport.perspCam = new PerspectiveCamera(50, aspect, 0.05, 800);
   viewport.perspCam.position.set(6.5, 4.8, 8.2);
 
@@ -371,7 +378,7 @@ export async function initEngine(backendPref = 'auto') {
   viewport.camera = viewport.perspCam;
 
   const controls = new OrbitControls(viewport.camera, viewport.renderer.domElement);
-  controls.target.set(0, 0.8, 0);
+  controls.target.set(0, 0, 0);
   controls.minDistance = 0.05;
   controls.maxDistance = 400;
   controls.zoomSpeed = 1.8;
@@ -417,12 +424,18 @@ export async function initEngine(backendPref = 'auto') {
   dir.shadow.bias = 0.002;
   dir.shadow.radius = 1.25;
   dir.shadow.camera = { left: -9, right: 9, top: 9, bottom: -9, near: 0.5, far: 36 };
+  dir.pickable = false;
+  dir.exportable = false;
+  dir.showOverlay = false;
   scene.add(dir);
   lighting.dirLight = dir;
 
   const point = new PointLight(0x5ea3ff, 6, 12, 2);
   point.name = 'Luz puntual 1';
   point.position.set(-4.5, 3.2, -3.5);
+  point.pickable = false;
+  point.exportable = false;
+  point.showOverlay = false;
   scene.add(point);
   lighting.pointLight = point;
 
@@ -449,9 +462,9 @@ export async function switchRenderBackend(backendPref = 'auto') {
   const clearColor = oldRenderer ? oldRenderer.clearColor.slice() : [0.05, 0.05, 0.07];
   const colorSpace = oldRenderer ? oldRenderer.colorSpace : 'srgb';
 
-  const rect = dom.viewportWrap.getBoundingClientRect();
-  nextCanvas.width = Math.max(1, Math.floor(rect.width));
-  nextCanvas.height = Math.max(1, Math.floor(rect.height));
+  const { w: nextW, h: nextH } = getWrapSize();
+  nextCanvas.width = nextW;
+  nextCanvas.height = nextH;
 
   const nextRenderer = await Renderer.create({
     canvas: nextCanvas,

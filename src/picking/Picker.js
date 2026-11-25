@@ -1,6 +1,7 @@
 import { Raycaster } from '../core/Raycaster.js';
 import { Vec3 } from '../math/Vec3.js';
 import { pointSegment2D } from '../core/raycast.js';
+import { clientToLocalPointFromRect } from '../core/viewportCoords.js';
 
 const _v1 = new Vec3(), _v2 = new Vec3(), _v3 = new Vec3();
 const _p1 = new Vec3(), _p2 = new Vec3();
@@ -394,7 +395,6 @@ export class Picker {
     const el = this.dom;
     if (!el || !el.getBoundingClientRect) return [e.clientX, e.clientY];
     const r = el.getBoundingClientRect();
-    const W = this.width, H = this.height;
-    return [(e.clientX - r.left) * (W / (r.width || 1)), (e.clientY - r.top) * (H / (r.height || 1))];
+    return clientToLocalPointFromRect(r, e, this.width, this.height);
   }
 }

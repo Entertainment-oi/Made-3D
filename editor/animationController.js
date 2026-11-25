@@ -1,7 +1,14 @@
 import { AnimationClip, AnimationMixer } from '../src/modules/animation.js';
+import {
+  isCssLandscape90,
+  clientToLocalPoint,
+  clientToViewportPoint,
+  getLogicalViewportSize,
+} from '../src/core/viewportCoords.js';
 import { dom, setStatus } from './dom.js';
 import { viewport, sceneStore, cameraView, animState, edit } from './store.js';
 import { history } from './history.js';
+import { syncRangeVisual } from './ui/rangeControls.js';
 
 const KEYFRAME_HIT_EPS = 0.035;
 const MIN_PX_PER_SEC = 28;
@@ -808,9 +815,11 @@ export function drawTimelineCanvas() {
   const wrap = dom.animTlTrackWrap;
   if (!canvas || !wrap || viewport.appMode !== 'animacion') return;
 
-  const rect = wrap.getBoundingClientRect();
-  const w = Math.max(100, Math.floor(rect.width));
-  const h = Math.max(60, Math.floor(rect.height));
+  const cw = wrap.clientWidth || 0;
+  const ch = wrap.clientHeight || 0;
+  const rect = cw > 0 && ch > 0 ? null : wrap.getBoundingClientRect();
+  const w = Math.max(100, Math.floor(cw > 0 ? cw : rect.width));
+  const h = Math.max(36, Math.floor(ch > 0 ? ch : rect.height));
   const dpr = Math.min(2, window.devicePixelRatio || 1);
 
   if (w !== _tlWidth || h !== _tlHeight || dpr !== _tlDpr) {
@@ -1042,8 +1051,11 @@ export function syncAnimationHeader() {
   });
 
   // Ajustes •••
-  if (dom.animSetSpeed && document.activeElement !== dom.animSetSpeed) {
-    dom.animSetSpeed.value = String(animState.speed);
+  if (dom.animSetSpeed) {
+    if (document.activeElement !== dom.animSetSpeed) {
+      dom.animSetSpeed.value = String(animState.speed);
+    }
+    syncRangeVisual(dom.animSetSpeed);
   }
   if (dom.animSetSpeedVal) {
     dom.animSetSpeedVal.textContent = `${animState.speed.toFixed(2)}×`;
@@ -1194,7 +1206,12 @@ export function syncAnimationUI() {
     }
   }
   if (dom.animTimeline) {
-    dom.animTimeline.style.setProperty('--anim-tl-height', `${animState.timelineHeight}px`);
+    const isMob90 = isCssLandscape90();
+    const { height: vpH } = getLogicalViewportSize();
+    const h = isMob90
+      ? Math.max(74, Math.min(Math.max(96, vpH - 150), animState.mobileTimelineHeight ?? 90))
+      : animState.timelineHeight;
+    dom.animTimeline.style.setProperty('--anim-tl-height', `${h}px`);
   }
   syncAnimationHeader();
   renderAnimationManagerList();
@@ -1417,14 +1434,24 @@ export function bindAnimationUI() {
     dom.animTlResize.addEventListener('pointerdown', (e) => {
       e.preventDefault();
       dom.animTlResize.setPointerCapture(e.pointerId);
-      resizeDrag = { pointerId: e.pointerId, startY: e.clientY, startH: animState.timelineHeight };
+      const pt = clientToViewportPoint(e);
+      const isMob90 = isCssLandscape90();
+      const startH = isMob90 ? (animState.mobileTimelineHeight ?? 90) : animState.timelineHeight;
+      resizeDrag = { pointerId: e.pointerId, startY: pt.y, startH, isMob90 };
     });
     dom.animTlResize.addEventListener('pointermove', (e) => {
       if (!resizeDrag || e.pointerId !== resizeDrag.pointerId) return;
-      const dy = resizeDrag.startY - e.clientY;
-      const maxH = Math.max(160, Math.min(420, window.innerHeight - 190));
-      animState.timelineHeight = Math.round(Math.max(110, Math.min(maxH, resizeDrag.startH + dy)));
-      dom.animTimeline.style.setProperty('--anim-tl-height', `${animState.timelineHeight}px`);
+      const pt = clientToViewportPoint(e);
+      const dy = resizeDrag.startY - pt.y;
+      const { height: vpH } = getLogicalViewportSize();
+      const minH = resizeDrag.isMob90 ? 74 : 110;
+      const maxH = resizeDrag.isMob90
+        ? Math.max(96, Math.min(220, vpH - 140))
+        : Math.max(160, Math.min(420, vpH - 190));
+      const nextH = Math.round(Math.max(minH, Math.min(maxH, resizeDrag.startH + dy)));
+      if (resizeDrag.isMob90) animState.mobileTimelineHeight = nextH;
+      else animState.timelineHeight = nextH;
+      dom.animTimeline.style.setProperty('--anim-tl-height', `${nextH}px`);
       drawTimelineCanvas();
     });
     const endResize = (e) => {
@@ -1453,9 +1480,7 @@ export function bindAnimationUI() {
     dom.animTlCanvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       clearHoldTimer();
-      const rect = dom.animTlCanvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      const [x, y] = clientToLocalPoint(dom.animTlCanvas, e);
       const hit = hitTestTimelineKeyframe(animState.currentClip, x, y, 16);
       openKeyframeContextMenu({ x, y, hit, clip: animState.currentClip });
     });
@@ -1466,9 +1491,7 @@ export function bindAnimationUI() {
       closeTimelineSubpopovers();
       clearHoldTimer();
 
-      const rect = dom.animTlCanvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      const [x, y] = clientToLocalPoint(dom.animTlCanvas, e);
       activePointers.set(e.pointerId, { x, y });
 
       try {
@@ -1556,9 +1579,7 @@ export function bindAnimationUI() {
     });
 
     dom.animTlCanvas.addEventListener('pointermove', (e) => {
-      const rect = dom.animTlCanvas.getBoundingClientRect();
-      const x = e.clientX - rect.left;
-      const y = e.clientY - rect.top;
+      const [x, y] = clientToLocalPoint(dom.animTlCanvas, e);
 
       if (activePointers.has(e.pointerId)) {
         activePointers.set(e.pointerId, { x, y });

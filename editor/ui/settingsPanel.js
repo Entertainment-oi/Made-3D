@@ -1,9 +1,12 @@
 import { Renderer, Fog, Color, SHADOW_RESOLUTIONS, SHADOW_QUALITY } from '../../made3d.module.js';
+import { isMobilePhoneDevice } from '../../src/core/viewportCoords.js';
 import { dom, setStatus } from '../dom.js';
 import { viewport, sceneStore, lighting, cameraView } from '../store.js';
 import { resizeRenderer, syncShadowResolutionUI, switchRenderBackend } from '../viewport.js';
 import { exitCameraView } from '../cameraView.js';
 import { applyEnvironmentPreset, loadEnvironmentFile } from '../sceneActions.js';
+import { closeAllPopovers } from './popovers.js';
+import { drawTimelineCanvas, syncAnimationUI } from '../animationController.js';
 
 export function bindSettingsPanel() {
   if (dom.dirShadowRes) {
@@ -165,4 +168,198 @@ export function bindSettingsPanel() {
     }
   });
   dom.btnRetryWebgl?.addEventListener('click', () => window.location.reload());
+
+  // Modo móvil horizontal (90°) — habilitado únicamente en teléfonos
+  let mobileLandscapeEnabled = false;
+  let rotateTimer = 0;
+  let countdownInterval = 0;
+
+  const clearRotateNoticeTimers = () => {
+    if (rotateTimer) {
+      clearTimeout(rotateTimer);
+      rotateTimer = 0;
+    }
+    if (countdownInterval) {
+      clearInterval(countdownInterval);
+      countdownInterval = 0;
+    }
+  };
+
+  const syncCssRotation = () => {
+    const html = document.documentElement;
+    const isPortrait = window.innerWidth <= window.innerHeight;
+    const shouldCssRotate = Boolean(mobileLandscapeEnabled && isPortrait);
+    const hadRotate = html.classList.contains('is-mobile-landscape-90');
+    html.classList.toggle('is-mobile-landscape-90', shouldCssRotate);
+
+    if (dom.bottomDock && dom.undoRedoBar) {
+      if (shouldCssRotate) {
+        if (dom.dockUndoSep) dom.dockUndoSep.hidden = false;
+        if (dom.undoRedoBar.parentElement !== dom.bottomDock) {
+          dom.bottomDock.appendChild(dom.undoRedoBar);
+        }
+      } else {
+        if (dom.dockUndoSep) dom.dockUndoSep.hidden = true;
+        if (dom.undoRedoBar.parentElement === dom.bottomDock && dom.bottomDock.parentElement) {
+          dom.bottomDock.parentElement.insertBefore(dom.undoRedoBar, dom.bottomDock);
+        }
+      }
+    }
+
+    if (viewport.gizmo) viewport.gizmo._rect = null;
+    if (hadRotate !== shouldCssRotate) {
+      window.dispatchEvent(new Event('resize'));
+    }
+    resizeRenderer();
+    if (viewport.appMode === 'animacion') {
+      syncAnimationUI();
+      requestAnimationFrame(() => drawTimelineCanvas());
+    }
+  };
+
+  const syncMobileButtonAvailability = () => {
+    const isPhone = isMobilePhoneDevice();
+    if (!isPhone && mobileLandscapeEnabled) {
+      mobileLandscapeEnabled = false;
+      clearRotateNoticeTimers();
+      if (dom.mobileRotateModal) dom.mobileRotateModal.hidden = true;
+      document.documentElement.classList.remove('is-mobile-landscape-90');
+      if (dom.dockUndoSep) dom.dockUndoSep.hidden = true;
+      if (dom.undoRedoBar && dom.bottomDock && dom.undoRedoBar.parentElement === dom.bottomDock && dom.bottomDock.parentElement) {
+        dom.bottomDock.parentElement.insertBefore(dom.undoRedoBar, dom.bottomDock);
+      }
+    }
+    if (dom.btnMobileLandscape) {
+      dom.btnMobileLandscape.disabled = !isPhone;
+      dom.btnMobileLandscape.classList.toggle('is-active', isPhone && mobileLandscapeEnabled);
+      dom.btnMobileLandscape.setAttribute('aria-pressed', isPhone && mobileLandscapeEnabled ? 'true' : 'false');
+      dom.btnMobileLandscape.title = !isPhone
+        ? 'Solo disponible en teléfonos móviles'
+        : mobileLandscapeEnabled
+        ? 'Volver al modo vertical normal'
+        : 'Girar la web 90 grados a modo horizontal';
+    }
+    if (dom.mobileLandscapeState) {
+      dom.mobileLandscapeState.textContent = !isPhone
+        ? 'Solo teléfono'
+        : mobileLandscapeEnabled
+        ? 'Activo (90°)'
+        : 'Off';
+    }
+  };
+
+  const closeMobileRotateNotice = () => {
+    clearRotateNoticeTimers();
+    if (dom.mobileRotateModal) dom.mobileRotateModal.hidden = true;
+  };
+
+  const activateMobileLandscape = async ({ fromUserClick = false } = {}) => {
+    if (!isMobilePhoneDevice()) {
+      closeMobileRotateNotice();
+      syncMobileButtonAvailability();
+      return;
+    }
+    closeMobileRotateNotice();
+    mobileLandscapeEnabled = true;
+    syncMobileButtonAvailability();
+
+    if (fromUserClick) {
+      try {
+        if (!document.fullscreenElement && document.documentElement.requestFullscreen) {
+          await document.documentElement.requestFullscreen();
+        }
+      } catch (_) {}
+      try {
+        if (screen.orientation && typeof screen.orientation.lock === 'function') {
+          await screen.orientation.lock('landscape');
+        }
+      } catch (_) {}
+    }
+
+    syncCssRotation();
+    setStatus('Modo horizontal móvil (90°) activado. Toca de nuevo en Ajustes para desactivar.');
+  };
+
+  const disableMobileLandscape = ({ silent = false } = {}) => {
+    closeMobileRotateNotice();
+    mobileLandscapeEnabled = false;
+    try {
+      if (screen.orientation && typeof screen.orientation.unlock === 'function') {
+        screen.orientation.unlock();
+      }
+    } catch (_) {}
+    try {
+      if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
+        document.exitFullscreen().catch(() => {});
+      }
+    } catch (_) {}
+    syncMobileButtonAvailability();
+    syncCssRotation();
+    if (!silent) {
+      setStatus('Modo horizontal móvil (90°) desactivado.');
+    }
+  };
+
+  const openMobileRotateNotice = () => {
+    if (!isMobilePhoneDevice()) return;
+    closeAllPopovers();
+    clearRotateNoticeTimers();
+    if (!dom.mobileRotateModal) {
+      void activateMobileLandscape({ fromUserClick: true });
+      return;
+    }
+    let secondsLeft = 2;
+    if (dom.mobileRotateCountdown) {
+      dom.mobileRotateCountdown.textContent = `Girando automáticamente en ${secondsLeft} s...`;
+    }
+    dom.mobileRotateModal.hidden = false;
+    countdownInterval = setInterval(() => {
+      secondsLeft = Math.max(0, secondsLeft - 1);
+      if (dom.mobileRotateCountdown) {
+        dom.mobileRotateCountdown.textContent =
+          secondsLeft > 0 ? `Girando automáticamente en ${secondsLeft} s...` : 'Girando a modo horizontal...';
+      }
+    }, 850);
+    rotateTimer = setTimeout(() => {
+      void activateMobileLandscape({ fromUserClick: false });
+    }, 1700);
+  };
+
+  dom.btnMobileLandscape?.addEventListener('click', () => {
+    if (!isMobilePhoneDevice()) {
+      syncMobileButtonAvailability();
+      return;
+    }
+    if (mobileLandscapeEnabled) {
+      disableMobileLandscape();
+    } else {
+      openMobileRotateNotice();
+    }
+  });
+
+  dom.btnMobileRotateNow?.addEventListener('click', () => {
+    void activateMobileLandscape({ fromUserClick: true });
+  });
+  dom.btnMobileRotateCancel?.addEventListener('click', closeMobileRotateNotice);
+  dom.mobileRotateModal?.addEventListener('click', (e) => {
+    if (e.target === dom.mobileRotateModal) closeMobileRotateNotice();
+  });
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && dom.mobileRotateModal && !dom.mobileRotateModal.hidden) {
+      closeMobileRotateNotice();
+    }
+  });
+
+  const handleViewportChange = () => {
+    syncMobileButtonAvailability();
+    if (mobileLandscapeEnabled) syncCssRotation();
+  };
+  window.addEventListener('resize', handleViewportChange);
+  window.addEventListener('orientationchange', handleViewportChange);
+  if (typeof window.matchMedia === 'function') {
+    const coarseMq = window.matchMedia('(pointer: coarse)');
+    coarseMq.addEventListener?.('change', handleViewportChange);
+  }
+
+  syncMobileButtonAvailability();
 }

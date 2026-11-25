@@ -231,6 +231,7 @@ export class KeyframeTrack {
     this.name = snap.name ?? this.name;
     this.property = snap.property ?? null;
     this.target = snap.target ?? null;
+    this.valueSize = snap.valueSize ?? this.valueSize;
     this.interpolation = snap.interpolation || 'linear';
     this.times = Float32Array.from(snap.times || []);
     this.values = Float32Array.from(snap.values || []);
@@ -443,15 +444,20 @@ export class AnimationClip {
     );
   }
 
-  getOrCreateTrack(obj, property) {
+  getOrCreateTrack(obj, property, valueSize = null) {
     let track = this.getTrackByTarget(obj, property);
     if (!track) {
       const baseName = `${obj.name || `Obj_${obj.id}`}.${property}`;
       const defaultInterp = this.getInterpolation();
-      track =
-        property === 'quaternion'
-          ? new QuaternionKeyframeTrack(baseName, [], [], defaultInterp)
-          : new VectorKeyframeTrack(baseName, [], [], defaultInterp);
+      const isWeightProp = property === 'weights' || property === 'morphTargetInfluences';
+      if (property === 'quaternion') {
+        track = new QuaternionKeyframeTrack(baseName, [], [], defaultInterp);
+      } else if (isWeightProp || (valueSize != null && valueSize > 0 && valueSize !== 3)) {
+        const size = Math.max(1, (valueSize | 0) || obj?.morphTargetInfluences?.length || 1);
+        track = new NumberArrayKeyframeTrack(baseName, [], [], size, defaultInterp);
+      } else {
+        track = new VectorKeyframeTrack(baseName, [], [], defaultInterp);
+      }
       track.target = obj;
       track.property = property;
       this.tracks.push(track);
@@ -495,8 +501,8 @@ export class AnimationClip {
     let updated = false;
     for (const prop of props) {
       const valArr = readObjectPropertyValues(obj, prop);
-      if (!valArr) continue;
-      const tr = this.getOrCreateTrack(obj, prop);
+      if (!valArr || !valArr.length) continue;
+      const tr = this.getOrCreateTrack(obj, prop, valArr.length);
       tr.setKeyframe(t, valArr, { mergeEps });
       updated = true;
     }
@@ -588,8 +594,8 @@ export class AnimationClip {
     }
     const pasted = [];
     for (const [prop, entry] of Object.entries(data.properties)) {
-      if (!entry || !Array.isArray(entry.values)) continue;
-      const tr = this.getOrCreateTrack(obj, prop);
+      if (!entry || !Array.isArray(entry.values) || !entry.values.length) continue;
+      const tr = this.getOrCreateTrack(obj, prop, entry.valueSize || entry.values.length);
       if (entry.interpolation && !tr.times.length) {
         tr.interpolation = entry.interpolation;
       }

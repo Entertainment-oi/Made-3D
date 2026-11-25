@@ -3,6 +3,7 @@ import { Raycaster } from '../core/Raycaster.js';
 import { Vec3 as Vector3 } from '../math/Vec3.js';
 import { SelectionOutline } from './SelectionOutline.js';
 import { SkeletonHelper } from '../objects/SkeletonHelper.js';
+import { clientToLocalPointFromRect } from '../core/viewportCoords.js';
 import {
   GizmoRenderer2D,
   clamp,
@@ -137,6 +138,7 @@ export class GizmoBase extends Object3D {
     };
     this._onBlur = () => {
       if (this._disposed) return;
+      this._clearLongPress();
       this.shift = false;
       this._pointers.clear();
       this._tap = null;
@@ -386,6 +388,7 @@ export class GizmoBase extends Object3D {
 
   dispose() {
     if (this._disposed) return;
+    this._clearLongPress();
     if (this.drag) this.cancel();
     this._disposed = true;
     this.enabled = false;
@@ -531,8 +534,7 @@ export class GizmoBase extends Object3D {
       this._rect = this.domElement.getBoundingClientRect();
       this._rectTime = now;
     }
-    const r = this._rect;
-    return [(e.clientX - r.left) * (this.W / (r.width || 1)), (e.clientY - r.top) * (this.H / (r.height || 1))];
+    return clientToLocalPointFromRect(this._rect, e, this.W, this.H);
   }
 
   _ray(x, y) { return screenRay(this.camera, this.ray, x, y, this.W, this.H); }

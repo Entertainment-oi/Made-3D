@@ -2,6 +2,7 @@ import { Vec3 } from '../math/Vec3.js';
 import { Quat } from '../math/Quat.js';
 import { Mat4 } from '../math/Mat4.js';
 import { Raycaster } from '../core/Raycaster.js';
+import { clientToLocalPoint } from '../core/viewportCoords.js';
 import { GizmoMade3d } from '../gizmo/GizmoMade3d.js';
 import { GizmoRenderer2D, clamp, PAIRS } from '../gizmo/GizmoRenderer2D.js';
 import { screenRay, closestT, planeHit, SNAP_DEFAULT, LABEL } from '../gizmo/GizmoTransform.js';
@@ -1839,11 +1840,7 @@ export class MeshEditor {
 
     const toXY = (e) => {
       const rectEl = resolveTarget() || domElement;
-      const rect = rectEl.getBoundingClientRect();
-      return [
-        ((e.clientX - rect.left) / Math.max(1, rect.width)) * this._W,
-        ((e.clientY - rect.top) / Math.max(1, rect.height)) * this._H,
-      ];
+      return clientToLocalPoint(rectEl, e, this._W, this._H);
     };
 
     const onPointerDown = (e) => {
@@ -1955,9 +1952,12 @@ export class MeshEditor {
         const activeCam = resolveCamera();
         if (!activeCam || !this.mesh) return;
         const rectEl = resolveTarget() || domElement;
-        const rect = rectEl.getBoundingClientRect();
-        const px = ((startClientX - rect.left) / Math.max(1, rect.width)) * this._W;
-        const py = ((startClientY - rect.top) / Math.max(1, rect.height)) * this._H;
+        const [px, py] = clientToLocalPoint(
+          rectEl,
+          { clientX: startClientX, clientY: startClientY },
+          this._W,
+          this._H
+        );
         const hit = this._pickElement(activeCam, px, py, touch);
         if (!hit) return;
 

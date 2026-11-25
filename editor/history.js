@@ -53,6 +53,16 @@ export function estimateCommandBytes(cmd) {
       (bMesh?._densityOrigin?.faces?.length || 0) +
       (aMesh?._densityOrigin?.faces?.length || 0);
     bytes += vLen * 32 + fLen * 48 + (cmd.removals ? cmd.removals.length * 256 : 0);
+  } else if (cmd.type === 'animClip') {
+    const countTracks = (snap) => {
+      if (!snap?.tracks) return 0;
+      let total = 0;
+      for (const tr of snap.tracks) {
+        total += (tr.times?.byteLength || 0) + (tr.values?.byteLength || 0) + 64;
+      }
+      return total;
+    };
+    bytes += countTracks(cmd.before) + countTracks(cmd.after);
   } else if (cmd.type === 'transform') {
     bytes += (cmd.os ? cmd.os.length : 1) * 192;
   } else if (cmd.type === 'delete') {
@@ -232,6 +242,7 @@ export class HistoryManager {
       animPlaying: sceneStore.animPlaying,
       activeClipIndex: sceneStore.activeClipIndex ?? (dom.animSelect ? Number(dom.animSelect.value || 0) : 0),
       cameraCounter: sceneStore.cameraCounter,
+      animSnapshot: this._hooks.captureAnimState ? this._hooks.captureAnimState() : null,
     };
   }
 
@@ -243,6 +254,9 @@ export class HistoryManager {
     sceneStore.activeAction = meta.activeAction || null;
     sceneStore.activeClipIndex = meta.activeClipIndex ?? 0;
     sceneStore.animPlaying = meta.animPlaying !== undefined ? meta.animPlaying : true;
+    if (meta.animSnapshot && this._hooks.restoreAnimState) {
+      this._hooks.restoreAnimState(meta.animSnapshot);
+    }
     if (viewport.picker) viewport.picker.setMixer(sceneStore.mixer);
     if (dom.animSelect) dom.animSelect.innerHTML = '';
     if (sceneStore.animations.length && sceneStore.mixer) {
@@ -448,6 +462,11 @@ export class HistoryManager {
         }
       }
       setStatus('Fusión de mallas deshecha.');
+    } else if (cmd.type === 'animClip') {
+      if (cmd.clip && cmd.before) {
+        this._hooks.restoreAnimClip?.(cmd.clip, cmd.before);
+      }
+      setStatus(`${cmd.label || 'Animación'} deshecha.`);
     }
 
     syncPrimaryLightRefs();
@@ -455,6 +474,7 @@ export class HistoryManager {
     this._hooks.syncSelectedUI?.();
     this._hooks.syncSculptUI?.();
     this._hooks.syncEditUI?.();
+    this._hooks.syncAnimationUI?.();
     this._hooks.renderObjectList?.();
     this.updateButtons();
   }
@@ -567,6 +587,11 @@ export class HistoryManager {
         if (isInScene(cmd.mesh)) this._hooks.selectObject?.(cmd.mesh);
       }
       setStatus('Fusión de mallas rehecha.');
+    } else if (cmd.type === 'animClip') {
+      if (cmd.clip && cmd.after) {
+        this._hooks.restoreAnimClip?.(cmd.clip, cmd.after);
+      }
+      setStatus(`${cmd.label || 'Animación'} rehecha.`);
     }
 
     syncPrimaryLightRefs();
@@ -574,6 +599,7 @@ export class HistoryManager {
     this._hooks.syncSelectedUI?.();
     this._hooks.syncSculptUI?.();
     this._hooks.syncEditUI?.();
+    this._hooks.syncAnimationUI?.();
     this._hooks.renderObjectList?.();
     this.updateButtons();
   }

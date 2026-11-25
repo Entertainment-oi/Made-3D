@@ -19,15 +19,9 @@ import {
   Mesh,
   DirectionalLight,
   PointLight,
-  Vec3,
   autoScaleObject,
   computeBounds,
-  loadGLTFLoader,
-  loadOBJLoader,
-  loadZipLoader,
-  loadKTX2Loader,
   loadTextGeometry,
-  loadAnimation,
 } from '../made3d.module.js';
 import {
   Bone,
@@ -36,16 +30,6 @@ import {
   SkinnedMesh,
   cloneObject,
 } from '../src/modules/rigging.js';
-import {
-  EditableMesh,
-  MAX_SUBSURF_FACES,
-  catmullClark,
-  computeFaceShellIds,
-  ensureEditableBase,
-  setMeshSubsurf,
-  snapshotMeshModelingState,
-  restoreMeshModelingState,
-} from '../src/modules/modeling.js';
 import {
   createProceduralEnvironment,
   loadEnvironmentFromFile,
@@ -67,7 +51,6 @@ import {
   syncCameraHelperSelection,
   selectObject,
   resetCamera,
-  focusOnObject,
   setGizmoMode,
 } from './viewport.js';
 import {
@@ -87,6 +70,14 @@ import {
   syncAppModeUI,
   renderObjectList,
 } from './inspectorUI.js';
+import {
+  cleanupClipsForObject,
+  clearAllCustomClips,
+  syncAnimationUI,
+} from './animationController.js';
+
+export { mergeSelectedObjects } from './meshMerge.js';
+export { buildExportTarget, handleModelFiles, exportSceneFormat } from './ioActions.js';
 
 export const proceduralTexture = Texture.checkerboard();
 
@@ -117,6 +108,7 @@ export function clearUserObjects({ dispose = false, keepSceneLights = false } = 
   sceneStore.animations = [];
   sceneStore.activeAction = null;
   sceneStore.activeClipIndex = 0;
+  clearAllCustomClips();
   if (dom.animGroup) dom.animGroup.hidden = true;
   if (dom.animSelect) dom.animSelect.innerHTML = '';
   if (viewport.picker) viewport.picker.setMixer(null);
@@ -127,6 +119,7 @@ export function clearUserObjects({ dispose = false, keepSceneLights = false } = 
   syncSelectedUI();
   syncSculptUI();
   syncEditUI();
+  syncAnimationUI();
   renderObjectList();
 }
 
@@ -265,6 +258,7 @@ export function deleteSelected(explicitTarget = null) {
     const mainRec = history.buildRemovalRecord(o);
     history.applyRemoval(mainRec);
     removals.push(mainRec);
+    cleanupClipsForObject(o);
 
     if (!isBone && !mainRec.wasUserObject && mainRec.parent) {
       const owner = findOwningUserRoot(mainRec.parent);
@@ -272,6 +266,7 @@ export function deleteSelected(explicitTarget = null) {
         const ownerRec = history.buildRemovalRecord(owner);
         history.applyRemoval(ownerRec);
         removals.push(ownerRec);
+        cleanupClipsForObject(owner);
       }
     }
     if (o === lighting.dirLight) lighting.dirLight = null;
@@ -304,6 +299,7 @@ export function deleteSelected(explicitTarget = null) {
     syncSelectedUI();
     syncSculptUI();
     syncEditUI();
+    syncAnimationUI();
     renderObjectList();
   }
 
@@ -322,196 +318,6 @@ export function deleteSelected(explicitTarget = null) {
       ? `${targets.length} objetos`
       : targets[0].name || (targets[0].isBone ? 'Hueso' : 'Objeto');
   setStatus(`Eliminado: ${label} (Ctrl+Z para deshacer)`);
-}
-
-export function mergeSelectedObjects({
-  targets = null,
-  threshold = 0.015,
-  removeInteriorFaces = true,
-  stitchTJunctions = true,
-  solidity = 0.8,
-  seamSmooth = 0.5,
-  remeshOrganic = true,
-} = {}) {
-  const rawList = Array.isArray(targets) && targets.length
-    ? targets
-    : (viewport.gizmo?.objects?.length ? viewport.gizmo.objects : [sceneStore.selected]);
-  const seen = new Set();
-  const candidates = [];
-  for (const o of rawList) {
-    if (!o || seen.has(o)) continue;
-    if (o.isMesh && o.geometry && !o.isFloor && !o.isSkinnedMesh) {
-      seen.add(o);
-      candidates.push(o);
-    }
-  }
-
-  if (candidates.length >= 2) {
-    // Usar el objeto activo en modo Edición o el último seleccionado como malla destino
-    const activeEditMesh = edit.active && edit.editor.mesh ? edit.editor.mesh : null;
-    let primary = activeEditMesh && candidates.includes(activeEditMesh)
-      ? activeEditMesh
-      : candidates[candidates.length - 1];
-    const others = candidates.filter((c) => c !== primary);
-    const prevSelection = candidates.slice();
-    primary.updateWorldMatrix(true, false);
-    const beforeState = snapshotMeshModelingState(primary);
-
-    let anyBakedSubsurf = false;
-    let anySmoothShading = false;
-    const items = candidates.map((m) => {
-      m.updateWorldMatrix(true, false);
-      if (m._subsurfDirtyFromGeometry || (m.geometry && m.geometry._modifiedBySculpt && !m.geometry._isGeneratedSubsurf)) {
-        ensureEditableBase(m);
-      }
-      let editableMesh = m._subsurf?.baseMesh || null;
-      if (m._subsurf && m._subsurf.level > 0 && editableMesh) {
-        editableMesh = catmullClark(editableMesh, m._subsurf.level, MAX_SUBSURF_FACES, m._subsurf.smoothness ?? 1);
-        anyBakedSubsurf = true;
-        if (m._subsurf.smoothShading !== false) anySmoothShading = true;
-      } else if (m._subsurf?.smoothShading) {
-        anySmoothShading = true;
-      }
-      return {
-        editableMesh,
-        geometry: m.geometry,
-        matrixWorld: m.matrixWorld,
-      };
-    });
-
-    const mergeRes = EditableMesh.mergeMeshes(items, {
-      targetMatrixWorld: primary.matrixWorld,
-      threshold,
-      removeInteriorFaces,
-      stitchTJunctions,
-      solidity,
-      seamSmooth,
-      remeshOrganic,
-    });
-    const merged = mergeRes && mergeRes.mesh ? mergeRes.mesh : null;
-    if (!merged || !merged.verts.length) {
-      setStatus('No se pudieron fusionar las mallas seleccionadas.', true);
-      return false;
-    }
-
-    const prevMod = primary._subsurf;
-    const prevLevel = anyBakedSubsurf ? 0 : (prevMod?.level ?? 0);
-    const prevSmoothness = prevMod?.smoothness ?? 1.0;
-    const prevShading = anyBakedSubsurf
-      ? (anySmoothShading || prevMod?.smoothShading !== false)
-      : (prevMod?.smoothShading ?? Boolean(primary.geometry?.attributes?.normal));
-    const prevShowCage = prevMod ? prevMod.showCage !== false : true;
-    const prevAlwaysCage = Boolean(prevMod && prevMod.alwaysShowCage);
-
-    primary._subsurf = null;
-    setMeshSubsurf(primary, {
-      baseMesh: merged,
-      level: prevLevel,
-      smoothness: prevSmoothness,
-      smoothShading: prevShading,
-      showCage: prevShowCage,
-      alwaysShowCage: prevAlwaysCage,
-    });
-    if (!prevLevel) {
-      const geo = merged.toGeometry({ flatShading: !prevShading });
-      if (typeof primary.setGeometry === 'function') primary.setGeometry(geo);
-      else primary.geometry = geo;
-    }
-
-    const removals = [];
-    for (const o of others) {
-      const rec = history.buildRemovalRecord(o);
-      history.applyRemoval(rec);
-      removals.push(rec);
-    }
-
-    const afterState = snapshotMeshModelingState(primary);
-    history.push({
-      type: 'mergeMeshes',
-      mesh: primary,
-      beforeState,
-      afterState,
-      removals,
-      prevSelection,
-    });
-
-    selectObject(primary);
-    if (edit.active) {
-      edit.editor.setMesh(primary);
-      syncEditUI();
-    }
-    setStatus(`${candidates.length} mallas soldadas en "${primary.name || 'Malla'}".`);
-    return true;
-  }
-
-  // Un solo objeto -> soldar islas internas / vértices cercanos sobre sí mismo
-  const single = edit.active && edit.editor.mesh ? edit.editor.mesh : candidates[0];
-  if (!single) {
-    setStatus('Mantén presionado para seleccionar 2 o más mallas, o selecciona 1 malla para soldar sus partes.', true);
-    return false;
-  }
-
-  const beforeState = snapshotMeshModelingState(single);
-  if (single._subsurfDirtyFromGeometry || (single.geometry && single.geometry._modifiedBySculpt && !single.geometry._isGeneratedSubsurf)) {
-    ensureEditableBase(single);
-  }
-  const prevMod = single._subsurf;
-  let bakedSingleSubsurf = false;
-  let em = single._subsurf?.baseMesh ? single._subsurf.baseMesh.clone() : EditableMesh.fromGeometry(single.geometry);
-  if (!em) return false;
-  if (prevMod && prevMod.level > 0 && single._subsurf?.baseMesh && computeFaceShellIds(em).shellCount >= 2) {
-    em = catmullClark(em, prevMod.level, MAX_SUBSURF_FACES, prevMod.smoothness ?? 1);
-    bakedSingleSubsurf = true;
-  }
-  const weldRes = em.weldShells({
-    threshold,
-    removeInteriorFaces,
-    stitchTJunctions,
-    solidity,
-    seamSmooth,
-    remeshOrganic,
-  });
-  if (!weldRes.changed) {
-    setStatus('No había vértices o costuras cercanas que soldar con esa tolerancia.');
-    return false;
-  }
-
-  const nextLevel = bakedSingleSubsurf ? 0 : (prevMod?.level ?? 0);
-  single._subsurf = null;
-  setMeshSubsurf(single, {
-    baseMesh: em,
-    level: nextLevel,
-    smoothness: prevMod?.smoothness ?? 1.0,
-    smoothShading: prevMod?.smoothShading ?? true,
-    showCage: prevMod ? prevMod.showCage !== false : true,
-    alwaysShowCage: Boolean(prevMod && prevMod.alwaysShowCage),
-  });
-  if (!(nextLevel > 0)) {
-    const geo = em.toGeometry({ flatShading: prevMod ? !prevMod.smoothShading : false });
-    if (typeof single.setGeometry === 'function') single.setGeometry(geo);
-    else single.geometry = geo;
-  }
-
-  const afterState = snapshotMeshModelingState(single);
-  if (beforeState && afterState) {
-    restoreMeshModelingState(single, afterState);
-    history.push({
-      type: 'meshEdit',
-      mesh: single,
-      beforeState,
-      afterState,
-      label: 'Soldar mallas',
-    });
-  }
-  if (edit.active && edit.editor.mesh === single) {
-    edit.editor.clearSelection();
-  }
-  syncEditUI();
-  syncSelectedUI();
-  setStatus(
-    `Malla soldada: ${weldRes.mergedVertices ?? 0} vértices unidos, ${weldRes.removedInteriorFaces ?? 0} caras internas quitadas.`
-  );
-  return true;
 }
 
 export function addPrimitive(kind, opts = {}) {
@@ -840,7 +646,6 @@ export function initDefaultScene() {
     select: false,
   });
 
-  // Incluir las luces iniciales de escena en la lista (Outliner) para poder ocultarlas, renombrarlas o editarlas
   if (lighting.dirLight && !sceneStore.userObjects.includes(lighting.dirLight)) {
     sceneStore.userObjects.push(lighting.dirLight);
   }
@@ -861,163 +666,4 @@ export function playAnimationClip(index) {
   sceneStore.activeClipIndex = index;
   sceneStore.animPlaying = true;
   if (dom.btnAnimPlay) dom.btnAnimPlay.textContent = 'Pausar';
-}
-
-export function buildExportTarget() {
-  const scope = dom.exportScope?.value;
-  if (scope === 'selected') {
-    if (!sceneStore.selected) {
-      setStatus('Selecciona un objeto para exportarlo.', true);
-      return null;
-    }
-    return { target: sceneStore.selected, baseName: (sceneStore.selected.name || 'modelo').replace(/\s+/g, '_') };
-  }
-  const exportables = viewport.scene.getExportables({ recursive: false });
-  if (!sceneStore.userObjects.length || !exportables.length) {
-    setStatus('No hay objetos exportables en la escena.', true);
-    return null;
-  }
-  return { target: viewport.scene, baseName: 'escena_made3d' };
-}
-
-export async function handleModelFiles(fileList) {
-  let files = Array.from(fileList || []);
-  if (!files.length) return;
-
-  const zipFiles = files.filter((f) => /\.zip$/i.test(f.name));
-  if (zipFiles.length) {
-    setStatus(`Descomprimiendo ${zipFiles[0].name}...`);
-    try {
-      const { ZipLoader } = await loadZipLoader();
-      const zipLoader = new ZipLoader();
-      const nonZip = files.filter((f) => !/\.zip$/i.test(f.name));
-      for (const zf of zipFiles) {
-        const extracted = await zipLoader.loadFile(zf);
-        nonZip.push(...extracted);
-      }
-      files = nonZip;
-    } catch (err) {
-      setStatus(`Error al descomprimir ZIP: ${err.message}`, true);
-      return;
-    }
-  }
-
-  const mainModel =
-    files.find((f) => /\.(glb|gltf)$/i.test(f.name)) ||
-    files.find((f) => /\.obj$/i.test(f.name)) ||
-    null;
-  const ktx2File = !mainModel ? files.find((f) => /\.ktx2$/i.test(f.name)) : null;
-
-  if (!mainModel && ktx2File) {
-    setStatus(`Transcodificando textura KTX2: ${ktx2File.name}...`);
-    try {
-      if (!viewport.ktx2Loader) {
-        const { KTX2Loader } = await loadKTX2Loader();
-        viewport.ktx2Loader = new KTX2Loader().detectSupport(viewport.renderer);
-      }
-      const tex = await viewport.ktx2Loader.loadFile(ktx2File, { colorSpace: 'srgb' });
-      const mat = sceneStore.selected?.getPrimaryMaterial?.() || null;
-      const dims = `${tex.width || 0}x${tex.height || 0}`;
-      const fmtTag = tex.compressed ? 'comprimida GPU' : 'RGBA32';
-      if (mat) {
-        mat.map = tex;
-        if (mat.color) mat.color.set(0xffffff);
-        syncSelectedUI();
-        setStatus(`Textura KTX2 aplicada a ${sceneStore.selected.name || 'selección'}: ${ktx2File.name} (${dims}, ${fmtTag})`);
-      } else {
-        const mesh = addPrimitive('box', {
-          name: ktx2File.name.replace(/\.ktx2$/i, '') || 'Cubo KTX2',
-          color: 0xffffff,
-          shininess: 24,
-          recordHistory: true,
-        });
-        mesh.material.map = tex;
-        syncSelectedUI();
-        focusOnObject(mesh);
-        setStatus(`Cubo creado con textura KTX2: ${ktx2File.name} (${dims}, ${fmtTag})`);
-      }
-    } catch (err) {
-      setStatus(`Error al cargar KTX2: ${err.message}`, true);
-    }
-    return;
-  }
-
-  if (!mainModel) {
-    setStatus('Selecciona un archivo .glb, .gltf, .obj, .zip o .ktx2.', true);
-    return;
-  }
-
-  const extras = files.filter((f) => f !== mainModel);
-  setStatus(`Cargando ${mainModel.name}...`);
-
-  try {
-    let root = null;
-    let clips = [];
-
-    if (/\.obj$/i.test(mainModel.name)) {
-      const { OBJLoader } = await loadOBJLoader();
-      const loader = new OBJLoader();
-      root = await loader.loadFile(mainModel, extras);
-    } else {
-      const { GLTFLoader } = await loadGLTFLoader();
-      const loader = new GLTFLoader({
-        ktx2Loader: viewport.ktx2Loader,
-        dracoLoader: viewport.dracoLoader,
-        renderer: viewport.renderer,
-      });
-      const gltf = await loader.loadFile(mainModel, extras);
-      if (loader.ktx2Loader && !viewport.ktx2Loader) viewport.ktx2Loader = loader.ktx2Loader;
-      if (loader.dracoLoader && !viewport.dracoLoader) viewport.dracoLoader = loader.dracoLoader;
-      root = gltf.scene;
-      clips = gltf.animations || [];
-    }
-
-    if (!root) throw new Error('El archivo no contiene geometría.');
-
-    autoScaleObject(root, { targetSize: 2.8, centerXZ: true, alignBottom: true });
-    root.traverse((node) => {
-      if (node.isMesh) {
-        node.castShadow = true;
-        node.receiveShadow = true;
-      }
-    });
-
-    const beforeSceneMeta = history.captureSceneMeta();
-    const { cmd } = registerUserObject(root, mainModel.name, true);
-    selectObject(root);
-    focusOnObject(root);
-
-    if (clips.length) {
-      const { AnimationMixer } = await loadAnimation();
-      sceneStore.mixer = new AnimationMixer(root);
-      sceneStore.animations = clips;
-      viewport.picker.setMixer(sceneStore.mixer);
-      if (dom.animSelect) dom.animSelect.innerHTML = '';
-      clips.forEach((clip, idx) => {
-        const opt = document.createElement('option');
-        opt.value = String(idx);
-        opt.textContent = clip.name || `Clip ${idx + 1}`;
-        dom.animSelect?.appendChild(opt);
-      });
-      playAnimationClip(0);
-      if (dom.animGroup) dom.animGroup.hidden = false;
-    } else {
-      sceneStore.mixer = null;
-      sceneStore.animations = [];
-      sceneStore.activeAction = null;
-      sceneStore.activeClipIndex = 0;
-      if (viewport.picker) viewport.picker.setMixer(null);
-      if (dom.animSelect) dom.animSelect.innerHTML = '';
-      if (dom.animGroup) dom.animGroup.hidden = true;
-    }
-
-    if (cmd) {
-      cmd.beforeSceneMeta = beforeSceneMeta;
-      cmd.afterSceneMeta = history.captureSceneMeta();
-    }
-
-    setStatus(`Modelo cargado: ${mainModel.name}${clips.length ? ` (${clips.length} animaciones)` : ''}`);
-  } catch (err) {
-    setStatus(`Error al cargar: ${err.message}`, true);
-  }
 }

@@ -27,6 +27,7 @@ export class Picker {
     this.raycaster = new Raycaster();
     this.boneTolerance = opts.boneTolerance ?? 10;
     this.lightTolerance = opts.lightTolerance ?? 20;
+    this.cameraTolerance = opts.cameraTolerance ?? 16;
     this.prefer = opts.prefer ?? 'bone';     // 'bone' | 'mesh' | 'auto'
     this.mixer = opts.mixer || null;
     this.filter = opts.filter || null;       // fn(object) -> boolean
@@ -72,6 +73,7 @@ export class Picker {
     }
     const boneHit = this._pickBone(ndcX, ndcY, camera, roots);
     const lightHit = this._pickLight(ndcX, ndcY, camera, roots);
+    const cameraHit = this._pickCamera(ndcX, ndcY, camera, roots);
 
     let hit = null;
     if (boneHit && meshHit) {
@@ -83,11 +85,14 @@ export class Picker {
     if (lightHit && (!hit || lightHit.depth < (hit.distance ?? hit.depth ?? Infinity) + 0.05)) {
       hit = lightHit;
     }
+    if (cameraHit && (!hit || cameraHit.depth < (hit.distance ?? hit.depth ?? Infinity) + 0.05)) {
+      hit = cameraHit;
+    }
 
     if (!hit) { this._lastBonePick = null; return null; }
     if (hit.type !== 'bone') this._lastBonePick = null;
 
-    const pickedObject = (hit.type !== 'bone' && hit.type !== 'light')
+    const pickedObject = (hit.type !== 'bone' && hit.type !== 'light' && hit.type !== 'camera')
       ? (hit.object.getPickTarget ? hit.object.getPickTarget() : (hit.object.userData?.pickTarget || hit.object))
       : hit.object;
 
@@ -104,6 +109,13 @@ export class Picker {
       type: 'light',
       object: hit.object,
       light: hit.object,
+      distance: hit.depth,
+      point: hit.point,
+      screenDistance: hit.px,
+    } : hit.type === 'camera' ? {
+      type: 'camera',
+      object: hit.object,
+      camera: hit.object,
       distance: hit.depth,
       point: hit.point,
       screenDistance: hit.px,
@@ -278,6 +290,77 @@ export class Picker {
             const depth = this.raycaster.distanceToPoint(wp);
             if (!best || d < best.px - 2 || (Math.abs(d - best.px) <= 2 && depth < best.depth)) {
               best = { type: 'light', object: o, depth, px: d, point: wp.clone() };
+            }
+          }
+        }
+      }
+      for (const c of o.children) walk(c);
+    };
+    for (const r of roots) walk(r);
+    return best;
+  }
+
+  _pickCamera(ndcX, ndcY, camera, roots) {
+    const W = this.width, H = this.height;
+    const px = (ndcX * 0.5 + 0.5) * W, py = (1 - (ndcY * 0.5 + 0.5)) * H;
+    const ve = camera.matrixWorldInverse.elements;
+    const isPersp = camera.fov !== undefined;
+    let best = null;
+
+    const consider = (camObj, wPoint, pxDist) => {
+      if (pxDist > this.cameraTolerance) return;
+      const depth = this.raycaster.distanceToPoint(wPoint);
+      if (depth < 0) return;
+      if (!best || pxDist < best.px - 2 || (Math.abs(pxDist - best.px) <= 2 && depth < best.depth)) {
+        best = { type: 'camera', object: camObj, depth, px: pxDist, point: wPoint.clone() };
+      }
+    };
+
+    const walk = (o) => {
+      if (!o || !o.visible) return;
+      if (o.isCamera && this._isPickAllowed(o, camera)) {
+        const isSelf =
+          o === camera ||
+          o === camera.sourceCamera ||
+          (camera.userData && o === camera.userData.sourceCamera);
+        if (!isSelf) {
+          o.updateWorldMatrix(true, false);
+          const wp = _v1.setFromMatrixPosition(o.matrixWorld);
+          const z = -(ve[2] * wp.x + ve[6] * wp.y + ve[10] * wp.z + ve[14]);
+          if (z > 0.02 || !isPersp) {
+            const p = _p1.copy(wp).project(camera);
+            const sx = (p.x * 0.5 + 0.5) * W;
+            const sy = (1 - (p.y * 0.5 + 0.5)) * H;
+            consider(o, wp, Math.hypot(px - sx, py - sy));
+          }
+
+          // También comprobar las líneas wireframe de cualquier CameraHelper hijo
+          for (const ch of o.children) {
+            if (!ch || !ch.isCameraHelper || !ch.linesMesh || !ch.linesMesh.visible) continue;
+            const posAttr = ch.linesMesh.geometry?.attributes?.position;
+            const arr = posAttr?.array;
+            if (!arr) continue;
+            ch.linesMesh.updateWorldMatrix(true, false);
+            const mw = ch.linesMesh.matrixWorld;
+            for (let i = 0; i + 5 < arr.length; i += 6) {
+              const a = _v2.set(arr[i], arr[i + 1], arr[i + 2]).applyMatrix4(mw);
+              const b = _v3.set(arr[i + 3], arr[i + 4], arr[i + 5]).applyMatrix4(mw);
+              if (isPersp) {
+                const z1 = -(ve[2] * a.x + ve[6] * a.y + ve[10] * a.z + ve[14]);
+                const z2 = -(ve[2] * b.x + ve[6] * b.y + ve[10] * b.z + ve[14]);
+                if (z1 <= 0.01 && z2 <= 0.01) continue;
+                if (z1 <= 0.01) a.lerp(b, (0.01 - z1) / (z2 - z1));
+                else if (z2 <= 0.01) b.lerp(a, (0.01 - z2) / (z1 - z2));
+              }
+              const pa = _p1.copy(a).project(camera);
+              const pb = _p2.copy(b).project(camera);
+              const sx1 = (pa.x * 0.5 + 0.5) * W, sy1 = (1 - (pa.y * 0.5 + 0.5)) * H;
+              const sx2 = (pb.x * 0.5 + 0.5) * W, sy2 = (1 - (pb.y * 0.5 + 0.5)) * H;
+              const { t, d } = pointSegment2D(px, py, sx1, sy1, sx2, sy2);
+              if (d <= this.cameraTolerance) {
+                const wHit = new Vec3(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t);
+                consider(o, wHit, d);
+              }
             }
           }
         }

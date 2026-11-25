@@ -87,6 +87,7 @@ export function commitSculptStroke() {
 
 export function setSculptMode(enabled) {
   const next = Boolean(enabled);
+  const wasActive = sculpt.active;
   if (next && cameraView.activeSceneCam) {
     exitCameraView();
   }
@@ -129,7 +130,14 @@ export function setSculptMode(enabled) {
   }
   dom.viewportWrap?.classList.toggle('is-sculpt-cursor', next);
 
-  syncAppModeUI(next ? 'modelar' : edit.active ? 'edicion' : 'pose');
+  const nextMode = next
+    ? 'modelar'
+    : edit.active
+    ? 'edicion'
+    : !wasActive && viewport.appMode === 'animacion'
+    ? 'animacion'
+    : 'pose';
+  syncAppModeUI(nextMode);
   syncSculptUI();
   syncGizmoXyzPanel();
 }

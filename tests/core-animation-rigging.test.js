@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as MadeCore from '../made3d.module.js';
 import {
+  Object3D,
   Scene,
   PerspectiveCamera,
   BoxGeometry,
@@ -25,6 +26,7 @@ import {
 import { InstancedMesh } from '../src/objects/InstancedMesh.js';
 import { cloneSkinned } from '../src/modules/rigging.js';
 import { ensureEditableBase, canIncrementSubsurf } from '../src/modules/modeling.js';
+import { CameraHelper } from '../src/modules/helpers.js';
 
 test('made3d.module.js mantiene núcleo ligero y carga submódulos pesados bajo demanda con import()', async () => {
   // 1. El punto de entrada principal no debe re-exportar clases pesadas síncronamente
@@ -342,4 +344,118 @@ test('cloneSkinned conserva InstancedMesh y SkinnedMesh.raycast invalida caché 
   sm.computeSkinnedWorldNormals(wn, 3);
   assert.ok(Math.abs(wn[0] - 1) < 1e-4 && Math.abs(wn[2]) < 1e-4);
 });
+
+test('VectorKeyframeTrack soporta easeIn, easeOut, smooth y step', async () => {
+  const { VectorKeyframeTrack } = await loadAnimation();
+
+  const easeIn = new VectorKeyframeTrack('Box.position', [0, 1], [0, 0, 0, 10, 0, 0], 'easeIn');
+  const easeOut = new VectorKeyframeTrack('Box.position', [0, 1], [0, 0, 0, 10, 0, 0], 'easeOut');
+  const smooth = new VectorKeyframeTrack('Box.position', [0, 1], [0, 0, 0, 10, 0, 0], 'smooth');
+  const step = new VectorKeyframeTrack('Box.position', [0, 1], [0, 0, 0, 10, 0, 0], 'step');
+
+  const outIn = easeIn.evaluate(0.5, new Vec3());
+  const outOut = easeOut.evaluate(0.5, new Vec3());
+  const outSmooth = smooth.evaluate(0.5, new Vec3());
+  const outStep = step.evaluate(0.5, new Vec3());
+
+  assert.ok(outIn.x < 3 && outIn.x > 0, `easeIn(0.5) debe ser menor a 3, fue ${outIn.x}`);
+  assert.ok(outOut.x > 7 && outOut.x < 10, `easeOut(0.5) debe ser mayor a 7, fue ${outOut.x}`);
+  assert.ok(Math.abs(outSmooth.x - 5) < 1e-5);
+  assert.equal(outStep.x, 0);
+});
+
+test('CameraHelper solo dibuja líneas wireframe y Picker selecciona cámaras en escena', () => {
+  const scene = new Scene();
+  const viewCam = new PerspectiveCamera(50, 1, 0.1, 100);
+  viewCam.position.set(0, 0, 8);
+  viewCam.lookAt(0, 0, 0);
+  viewCam.updateMatrixWorld();
+  viewCam.updateProjection();
+
+  const sceneCam = new PerspectiveCamera(45, 16 / 9, 0.2, 50);
+  sceneCam.name = 'Cámara Principal';
+  sceneCam.position.set(0, 0, 0);
+  const helper = new CameraHelper(sceneCam);
+  sceneCam.add(helper);
+  scene.add(viewCam, sceneCam);
+  scene.updateMatrixWorld(true);
+
+  assert.ok(helper.linesMesh, 'CameraHelper debe tener linesMesh');
+  assert.equal(helper.bodyMesh, undefined, 'CameraHelper no debe tener cuerpo 3D sólido');
+  assert.equal(helper.children.length, 1);
+
+  const picker = new Picker(null);
+  picker.setSize(800, 600);
+  const hit = picker.pickNdc(0, 0, viewCam, scene);
+  assert.ok(hit, 'Picker debe detectar la cámara en el centro');
+  assert.equal(hit.type, 'camera');
+  assert.equal(hit.object, sceneCam);
+});
+
+test('AnimationClip inserta keyframes por herramienta, mueve sin comer otros, fusiona, copia/pega y evalúa', async () => {
+  const { AnimationClip } = await loadAnimation();
+  const obj = new Object3D();
+  obj.name = 'CuboAnim';
+  const clip = new AnimationClip('ClipPrueba', 3.0);
+
+  // 1. Solo posición en t=0 y t=1 (no debe crear rotación ni escala)
+  obj.position.set(0, 0, 0);
+  clip.setObjectKeyframe(obj, 0, ['position']);
+  obj.position.set(4, 0, 0);
+  clip.setObjectKeyframe(obj, 1.0, ['position']);
+  obj.position.set(8, 0, 0);
+  clip.setObjectKeyframe(obj, 2.0, ['position']);
+
+  assert.equal(clip.tracks.length, 1);
+  assert.equal(clip.tracks[0].property, 'position');
+  assert.equal(clip.hasKeyframeAt(1.0, { properties: ['position'] }), true);
+  assert.equal(clip.hasKeyframeAt(1.0, { properties: ['quaternion'] }), false);
+
+  // Rotación separada en t=0.5 y resumen unificado
+  obj.rotation.set(0, Math.PI * 0.5, 0);
+  clip.setObjectKeyframe(obj, 0.5, ['quaternion']);
+  assert.equal(clip.tracks.length, 2);
+  assert.deepEqual(Array.from(clip.getKeyframeTimes('quaternion')), [0.5]);
+  assert.deepEqual(
+    Array.from(clip.getKeyframeTimes()),
+    [0, 0.5, 1, 2]
+  );
+
+  // 2. Arrastrar keyframe de position en 0.0 -> 1.0 (cruzando) -> 1.5 NO debe comerse el de 1.0
+  const beforeDrag = clip.captureSnapshot();
+  clip.previewMoveKeyframe(beforeDrag, 0, 1.0, { properties: ['position'] });
+  clip.previewMoveKeyframe(beforeDrag, 0, 1.5, { properties: ['position'] });
+  clip.commitMoveKeyframe(beforeDrag, 0, 1.5, { properties: ['position'] });
+  assert.deepEqual(Array.from(clip.getKeyframeTimes('position')), [1, 1.5, 2]);
+
+  // 3. Soltar intencionalmente en la misma posición (1.0 -> 2.0) los fusiona limpiamente
+  const beforeMerge = clip.captureSnapshot();
+  clip.commitMoveKeyframe(beforeMerge, 1.0, 2.0, { properties: ['position'], mergeEps: 0.025 });
+  assert.deepEqual(Array.from(clip.getKeyframeTimes('position')), [1.5, 2]);
+
+  // 4. Copiar keyframe en 1.5 y pegar en 2.5
+  const copied = clip.extractKeyframeData(1.5, { properties: ['position'] });
+  assert.ok(copied && copied.properties.position);
+  assert.deepEqual(copied.properties.position.values, [0, 0, 0]);
+
+  const pasted = clip.applyKeyframeData(obj, copied, 2.5);
+  assert.deepEqual(pasted, ['position']);
+  assert.deepEqual(Array.from(clip.getKeyframeTimes('position')), [1.5, 2, 2.5]);
+
+  // 5. Evaluar el clip mueve el objeto correctamente
+  clip.evaluateAt(2.0, obj);
+  assert.ok(Math.abs(obj.position.x - 4) < 1e-4);
+  clip.evaluateAt(2.5, obj);
+  assert.ok(Math.abs(obj.position.x - 0) < 1e-4);
+
+  // 6. Detección de objeto exportable y cambio parcial
+  assert.equal(clip.targetsObject(obj, obj), true);
+  const changed = AnimationClip.detectChangedProperties(
+    { p: new Vec3(0, 0, 0), q: new Quat(), s: new Vec3(1, 1, 1) },
+    { p: new Vec3(2, 0, 0), q: new Quat(), s: new Vec3(1, 1, 1) }
+  );
+  assert.deepEqual(changed, ['position']);
+});
+
+
 

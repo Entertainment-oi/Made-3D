@@ -14,6 +14,80 @@ import {
 import { syncCameraHelperSelection, selectObject } from './viewport.js';
 import { syncSelectedUI, renderObjectList } from './inspectorUI.js';
 import { registerUserObject } from './sceneActions.js';
+import {
+  getMaxSceneAnimationDuration,
+  beginCameraTimelinePlayback,
+  stepCameraTimelinePlayback,
+} from './animationController.js';
+
+const _previewState = {
+  url: null,
+  blob: null,
+  filename: '',
+  bound: false,
+};
+
+export function closeRenderPreview() {
+  if (dom.renderPreviewVideo) {
+    dom.renderPreviewVideo.pause();
+    dom.renderPreviewVideo.removeAttribute('src');
+    dom.renderPreviewVideo.hidden = true;
+  }
+  if (dom.renderPreviewImg) {
+    dom.renderPreviewImg.removeAttribute('src');
+    dom.renderPreviewImg.hidden = true;
+  }
+  if (_previewState.url) {
+    URL.revokeObjectURL(_previewState.url);
+    _previewState.url = null;
+  }
+  _previewState.blob = null;
+  _previewState.filename = '';
+  if (dom.renderPreviewModal) dom.renderPreviewModal.hidden = true;
+}
+
+export function bindRenderPreviewModal() {
+  if (_previewState.bound) return;
+  _previewState.bound = true;
+  dom.btnRenderPreviewClose?.addEventListener('click', closeRenderPreview);
+  dom.btnRenderPreviewX?.addEventListener('click', closeRenderPreview);
+  dom.renderPreviewModal?.addEventListener('click', (e) => {
+    if (e.target === dom.renderPreviewModal) closeRenderPreview();
+  });
+  dom.btnRenderPreviewDownload?.addEventListener('click', () => {
+    if (_previewState.blob && _previewState.filename) {
+      downloadBlob(_previewState.blob, _previewState.filename);
+      setStatus(`Descargado: ${_previewState.filename}`);
+    }
+    closeRenderPreview();
+  });
+}
+
+export function openRenderPreview({ kind = 'image', blob, filename, title = 'Resultado del render', metaText = '' }) {
+  if (!blob) return;
+  bindRenderPreviewModal();
+  closeRenderPreview();
+  const url = URL.createObjectURL(blob);
+  _previewState.url = url;
+  _previewState.blob = blob;
+  _previewState.filename = filename;
+
+  if (dom.renderPreviewTitle) dom.renderPreviewTitle.textContent = title;
+  if (dom.renderPreviewMeta) dom.renderPreviewMeta.textContent = metaText;
+  if (kind === 'video' && dom.renderPreviewVideo) {
+    dom.renderPreviewVideo.src = url;
+    dom.renderPreviewVideo.hidden = false;
+    dom.renderPreviewVideo.play?.().catch(() => {});
+  } else if (dom.renderPreviewImg) {
+    dom.renderPreviewImg.src = url;
+    dom.renderPreviewImg.hidden = false;
+  }
+  if (dom.renderPreviewModal) {
+    dom.renderPreviewModal.hidden = false;
+  } else {
+    downloadBlob(blob, filename);
+  }
+}
 
 export function getCameraResolution(cam) {
   const safe =
@@ -235,14 +309,21 @@ export async function renderCameraSnapshot(cam) {
     if (!blob) throw new Error('No se pudo generar la imagen.');
     const safeName = (cam.name || 'render_made3d').replace(/[^\w\-]+/g, '_');
     const filename = `${safeName}_${w}x${h}.${ext}`;
-    downloadBlob(blob, filename);
-    setStatus(`Render completado: ${filename} (${w}×${h}, ${(blob.size / 1024).toFixed(1)} KB)`);
+    const sizeKb = (blob.size / 1024).toFixed(1);
+    openRenderPreview({
+      kind: 'image',
+      blob,
+      filename,
+      title: `Render · ${cam.name || 'Cámara'}`,
+      metaText: `${w}×${h} · ${ext.toUpperCase()} · ${sizeKb} KB`,
+    });
+    setStatus(`Render listo: ${filename} (${w}×${h}, ${sizeKb} KB)`);
   } catch (err) {
     setStatus(`Error al renderizar: ${err.message}`, true);
   } finally {
     if (dom.btnCamRender) {
       dom.btnCamRender.disabled = Boolean(recorder.instance?.recording || recorder.stopping);
-      dom.btnCamRender.textContent = prevLabel || 'Renderizar imagen';
+      dom.btnCamRender.textContent = prevLabel || 'Renderizar';
     }
   }
 }
@@ -277,7 +358,8 @@ export function updateVideoRecordingUI() {
   }
 
   const timeStr = formatRecTime(rec.elapsed);
-  const durPart = recorder.duration > 0 ? ` / ${formatRecTime(recorder.duration)}` : '';
+  const shownDur = recorder.duration > 0 ? recorder.duration : (recorder.autoAnimStop ? recorder.targetAnimDuration : 0);
+  const durPart = shownDur > 0 ? ` / ${formatRecTime(shownDur)}` : '';
   const liveFps = rec.mode === 'fixed'
     ? `${rec.fps} fps fijos`
     : `${(rec.elapsed > 0.25 ? (rec.encodedFrames || rec.frames) / rec.elapsed : rec.fps).toFixed(0)} fps`;
@@ -319,6 +401,9 @@ export async function stopCameraVideo({ cancel = false } = {}) {
     recorder.instance = null;
     recorder.camera = null;
     recorder.duration = 0;
+    recorder.autoAnimStop = false;
+    recorder.targetAnimDuration = 0;
+    recorder.recordElapsed = 0;
     recorder.stopping = false;
     recorder.starting = false;
     recorder.mode = dom.sceneCamVideoMode?.value === 'realtime' ? 'realtime' : 'fixed';
@@ -337,16 +422,18 @@ export async function stopCameraVideo({ cancel = false } = {}) {
     if (res && res.blob && res.blob.size > 0) {
       const safeName = (cam?.name || 'video_made3d').replace(/[^\w\-]+/g, '_');
       const filename = `${safeName}_${res.width}x${res.height}.${res.extension}`;
-      downloadBlob(res.blob, filename);
       const count = res.encodedFrames || res.frames;
       const realFps = res.duration > 0 ? (count / res.duration).toFixed(1) : res.fps;
       const engTag = res.encoder === 'webcodecs' ? 'WebCodecs' : 'MediaRecorder';
-      const fpsHint = res.mode === 'realtime' && Number(realFps) < rec.fps * 0.75
-        ? ' · Consejo: usa modo "Fluido (FPS fijos)" para evitar caídas de FPS'
-        : '';
-      setStatus(
-        `Video guardado: ${filename} (${res.width}×${res.height}, ${res.duration.toFixed(1)} s, ${count} cuadros · ${realFps} fps reales · ${engTag}, ${(res.blob.size / (1024 * 1024)).toFixed(2)} MB)${fpsHint}`
-      );
+      const mbStr = (res.blob.size / (1024 * 1024)).toFixed(2);
+      openRenderPreview({
+        kind: 'video',
+        blob: res.blob,
+        filename,
+        title: `Video · ${cam?.name || 'Cámara'}`,
+        metaText: `${res.width}×${res.height} · ${res.duration.toFixed(1)}s · ${count} f · ${realFps} fps · ${engTag} · ${mbStr} MB`,
+      });
+      setStatus(`Video listo para previsualizar y descargar (${filename})`);
     } else {
       setStatus('No se recibieron cuadros de video.', true);
     }
@@ -356,6 +443,9 @@ export async function stopCameraVideo({ cancel = false } = {}) {
     recorder.instance = null;
     recorder.camera = null;
     recorder.duration = 0;
+    recorder.autoAnimStop = false;
+    recorder.targetAnimDuration = 0;
+    recorder.recordElapsed = 0;
     recorder.stopping = false;
     recorder.starting = false;
     recorder.mode = dom.sceneCamVideoMode?.value === 'realtime' ? 'realtime' : 'fixed';
@@ -367,6 +457,7 @@ export async function stopCameraVideo({ cancel = false } = {}) {
 async function runFixedVideoLoop(rec, duration) {
   const sched = viewport.scheduler;
   if (sched && sched.running) sched.stop();
+  const hasAnimPlayback = recorder.autoAnimStop || getMaxSceneAnimationDuration() > 0;
 
   try {
     const res = await rec.runFixedLoop({
@@ -376,12 +467,17 @@ async function runFixedVideoLoop(rec, duration) {
       isCancelled: () => recorder.instance !== rec || recorder.stopping,
       onStep: (fixedDt, simElapsed) => {
         rec.includeGrid = Boolean(getCameraMeta(recorder.camera).includeGrid);
+        recorder.recordElapsed += fixedDt;
+        if (hasAnimPlayback) {
+          stepCameraTimelinePlayback(fixedDt);
+        }
         let vpCam = cameraView.activeSceneCam ? cameraView.viewCam : viewport.camera;
         if (sched) {
           if (clock) clock.simElapsed = simElapsed;
           const ctx = sched.step(fixedDt, simElapsed, {
             skipVideoRecorder: true,
             skipRender: true,
+            skipAnimationMixer: hasAnimPlayback,
           });
           if (ctx && ctx.activeViewportCam) vpCam = ctx.activeViewportCam;
         }
@@ -419,6 +515,7 @@ export async function startCameraVideo(cam) {
   const format = dom.sceneCamVideoFormat?.value || 'auto';
   const requestedMode = dom.sceneCamVideoMode?.value === 'realtime' ? 'realtime' : 'fixed';
   const includeGrid = Boolean(getCameraMeta(cam).includeGrid);
+  const maxAnimDur = getMaxSceneAnimationDuration();
 
   recorder.starting = true;
   try {
@@ -433,22 +530,28 @@ export async function startCameraVideo(cam) {
     if (rec.mode === 'fixed' && !rec._useWebCodecs) {
       rec.mode = 'realtime';
     }
+    if (maxAnimDur > 0) {
+      beginCameraTimelinePlayback();
+    }
     rec.start();
     recorder.instance = rec;
     recorder.camera = cam;
     recorder.duration = duration;
+    recorder.autoAnimStop = duration === 0 && maxAnimDur > 0;
+    recorder.targetAnimDuration = recorder.autoAnimStop ? maxAnimDur : duration;
+    recorder.recordElapsed = 0;
     recorder.stopping = false;
     recorder.mode = rec.mode;
     recorder.starting = false;
     updateVideoRecordingUI();
-    const durTxt = duration > 0 ? `${duration}s` : 'manual';
+    const durTxt = duration > 0 ? `${duration}s` : (recorder.autoAnimStop ? `auto ${maxAnimDur.toFixed(1)}s` : 'manual');
     const engTxt = rec.encoderType === 'webcodecs' ? 'WebCodecs' : 'MediaRecorder';
     const modeTxt = rec.mode === 'fixed' ? 'fluido FPS fijos' : 'tiempo real';
     setStatus(
       `Grabando video de "${cam.name || 'Cámara'}" (${rec.width}×${rec.height} @ ${fps} fps · .${rec.extension} · ${engTxt} · ${modeTxt} · ${durTxt})...`
     );
     if (rec.mode === 'fixed') {
-      runFixedVideoLoop(rec, duration);
+      runFixedVideoLoop(rec, recorder.autoAnimStop ? recorder.targetAnimDuration : duration);
     }
   } catch (err) {
     recorder.starting = false;

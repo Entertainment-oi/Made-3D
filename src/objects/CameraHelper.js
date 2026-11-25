@@ -5,49 +5,9 @@ import { BasicMaterial } from '../materials/BuiltinMaterials.js';
 import { Color } from '../math/Color.js';
 import { DEG2RAD } from '../math/utils.js';
 
-function appendBox(positions, colors, minX, minY, minZ, maxX, maxY, maxZ, r, g, b) {
-  const pushTri = (ax, ay, az, bx, by, bz, cx, cy, cz, shade) => {
-    positions.push(ax, ay, az, bx, by, bz, cx, cy, cz);
-    const cr = r * shade, cg = g * shade, cb = b * shade;
-    colors.push(cr, cg, cb, cr, cg, cb, cr, cg, cb);
-  };
-  const pushQuad = (ax, ay, az, bx, by, bz, cx, cy, cz, dx, dy, dz, shade) => {
-    pushTri(ax, ay, az, bx, by, bz, cx, cy, cz, shade);
-    pushTri(ax, ay, az, cx, cy, cz, dx, dy, dz, shade);
-  };
-  // Frente (-Z) y Atrás (+Z)
-  pushQuad(minX, minY, minZ, maxX, minY, minZ, maxX, maxY, minZ, minX, maxY, minZ, 0.85);
-  pushQuad(maxX, minY, maxZ, minX, minY, maxZ, minX, maxY, maxZ, maxX, maxY, maxZ, 0.72);
-  // Arriba (+Y) y Abajo (-Y)
-  pushQuad(minX, maxY, minZ, maxX, maxY, minZ, maxX, maxY, maxZ, minX, maxY, maxZ, 1.0);
-  pushQuad(minX, minY, maxZ, maxX, minY, maxZ, maxX, minY, minZ, minX, minY, minZ, 0.55);
-  // Derecha (+X) e Izquierda (-X)
-  pushQuad(maxX, minY, minZ, maxX, minY, maxZ, maxX, maxY, maxZ, maxX, maxY, minZ, 0.88);
-  pushQuad(minX, minY, maxZ, minX, minY, minZ, minX, maxY, minZ, minX, maxY, maxZ, 0.68);
-}
-
-function buildCameraBodyGeometry() {
-  const pos = [];
-  const col = [];
-  // Cuerpo principal de la cámara
-  appendBox(pos, col, -0.17, -0.12, -0.06, 0.17, 0.12, 0.24, 0.28, 0.34, 0.45);
-  // Visor / zapata superior
-  appendBox(pos, col, -0.09, 0.12, 0.0, 0.09, 0.20, 0.17, 0.42, 0.49, 0.62);
-  // Barril del lente mirando hacia -Z
-  appendBox(pos, col, -0.10, -0.09, -0.20, 0.10, 0.09, -0.06, 0.18, 0.22, 0.30);
-  // Acento del lente frontal
-  appendBox(pos, col, -0.075, -0.065, -0.225, 0.075, 0.065, -0.20, 0.22, 0.74, 0.97);
-
-  const geo = new Geometry();
-  geo.setAttribute('position', new Float32Array(pos), 3);
-  geo.setAttribute('color', new Float32Array(col), 3);
-  geo.computeNormals();
-  return geo;
-}
-
 /**
- * Helper 3D para visualizar una Camera (cuerpo de cámara, pirámide frustum y flecha de orientación +Y).
- * Se adjunta como hijo de la cámara (`cam.add(new CameraHelper(cam))`) o como hermano sincronizado.
+ * Helper 3D en líneas wireframe para visualizar una Camera (pirámide frustum y flecha de orientación +Y),
+ * sin modelo sólido de cuerpo 3D.
  */
 export class CameraHelper extends Object3D {
   constructor(camera = null, opts = {}) {
@@ -68,7 +28,7 @@ export class CameraHelper extends Object3D {
       fog: false,
       depthTest: true,
       transparent: true,
-      opacity: opts.opacity ?? 0.92,
+      opacity: opts.opacity ?? 0.94,
     });
     this.linesMesh = new Mesh(lineGeo, lineMat);
     this.linesMesh.drawMode = 'lines';
@@ -79,22 +39,9 @@ export class CameraHelper extends Object3D {
     this.linesMesh.pickable = false;
     this.linesMesh.outline = false;
     this.linesMesh.exportable = false;
+    this.linesMesh.isCameraHelper = true;
 
-    const bodyGeo = buildCameraBodyGeometry();
-    const bodyMat = new BasicMaterial({
-      vertexColors: true,
-      color: 0xffffff,
-      fog: false,
-      side: 'double',
-    });
-    this.bodyMesh = new Mesh(bodyGeo, bodyMat);
-    this.bodyMesh.frustumCulled = false;
-    this.bodyMesh.castShadow = false;
-    this.bodyMesh.receiveShadow = false;
-    this.bodyMesh.isCameraHelper = true;
-    this.bodyMesh.exportable = false;
-
-    this.add(this.bodyMesh, this.linesMesh);
+    this.add(this.linesMesh);
     this._lastSig = '';
     this.setCamera(camera);
     this.update();
@@ -102,8 +49,10 @@ export class CameraHelper extends Object3D {
 
   setCamera(camera) {
     this.camera = camera || null;
-    this.bodyMesh.pickTarget = this.camera;
-    this.bodyMesh.ownerCamera = this.camera;
+    if (this.linesMesh) {
+      this.linesMesh.ownerCamera = this.camera;
+      this.linesMesh.pickTarget = this.camera;
+    }
     this._lastSig = '';
     return this;
   }
@@ -127,7 +76,6 @@ export class CameraHelper extends Object3D {
           (activeCamera.userData && activeCamera.userData.sourceCamera === this.camera))
     );
     const vis = !viewingThroughSelf;
-    this.bodyMesh.visible = vis;
     this.linesMesh.visible = vis;
     if (vis) this.update();
   }
@@ -230,7 +178,7 @@ export class CameraHelper extends Object3D {
     if (recursive && source.children) {
       for (let i = 0; i < source.children.length; i++) {
         const c = source.children[i];
-        if (c === source.bodyMesh || c === source.linesMesh) continue;
+        if (c === source.linesMesh) continue;
         this.add(c.clone(true));
       }
     }
@@ -242,8 +190,6 @@ export class CameraHelper extends Object3D {
   dispose() {
     this.linesMesh.geometry.dispose();
     this.linesMesh.material.dispose();
-    this.bodyMesh.geometry.dispose();
-    this.bodyMesh.material.dispose();
     return this;
   }
 }

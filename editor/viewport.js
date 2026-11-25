@@ -39,7 +39,8 @@ import { history } from './history.js';
 import { updateViewfinderOverlay, exitCameraView } from './cameraView.js';
 import { syncSculptUI, setSculptMode } from './sculptController.js';
 import { setEditMode, syncEditUI } from './editController.js';
-import { syncSelectedUI, syncGizmoXyzPanel, renderObjectList } from './inspectorUI.js';
+import { syncSelectedUI, syncGizmoXyzPanel, syncViewCameraQuickBtn, renderObjectList } from './inspectorUI.js';
+import { recordAutoKeyframeIfNeeded, syncAnimationUI, syncAnimationHeader } from './animationController.js';
 
 export function resizeRenderer() {
   if (!viewport.renderer || !dom.viewportWrap) return;
@@ -106,6 +107,8 @@ export function selectObject(obj) {
   syncSculptUI();
   syncEditUI();
   syncGizmoXyzPanel();
+  syncViewCameraQuickBtn();
+  syncAnimationUI();
   renderObjectList();
 }
 
@@ -207,6 +210,8 @@ export function buildGizmo(style) {
     syncSelectedUI();
     syncEditUI();
     syncGizmoXyzPanel();
+    syncViewCameraQuickBtn();
+    syncAnimationUI();
     renderObjectList();
   });
 
@@ -224,6 +229,8 @@ export function buildGizmo(style) {
       }
     } else if (hit.type === 'light' && hit.object) {
       setStatus(`Luz seleccionada: ${hit.object.name || 'Luz'}`);
+    } else if (hit.type === 'camera' && hit.object) {
+      setStatus(`Cámara seleccionada: ${hit.object.name || 'Cámara'}`);
     }
   });
 
@@ -248,6 +255,7 @@ export function buildGizmo(style) {
         before: e.before.map(cloneLocalState),
         after: e.after.map(cloneLocalState),
       });
+      recordAutoKeyframeIfNeeded(e.os, { beforeList: e.before, afterList: e.after });
     }
     history.updateButtons();
   });
@@ -305,6 +313,7 @@ export function setGizmoMode(mode) {
   });
   syncEditPivotUI();
   syncGizmoXyzPanel();
+  syncAnimationHeader();
 }
 
 export function setEditPivotMode(on) {

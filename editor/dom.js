@@ -324,6 +324,61 @@ export const dom = {
   sceneCamVideoFormat: el('scene-cam-video-format'),
   sceneCamVideoMode: el('scene-cam-video-mode'),
   btnCamVideo: el('btn-cam-video'),
+
+  // Botón rápido "ver cámara"
+  btnViewCameraQuick: el('btn-view-camera-quick'),
+
+  // Modo Animación
+  animTopLeft: el('anim-top-left'),
+  btnAnimMenu: el('btn-anim-menu'),
+  animManagerPopover: el('anim-manager-popover'),
+  animMgrOwner: el('anim-mgr-owner'),
+  btnAnimCreate: el('btn-anim-create'),
+  btnAnimMgrClose: el('btn-anim-mgr-close'),
+  animManagerList: el('anim-manager-list'),
+  animTimeline: el('anim-timeline'),
+  animTlResize: el('anim-tl-resize'),
+  animTlClipLabel: el('anim-tl-clip-label'),
+  btnTlKeyframe: el('btn-tl-keyframe'),
+  btnTlZoomIn: el('btn-tl-zoom-in'),
+  btnTlZoomOut: el('btn-tl-zoom-out'),
+  btnTlZero: el('btn-tl-zero'),
+  btnTlPrevKf: el('btn-tl-prev-kf'),
+  btnTlPlay: el('btn-tl-play'),
+  btnTlNextKf: el('btn-tl-next-kf'),
+  btnTlCurve: el('btn-tl-curve'),
+  animCurvePopover: el('anim-curve-popover'),
+  btnTlMore: el('btn-tl-more'),
+  animSettingsPopover: el('anim-settings-popover'),
+  animSetSpeed: el('anim-set-speed'),
+  animSetSpeedVal: el('anim-set-speed-val'),
+  animSetDuration: el('anim-set-duration'),
+  animSetLoop: el('anim-set-loop'),
+  animSetAutokey: el('anim-set-autokey'),
+  animSetSnap: el('anim-set-snap'),
+  animTlTrackWrap: el('anim-tl-track-wrap'),
+  animTlCanvas: el('anim-tl-canvas'),
+  animKfMenu: el('anim-kf-menu'),
+
+  // Modal vista previa render
+  renderPreviewModal: el('render-preview-modal'),
+  renderPreviewTitle: el('render-preview-title'),
+  btnRenderPreviewX: el('btn-render-preview-x'),
+  renderPreviewImg: el('render-preview-img'),
+  renderPreviewVideo: el('render-preview-video'),
+  renderPreviewMeta: el('render-preview-meta'),
+  btnRenderPreviewClose: el('btn-render-preview-close'),
+  btnRenderPreviewDownload: el('btn-render-preview-download'),
+
+  // Modal selección animaciones al exportar
+  exportAnimModal: el('export-anim-modal'),
+  btnExportAnimX: el('btn-export-anim-x'),
+  exportAnimDesc: el('export-anim-desc'),
+  btnExportAnimAll: el('btn-export-anim-all'),
+  btnExportAnimNone: el('btn-export-anim-none'),
+  exportAnimList: el('export-anim-list'),
+  btnExportAnimCancel: el('btn-export-anim-cancel'),
+  btnExportAnimConfirm: el('btn-export-anim-confirm'),
 };
 
 let _statusTimer = 0;

@@ -137,14 +137,54 @@
               <div id="vf-label" class="vf-label">Cámara · 1920×1080</div>
             </div>
             <div class="vf-actions">
-              <button type="button" id="btn-vf-render" class="vf-btn is-primary">Renderizar imagen</button>
-              <button type="button" id="btn-vf-video" class="vf-btn is-record">Grabar video</button>
-              <button type="button" id="btn-vf-lock" class="vf-btn">Fijar cámara</button>
-              <button type="button" id="btn-vf-exit" class="vf-btn">Salir vista</button>
+              <div class="vf-action-group">
+                <button type="button" id="btn-vf-render" class="vf-btn is-primary">Renderizar</button>
+                <button type="button" id="btn-vf-video" class="vf-btn is-record">Grabar video</button>
+              </div>
+              <span class="vf-sep"></span>
+              <div class="vf-action-group">
+                <button type="button" id="btn-vf-lock" class="vf-btn">Fijar vista</button>
+                <button type="button" id="btn-vf-exit" class="vf-btn">Salir</button>
+              </div>
             </div>
           </div>
 
           <div id="gizmo-readout" class="gizmo-readout" hidden></div>
+
+          <!-- ========================== MODO ANIMACIÓN: HAMBURGUESA SUPERIOR IZQUIERDA ========================== -->
+          <div id="anim-top-left" class="anim-top-left" hidden>
+            <button
+              type="button"
+              id="btn-anim-menu"
+              class="anim-hamburger-btn"
+              title="Crear, renombrar y borrar animaciones"
+              aria-label="Menú de animaciones"
+              aria-expanded="false"
+            >
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M4 6h16M4 12h16M4 18h16" />
+              </svg>
+            </button>
+
+            <div id="anim-manager-popover" class="anim-manager-popover" hidden>
+              <div class="anim-mgr-head">
+                <div class="anim-mgr-title-wrap">
+                  <span class="anim-mgr-title">Animaciones</span>
+                  <span id="anim-mgr-owner" class="anim-mgr-owner">Sin selección</span>
+                </div>
+                <div class="anim-mgr-head-actions">
+                  <button type="button" id="btn-anim-create" class="mini-accent-btn">+ Nueva</button>
+                  <button type="button" id="btn-anim-mgr-close" class="xyz-panel-close" aria-label="Cerrar menú de animaciones">×</button>
+                </div>
+              </div>
+              <div id="anim-manager-list" class="anim-manager-list"></div>
+            </div>
+          </div>
+
+          <!-- Botón de texto plano "ver cámara" (Pose y Animación) -->
+          <button type="button" id="btn-view-camera-quick" class="view-camera-text-btn" hidden>
+            ver cámara
+          </button>
 
           <!-- ========================== MODO EDICIÓN: BARRA SUPERIOR IZQUIERDA (3 CUBOS) ========================== -->
           <div id="edit-sel-bar" class="edit-sel-bar" role="toolbar" aria-label="Modo de selección de malla" hidden>
@@ -488,6 +528,147 @@
               <label class="xyz-field"><span class="axis-z">Z</span><input type="number" id="gizmo-val-z" step="0.1" /></label>
             </div>
           </div>
+
+          <!-- ========================== MODO ANIMACIÓN: LÍNEA DE TIEMPO SOBRE EL DOCK ========================== -->
+          <section id="anim-timeline" class="anim-timeline" aria-label="Línea de tiempo de animación" hidden>
+            <div id="anim-tl-resize" class="anim-tl-resize" title="Arrastrar hacia arriba o abajo para cambiar tamaño">
+              <span class="anim-tl-grip"></span>
+            </div>
+
+            <div class="anim-tl-header">
+              <div class="anim-tl-controls anim-tl-controls-left">
+                <!-- 1. Configuración (•••) -->
+                <div class="tl-pop-anchor">
+                  <button type="button" id="btn-tl-more" class="tl-icon-btn" title="Configuración de animación">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
+                      <circle cx="5" cy="12" r="2" />
+                      <circle cx="12" cy="12" r="2" />
+                      <circle cx="19" cy="12" r="2" />
+                    </svg>
+                  </button>
+                  <div id="anim-settings-popover" class="tl-popover tl-popover-wide" hidden>
+                    <div class="tl-pop-title">Ajustes de animación</div>
+                    <div class="field-row">
+                      <label class="field-label" for="anim-set-speed">Velocidad <span id="anim-set-speed-val" class="val-num">1.00×</span></label>
+                      <input type="range" id="anim-set-speed" min="0.1" max="3" step="0.05" value="1" />
+                    </div>
+                    <div class="flyout-slider-row">
+                      <span class="flyout-label">Duración (s)</span>
+                      <input type="number" id="anim-set-duration" class="num-mini" min="0.2" max="120" step="0.1" value="3.0" />
+                    </div>
+                    <div class="field-row">
+                      <label class="field-label" for="anim-set-loop">Modo de bucle</label>
+                      <select id="anim-set-loop" class="input-select-compact">
+                        <option value="repeat" selected>Repetir (Loop)</option>
+                        <option value="once">Una vez</option>
+                        <option value="pingpong">Rebote (Ping-Pong)</option>
+                      </select>
+                    </div>
+                    <label class="check-row-compact"><input type="checkbox" id="anim-set-autokey" checked /> Keyframe automático al mover</label>
+                    <label class="check-row-compact"><input type="checkbox" id="anim-set-snap" checked /> Ajustar al paso (0.05s)</label>
+                  </div>
+                </div>
+
+                <!-- 2. Curva de interpolación -->
+                <div class="tl-pop-anchor">
+                  <button type="button" id="btn-tl-curve" class="tl-icon-btn" title="Curva de interpolación">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M4 19C9 19 8 5 20 5" stroke-linecap="round" />
+                      <circle cx="4" cy="19" r="2" fill="currentColor" />
+                      <circle cx="20" cy="5" r="2" fill="currentColor" />
+                    </svg>
+                  </button>
+                  <div id="anim-curve-popover" class="tl-popover" hidden>
+                    <div class="tl-pop-title">Tipo de interpolación</div>
+                    <button type="button" class="tl-pop-option is-active" data-anim-interp="linear">
+                      <span>Normal (Lineal)</span>
+                      <small>Velocidad constante</small>
+                    </button>
+                    <button type="button" class="tl-pop-option" data-anim-interp="smooth">
+                      <span>Suave</span>
+                      <small>Inicio y fin suaves</small>
+                    </button>
+                    <button type="button" class="tl-pop-option" data-anim-interp="easeIn">
+                      <span>Entrada suave</span>
+                      <small>Acelera al salir</small>
+                    </button>
+                    <button type="button" class="tl-pop-option" data-anim-interp="easeOut">
+                      <span>Salida suave</span>
+                      <small>Frena al llegar</small>
+                    </button>
+                    <button type="button" class="tl-pop-option" data-anim-interp="step">
+                      <span>Escalón</span>
+                      <small>Salto inmediato</small>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- 3. Minimizar zoom (-) -->
+                <button type="button" id="btn-tl-zoom-out" class="tl-icon-btn" title="Alejar línea de tiempo (ver más tiempo)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="M21 21l-4.35-4.35M8 11h6" />
+                  </svg>
+                </button>
+
+                <!-- 4. Maximizar zoom (+) -->
+                <button type="button" id="btn-tl-zoom-in" class="tl-icon-btn" title="Acercar línea de tiempo (más detalle)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="7" />
+                    <path d="M21 21l-4.35-4.35M11 8v6M8 11h6" />
+                  </svg>
+                </button>
+
+                <span class="tl-sep"></span>
+
+                <!-- 5. Reproducción: segundo cero, anterior, play/stop, siguiente -->
+                <button type="button" id="btn-tl-zero" class="tl-icon-btn" title="Regresar al segundo 0">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1">
+                    <line x1="6" y1="5" x2="6" y2="19" stroke-linecap="round" />
+                    <polygon points="18,6 9,12 18,18" fill="currentColor" stroke="none" />
+                  </svg>
+                </button>
+
+                <button type="button" id="btn-tl-prev-kf" class="tl-icon-btn" title="Ir al keyframe anterior (&lt;)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <path d="M15 6l-6 6 6 6" />
+                  </svg>
+                </button>
+
+                <button type="button" id="btn-tl-play" class="tl-icon-btn tl-play-btn" title="Reproducir / Detener (Espacio)">
+                  <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor">
+                    <polygon points="7,4 20,12 7,20" />
+                  </svg>
+                  <svg class="icon-stop" viewBox="0 0 24 24" fill="currentColor" hidden>
+                    <rect x="6" y="6" width="12" height="12" rx="1.5" />
+                  </svg>
+                </button>
+
+                <button type="button" id="btn-tl-next-kf" class="tl-icon-btn" title="Ir al siguiente keyframe (&gt;)">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+                    <path d="M9 6l6 6-6 6" />
+                  </svg>
+                </button>
+              </div>
+
+              <div class="anim-tl-right">
+                <span id="anim-tl-clip-label" class="anim-tl-clip-label">Sin animación</span>
+
+                <!-- Keyframe en esquina superior derecha -->
+                <button type="button" id="btn-tl-keyframe" class="tl-icon-btn tl-kf-btn" title="Insertar o quitar keyframe en el tiempo actual">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 3l8 9-8 9-8-9 8-9z" fill="currentColor" fill-opacity="0.22" />
+                    <line class="kf-slash" x1="4" y1="20" x2="20" y2="4" stroke="#ef4444" stroke-width="2.4" stroke-linecap="round" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            <div id="anim-tl-track-wrap" class="anim-tl-track-wrap">
+              <canvas id="anim-tl-canvas" class="anim-tl-canvas"></canvas>
+              <div id="anim-kf-menu" class="anim-kf-menu" hidden></div>
+            </div>
+          </section>
 
           <!-- ========================== DESHACER / REHACER FLOTANTE DERECHA ========================== -->
           <div id="undo-redo-bar" class="undo-redo-bar" role="group" aria-label="Historial">
@@ -839,44 +1020,60 @@
                   <div class="field-row"><label class="field-label" for="text-spacing">Espaciado <span id="text-spacing-val" class="val-num">0.00</span></label><input type="range" id="text-spacing" min="-0.1" max="0.4" step="0.01" value="0" /></div>
                 </div>
 
-                <!-- Subpanel Cámara -->
+                <!-- Subpanel Cámara (organizado por secciones) -->
                 <div id="camera-group" class="obj-subpanel" data-obj-panel="camera" hidden>
-                  <div class="btn-row">
-                    <button type="button" id="btn-cam-enter" class="action-btn is-accent">Entrar a cámara</button>
-                    <button type="button" id="btn-cam-align" class="action-btn">Alinear a vista</button>
+                  <div class="cam-section">
+                    <div class="cam-section-title">Vista en escena</div>
+                    <div class="btn-row">
+                      <button type="button" id="btn-cam-enter" class="action-btn is-accent">Entrar a cámara</button>
+                      <button type="button" id="btn-cam-align" class="action-btn">Alinear a vista</button>
+                    </div>
                   </div>
-                  <div class="field-row"><label class="field-label" for="scene-cam-fov">Lente (FOV) <span id="scene-cam-fov-val" class="val-num">50°</span></label><input type="range" id="scene-cam-fov" min="15" max="110" step="1" value="50" /></div>
-                  <div class="field-row">
-                    <label class="field-label" for="scene-cam-preset">Resolución</label>
-                    <select id="scene-cam-preset" class="input-select">
-                      <option value="1280x720">HD (1280×720)</option>
-                      <option value="1920x1080" selected>Full HD (1920×1080)</option>
-                      <option value="2560x1440">2K QHD (2560×1440)</option>
-                      <option value="3840x2160">4K UHD (3840×2160)</option>
-                      <option value="1080x1080">Cuadrado (1080×1080)</option>
-                      <option value="1080x1920">Vertical (1080×1920)</option>
-                      <option value="custom">Personalizada</option>
-                    </select>
+
+                  <div class="cam-section">
+                    <div class="cam-section-title">Lente y encuadre</div>
+                    <div class="field-row"><label class="field-label" for="scene-cam-fov">Lente (FOV) <span id="scene-cam-fov-val" class="val-num">50°</span></label><input type="range" id="scene-cam-fov" min="15" max="110" step="1" value="50" /></div>
+                    <div class="field-row">
+                      <label class="field-label" for="scene-cam-preset">Resolución</label>
+                      <select id="scene-cam-preset" class="input-select">
+                        <option value="1280x720">HD (1280×720)</option>
+                        <option value="1920x1080" selected>Full HD (1920×1080)</option>
+                        <option value="2560x1440">2K QHD (2560×1440)</option>
+                        <option value="3840x2160">4K UHD (3840×2160)</option>
+                        <option value="1080x1080">Cuadrado (1080×1080)</option>
+                        <option value="1080x1920">Vertical (1080×1920)</option>
+                        <option value="custom">Personalizada</option>
+                      </select>
+                    </div>
+                    <div class="res-inputs">
+                      <label class="num-field"><span>W</span><input type="number" id="scene-cam-width" min="64" max="7680" step="2" value="1920" /></label>
+                      <label class="num-field"><span>H</span><input type="number" id="scene-cam-height" min="64" max="7680" step="2" value="1080" /></label>
+                    </div>
+                    <div class="cam-checks-grid">
+                      <label class="check-row"><input type="checkbox" id="scene-cam-thirds" checked /> Tercios</label>
+                      <label class="check-row"><input type="checkbox" id="scene-cam-include-grid" /> Rejilla</label>
+                      <label class="check-row"><input type="checkbox" id="scene-cam-lock" /> Fijar vista</label>
+                    </div>
                   </div>
-                  <div class="res-inputs">
-                    <label class="num-field"><span>W</span><input type="number" id="scene-cam-width" min="64" max="7680" step="2" value="1920" /></label>
-                    <label class="num-field"><span>H</span><input type="number" id="scene-cam-height" min="64" max="7680" step="2" value="1080" /></label>
+
+                  <div class="cam-section">
+                    <div class="cam-section-title">Renderizar imagen</div>
+                    <div class="cam-inline-row">
+                      <select id="scene-cam-format" class="input-select"><option value="image/png">PNG</option><option value="image/jpeg">JPEG</option><option value="image/webp">WebP</option></select>
+                      <button type="button" id="btn-cam-render" class="action-btn is-accent">Renderizar</button>
+                    </div>
                   </div>
-                  <div class="field-row">
-                    <label class="field-label" for="scene-cam-format">Formato imagen</label>
-                    <select id="scene-cam-format" class="input-select"><option value="image/png">PNG</option><option value="image/jpeg">JPEG</option><option value="image/webp">WebP</option></select>
-                  </div>
-                  <label class="check-row"><input type="checkbox" id="scene-cam-thirds" checked /> Regla de tercios</label>
-                  <label class="check-row"><input type="checkbox" id="scene-cam-include-grid" /> Incluir rejilla</label>
-                  <label class="check-row"><input type="checkbox" id="scene-cam-lock" /> Bloquear vista</label>
-                  <button type="button" id="btn-cam-render" class="action-btn is-accent btn-full">Renderizar imagen</button>
-                  <div class="camera-video-divider">
+
+                  <div class="cam-section">
+                    <div class="cam-section-title">Grabar video (línea de tiempo)</div>
                     <div class="res-inputs">
                       <div class="field-row"><label class="field-label" for="scene-cam-fps">FPS</label><input type="number" id="scene-cam-fps" class="input-select" min="12" max="60" value="30" /></div>
-                      <div class="field-row"><label class="field-label" for="scene-cam-duration">Duración (s)</label><input type="number" id="scene-cam-duration" class="input-select" min="0" max="120" value="0" /></div>
+                      <div class="field-row"><label class="field-label" for="scene-cam-duration" title="0 = detener automáticamente al terminar las animaciones de la escena">Duración (0=Auto)</label><input type="number" id="scene-cam-duration" class="input-select" min="0" max="120" value="0" /></div>
                     </div>
-                    <div class="field-row"><label class="field-label" for="scene-cam-video-format">Video</label><select id="scene-cam-video-format" class="input-select"><option value="auto" selected>Automático</option></select></div>
-                    <div class="field-row"><label class="field-label" for="scene-cam-video-mode">Captura</label><select id="scene-cam-video-mode" class="input-select"><option value="fixed" selected>Fluido (FPS fijos)</option><option value="realtime">Tiempo real</option></select></div>
+                    <div class="res-inputs">
+                      <div class="field-row"><label class="field-label" for="scene-cam-video-format">Formato</label><select id="scene-cam-video-format" class="input-select"><option value="auto" selected>Automático</option></select></div>
+                      <div class="field-row"><label class="field-label" for="scene-cam-video-mode">Captura</label><select id="scene-cam-video-mode" class="input-select"><option value="fixed" selected>FPS fijos</option><option value="realtime">Tiempo real</option></select></div>
+                    </div>
                     <button type="button" id="btn-cam-video" class="action-btn btn-video btn-full">Grabar video</button>
                   </div>
                 </div>
@@ -914,7 +1111,7 @@
             </div>
           </section>
 
-          <!-- Popover Modo de trabajo: Pose | Modelar | Edición -->
+          <!-- Popover Modo de trabajo: Pose | Modelar | Edición | Animación -->
           <section id="menu-mode" class="top-popover popover-mode" aria-label="Modo de trabajo" hidden>
             <div class="menu-stack">
               <button type="button" class="menu-item-btn mode-option-btn is-active" data-app-mode="pose">
@@ -928,6 +1125,10 @@
               <button type="button" class="menu-item-btn mode-option-btn" data-app-mode="edicion">
                 <span>Edición</span>
                 <small>Topología</small>
+              </button>
+              <button type="button" class="menu-item-btn mode-option-btn" data-app-mode="animacion">
+                <span>Animación</span>
+                <small>Línea de tiempo</small>
               </button>
             </div>
           </section>
@@ -1028,6 +1229,45 @@
               </a>
             </div>
           </aside>
+
+          <!-- Modal de Vista Previa de Render (antes de descargar) -->
+          <div id="render-preview-modal" class="studio-modal" hidden>
+            <div class="studio-modal-card preview-modal-card">
+              <div class="studio-modal-head">
+                <h2 id="render-preview-title" class="group-title">Resultado del render</h2>
+                <button type="button" id="btn-render-preview-x" class="xyz-panel-close" aria-label="Cerrar vista previa">×</button>
+              </div>
+              <div class="preview-media-box">
+                <img id="render-preview-img" alt="Vista previa del render" hidden />
+                <video id="render-preview-video" controls loop playsinline hidden></video>
+              </div>
+              <div id="render-preview-meta" class="preview-meta"></div>
+              <div class="studio-modal-foot">
+                <button type="button" id="btn-render-preview-close" class="action-btn">Cerrar</button>
+                <button type="button" id="btn-render-preview-download" class="action-btn is-accent">Descargar</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Modal de Selección de Animaciones al Exportar -->
+          <div id="export-anim-modal" class="studio-modal" hidden>
+            <div class="studio-modal-card export-anim-card">
+              <div class="studio-modal-head">
+                <h2 class="group-title">Animaciones detectadas</h2>
+                <button type="button" id="btn-export-anim-x" class="xyz-panel-close" aria-label="Cancelar exportación">×</button>
+              </div>
+              <p id="export-anim-desc" class="export-anim-desc">Selecciona las animaciones que quieres incluir al exportar:</p>
+              <div class="export-anim-quick">
+                <button type="button" id="btn-export-anim-all" class="mini-btn">Todas</button>
+                <button type="button" id="btn-export-anim-none" class="mini-btn">Ninguna</button>
+              </div>
+              <div id="export-anim-list" class="export-anim-list"></div>
+              <div class="studio-modal-foot">
+                <button type="button" id="btn-export-anim-cancel" class="action-btn">Cancelar</button>
+                <button type="button" id="btn-export-anim-confirm" class="action-btn is-accent">Exportar</button>
+              </div>
+            </div>
+          </div>
 
           <div id="drop-overlay" class="drop-overlay" hidden>
             <div class="drop-card">

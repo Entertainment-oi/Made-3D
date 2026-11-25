@@ -442,7 +442,7 @@ export function setEditMode(enabled) {
     const candidate = getEditablePrimaryMesh();
     if (!candidate) {
       setStatus('Selecciona o crea una malla editable primero.', true);
-      syncAppModeUI(sculpt.active ? 'modelar' : 'pose');
+      syncAppModeUI(sculpt.active ? 'modelar' : viewport.appMode === 'animacion' ? 'animacion' : 'pose');
       return false;
     }
 
@@ -465,6 +465,7 @@ export function setEditMode(enabled) {
     closeEditFlyouts();
   }
 
+  const wasActive = edit.active;
   edit.active = next;
   edit.editor.setEnabled(next);
 
@@ -481,7 +482,14 @@ export function setEditMode(enabled) {
     }
   }
 
-  syncAppModeUI(next ? 'edicion' : sculpt.active ? 'modelar' : 'pose');
+  const nextMode = next
+    ? 'edicion'
+    : sculpt.active
+    ? 'modelar'
+    : !wasActive && viewport.appMode === 'animacion'
+    ? 'animacion'
+    : 'pose';
+  syncAppModeUI(nextMode);
   syncEditUI();
   return true;
 }

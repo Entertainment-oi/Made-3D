@@ -18,7 +18,7 @@ export const viewport = {
   orthoHalfH: 5.5,
   ktx2Loader: null,
   dracoLoader: null,
-  appMode: 'pose', // 'pose' | 'modelar' | 'edicion'
+  appMode: 'pose', // 'pose' | 'modelar' | 'edicion' | 'animacion'
   gizmoXyzOpen: false,
   openPopover: null,
   scheduler: null,
@@ -65,6 +65,27 @@ export const recorder = {
   stopping: false,
   starting: false,
   mode: 'fixed',
+  autoAnimStop: false,
+  targetAnimDuration: 0,
+  recordElapsed: 0,
+};
+
+export const animState = {
+  objectClips: new WeakMap(),        // Object3D -> AnimationClip[]
+  activeClipByObject: new WeakMap(), // Object3D -> AnimationClip
+  clipOwners: new WeakMap(),         // AnimationClip -> Object3D
+  allClips: [],                      // lista ordenada de clips creados en el editor
+  currentClip: null,
+  currentTime: 0,
+  pxPerSec: 120,
+  playing: false,
+  speed: 1,
+  loopMode: 'repeat', // 'repeat' | 'once' | 'pingpong'
+  autoKeyframe: true,
+  snap: true,
+  snapStep: 0.05,
+  timelineHeight: 148,
+  copiedKeyframe: null,
 };
 
 export const sculpt = {

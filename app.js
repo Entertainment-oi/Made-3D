@@ -10,6 +10,7 @@ import {
   sculpt,
   edit,
   debug,
+  animState,
   getCameraMeta,
   isDescendantOrSelf,
 } from './editor/store.js';
@@ -44,6 +45,23 @@ import {
   syncTransformInputs,
   renderObjectList,
 } from './editor/inspectorUI.js';
+import {
+  bindAnimationUI,
+  syncAnimationUI,
+  stepAnimationTimeline,
+  stepCameraTimelinePlayback,
+  getMaxSceneAnimationDuration,
+  restoreClipState,
+  captureAnimStateSnapshot,
+  restoreAnimStateSnapshot,
+  setAnimationHooks,
+} from './editor/animationController.js';
+
+setAnimationHooks({
+  syncTransformInputs,
+  updateViewfinderOverlay,
+  syncCameraHelperSelection,
+});
 
 history.setHooks({
   selectObject,
@@ -62,6 +80,10 @@ history.setHooks({
     }),
   exitCameraView,
   stopCameraVideo,
+  syncAnimationUI,
+  restoreAnimClip: restoreClipState,
+  captureAnimState: captureAnimStateSnapshot,
+  restoreAnimState: restoreAnimStateSnapshot,
 });
 
 export const scheduler = new SystemScheduler({ clock, debug });
@@ -95,7 +117,16 @@ scheduler.register('spinObjects', (dt) => {
   }
 });
 
-scheduler.register('animationMixer', (dt) => {
+scheduler.register('animationMixer', (dt, ctx) => {
+  if (ctx.skipAnimationMixer) return;
+  const recDrivesTimeline =
+    Boolean(recorder.instance && recorder.instance.recording && !recorder.stopping && recorder.mode === 'realtime') &&
+    (recorder.autoAnimStop || getMaxSceneAnimationDuration() > 0);
+  if (recDrivesTimeline) return;
+
+  if (animState.playing) {
+    stepAnimationTimeline(dt);
+  }
   if (sceneStore.mixer && sceneStore.animPlaying) {
     sceneStore.mixer.update(dt);
   }
@@ -122,17 +153,26 @@ scheduler.register('cameraViewfinder', (_dt, ctx) => {
   ctx.activeViewportCam = activeViewportCam;
 });
 
-scheduler.register('videoRecorder', (_dt, ctx) => {
+scheduler.register('videoRecorder', (dt, ctx) => {
   if (ctx.skipVideoRecorder) return;
   if (recorder.instance && recorder.instance.recording && !recorder.stopping) {
+    if (recorder.mode === 'realtime' && (recorder.autoAnimStop || getMaxSceneAnimationDuration() > 0)) {
+      stepCameraTimelinePlayback(dt);
+    }
     recorder.instance.includeGrid = Boolean(getCameraMeta(recorder.camera).includeGrid);
     ctx.didCaptureFrame = recorder.instance.captureFrame(false, {
       viewportCamera: ctx.activeViewportCam,
       deferViewportRender: true,
     });
     ctx.alreadyRenderedViewport = ctx.didCaptureFrame && recorder.instance.didRenderViewport;
+    recorder.recordElapsed += dt;
     updateVideoRecordingUI();
-    if (recorder.duration > 0 && recorder.instance.elapsed >= recorder.duration) {
+    const hitManualDuration = recorder.duration > 0 && recorder.instance.elapsed >= recorder.duration;
+    const hitAutoAnimEnd =
+      recorder.autoAnimStop &&
+      recorder.targetAnimDuration > 0 &&
+      recorder.recordElapsed >= recorder.targetAnimDuration;
+    if (hitManualDuration || hitAutoAnimEnd) {
       stopCameraVideo();
     }
   }
@@ -160,6 +200,7 @@ if (await initEngine()) {
     dom.renderBackend.value = viewport.renderer.backendType;
   }
   bindUI();
+  bindAnimationUI();
   initDefaultScene();
   scheduler.start();
 }

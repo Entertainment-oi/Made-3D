@@ -26,7 +26,7 @@ import {
 import { InstancedMesh } from '../src/objects/InstancedMesh.js';
 import { cloneSkinned } from '../src/modules/rigging.js';
 import { ensureEditableBase, canIncrementSubsurf } from '../src/modules/modeling.js';
-import { CameraHelper } from '../src/modules/helpers.js';
+import { CameraHelper, drawCamerasOverlay } from '../src/modules/helpers.js';
 
 test('made3d.module.js mantiene núcleo ligero y carga submódulos pesados bajo demanda con import()', async () => {
   // 1. El punto de entrada principal no debe re-exportar clases pesadas síncronamente
@@ -390,6 +390,26 @@ test('CameraHelper solo dibuja líneas wireframe y Picker selecciona cámaras en
   assert.ok(hit, 'Picker debe detectar la cámara en el centro');
   assert.equal(hit.type, 'camera');
   assert.equal(hit.object, sceneCam);
+
+  // drawCamerasOverlay debe dibujar un punto azul seleccionable en sceneCam (y omitir viewCam)
+  const fills = [];
+  const arcs = [];
+  const mockCtx = {
+    fillStyle: '',
+    strokeStyle: '',
+    lineWidth: 1,
+    globalAlpha: 1,
+    save() {},
+    restore() {},
+    beginPath() {},
+    arc(x, y, r) { arcs.push({ x, y, r }); },
+    fill() { fills.push(this.fillStyle); },
+    stroke() {},
+  };
+  drawCamerasOverlay(mockCtx, viewCam, scene, 800, 600, { selected: null });
+  assert.equal(fills.length, 1, 'Solo debe dibujar un punto azul para la cámara externa');
+  assert.equal(fills[0], '#3b82f6', 'El punto de la cámara debe ser azul');
+  assert.ok(Math.abs(arcs[0].x - 400) < 1 && Math.abs(arcs[0].y - 300) < 1);
 });
 
 test('AnimationClip inserta keyframes por herramienta, mueve sin comer otros, fusiona, copia/pega y evalúa', async () => {
@@ -456,6 +476,125 @@ test('AnimationClip inserta keyframes por herramienta, mueve sin comer otros, fu
   );
   assert.deepEqual(changed, ['position']);
 });
+
+test('HistoryManager nativo de la librería deshace y rehace transform + auto-keyframe, escena, esculpido y modelado sin depender del editor', async () => {
+  const { HistoryManager, loadSculpt } = MadeCore;
+  const { AnimationClip } = await loadAnimation();
+  await loadSculpt();
+  const { ensureEditableBase: ensureBase, snapshotMeshModelingState } = await loadModeling();
+
+  const scene = new Scene();
+  const obj = new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial({ color: 0xffffff }));
+  obj.name = 'CuboUnPaso';
+  obj.position.set(0, 0, 0);
+  scene.add(obj);
+
+  const clip = new AnimationClip('Movimiento', 3.0);
+  let activeClipRef = null;
+  const events = [];
+
+  const hm = new HistoryManager({ scene });
+  hm.on('change', (e) => events.push(e.action));
+  hm.setHooks({
+    restoreAnimState: (snap) => {
+      activeClipRef = snap.hasClip ? clip : null;
+    },
+  });
+
+  // 1. runGrouped agrupa transform + animState + animClip (usando restoreSnapshot nativo del clip)
+  const beforeLocal = HistoryManager.snapshotTransform(obj);
+  obj.position.set(6, 0, 0);
+  const afterLocal = HistoryManager.snapshotTransform(obj);
+
+  hm.runGrouped('Transformar', () => {
+    hm.push({ type: 'transform', os: [obj], before: [beforeLocal], after: [afterLocal] });
+    const beforeState = { hasClip: Boolean(activeClipRef) };
+    activeClipRef = clip;
+    const beforeClip = clip.captureSnapshot();
+    clip.setObjectKeyframe(obj, 1.0, ['position']);
+    const afterClip = clip.captureSnapshot();
+    hm.push({ type: 'animState', before: beforeState, after: { hasClip: true } });
+    hm.push({ type: 'animClip', clip, owner: obj, before: beforeClip, after: afterClip });
+  });
+
+  assert.equal(hm.undoLength, 1, 'Transformar + auto-keyframe debe ocupar 1 sola entrada en el historial');
+  assert.equal(clip.hasKeyframeAt(1.0), true);
+  assert.equal(activeClipRef, clip);
+  assert.equal(obj.position.x, 6);
+
+  hm.undo();
+  assert.equal(hm.undoLength, 0);
+  assert.equal(hm.redoLength, 1);
+  assert.equal(clip.hasKeyframeAt(1.0), false);
+  assert.equal(activeClipRef, null);
+  assert.equal(obj.position.x, 0);
+
+  hm.redo();
+  assert.equal(hm.undoLength, 1);
+  assert.equal(hm.redoLength, 0);
+  assert.equal(clip.hasKeyframeAt(1.0), true);
+  assert.equal(activeClipRef, clip);
+  assert.equal(obj.position.x, 6);
+
+  // 2. Comando de eliminación nativo (delete)
+  const rec = hm.buildRemovalRecord(obj);
+  hm.applyRemoval(rec);
+  hm.push({ type: 'delete', removals: [rec] });
+  assert.equal(scene.children.includes(obj), false);
+  hm.undo();
+  assert.equal(scene.children.includes(obj), true);
+  hm.redo();
+  assert.equal(scene.children.includes(obj), false);
+  hm.undo();
+  assert.equal(scene.children.includes(obj), true);
+
+  // 3. Trazo de esculpido nativo auto-registrado por src/modules/sculpt.js
+  const posArr = obj.geometry.attributes.position.array;
+  const beforeY = posArr[1];
+  const afterY = beforeY + 2.5;
+  posArr[1] = afterY;
+  hm.push({
+    type: 'sculpt',
+    mesh: obj,
+    geo: obj.geometry,
+    diff: {
+      indices: new Uint32Array([1]),
+      before: new Float32Array([beforeY]),
+      after: new Float32Array([afterY]),
+    },
+  });
+  assert.ok(Math.abs(obj.geometry.attributes.position.array[1] - afterY) < 1e-5);
+  hm.undo();
+  assert.ok(Math.abs(obj.geometry.attributes.position.array[1] - beforeY) < 1e-5);
+  hm.redo();
+  assert.ok(Math.abs(obj.geometry.attributes.position.array[1] - afterY) < 1e-5);
+
+  // 4. Edición poligonal nativa auto-registrada por src/modules/modeling.js
+  ensureBase(obj);
+  const beforeModelState = snapshotMeshModelingState(obj);
+  obj.geometry.attributes.position.array[0] += 1.25;
+  const afterModelState = snapshotMeshModelingState(obj);
+  hm.push({ type: 'meshEdit', mesh: obj, beforeState: beforeModelState, afterState: afterModelState, label: 'Mover vértice' });
+  hm.undo();
+  assert.equal(hm.canUndo, true);
+  hm.redo();
+
+  // 5. Comando custom nativo { undo, redo } + eventos emitidos
+  let customFlag = 0;
+  hm.push({
+    label: 'Custom',
+    undo: () => { customFlag = 0; },
+    redo: () => { customFlag = 42; },
+  });
+  customFlag = 42;
+  hm.undo();
+  assert.equal(customFlag, 0);
+  hm.redo();
+  assert.equal(customFlag, 42);
+  assert.ok(events.includes('push') && events.includes('undo') && events.includes('redo'));
+});
+
+
 
 
 

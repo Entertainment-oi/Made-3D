@@ -179,13 +179,15 @@ export function bindGizmoControls() {
           xyzBeforeObj.s.distanceTo(afterState.s) > 1e-5 ||
           Math.abs(xyzBeforeObj.q.dot(afterState.q)) < 0.999999;
         if (moved) {
-          history.push({
-            type: 'transform',
-            os: [cur],
-            before: [xyzBeforeObj],
-            after: [afterState],
+          history.runGrouped('Transformar', () => {
+            history.push({
+              type: 'transform',
+              os: [cur],
+              before: [xyzBeforeObj],
+              after: [afterState],
+            });
+            recordAutoKeyframeIfNeeded([cur], { beforeList: [xyzBeforeObj], afterList: [afterState] });
           });
-          recordAutoKeyframeIfNeeded([cur], { beforeList: [xyzBeforeObj], afterList: [afterState] });
         }
         xyzBeforeObj = afterState;
       }

@@ -1135,7 +1135,7 @@ export class MeshEditor {
     syncMeshSubsurf(mesh);
 
     d.text = text + (snapped ? '  · snap' : '');
-    this.info = { mode: d.type, key: d.key, text: (LABEL[d.type] || d.type) + ' ' + d.text };
+    this.info = { mode: d.type, key: d.key, text: d.text };
     this._attached?.onReadoutChange?.(this.info.text);
     return true;
   }
@@ -1911,8 +1911,8 @@ export class MeshEditor {
           if (ctrl) ctrl.enabled = false;
           this._captureEl = targetEl || domElement;
           try { this._captureEl.setPointerCapture(e.pointerId); } catch (_) {}
-          this.info = { mode: d.type, key: d.key, text: (LABEL[d.type] || d.type) + ' ' + d.key.toUpperCase() };
-          this._attached?.onReadoutChange?.(this.info.text);
+          this.info = { mode: d.type, key: d.key, text: '' };
+          this._attached?.onReadoutChange?.('');
           return;
         }
       }

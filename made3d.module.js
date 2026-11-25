@@ -15,6 +15,7 @@ export { Color } from './src/math/Color.js';
 // core
 export { EventEmitter } from './src/core/EventEmitter.js';
 export { Clock } from './src/core/Clock.js';
+export { HistoryManager, estimateCommandBytes } from './src/core/HistoryManager.js';
 export { Object3D } from './src/core/Object3D.js';
 export { Scene } from './src/core/Scene.js';
 export { Fog, FogExp2 } from './src/core/Fog.js';

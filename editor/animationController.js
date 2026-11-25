@@ -126,9 +126,10 @@ export function snapshotClipState(clip) {
 export function restoreClipState(clip, snap) {
   if (!clip || !snap) return;
   clip.restoreSnapshot(snap);
+  evaluateActiveAnimationsAt(animState.currentTime);
 }
 
-export function createClipForObject(obj, name = '', { duration = 3.0, select = true } = {}) {
+export function createClipForObject(obj, name = '', { duration = animState.defaultDuration || 3.0, select = true } = {}) {
   const owner = obj || sceneStore.selected || null;
   const list = owner ? getClipListForObject(owner) : [];
   const nextIndex = (owner ? list.length : animState.allClips.length) + 1;
@@ -161,7 +162,7 @@ export function selectClip(clip) {
   if (owner) {
     animState.activeClipByObject.set(owner, clip);
   }
-  const dur = Math.max(0.2, clip.duration > 0 ? clip.duration : 3.0);
+  const dur = Math.max(0.2, clip.duration > 0 ? clip.duration : (animState.defaultDuration || 3.0));
   if (animState.currentTime > dur) animState.currentTime = dur;
   evaluateActiveAnimationsAt(animState.currentTime);
   syncAnimationUI();
@@ -396,8 +397,11 @@ export function insertKeyframeAt(
     animState.currentClip && getClipOwner(animState.currentClip) === obj
       ? animState.currentClip
       : getActiveClipForObject(obj);
+  const createdNewClip = !clip;
+  const beforeAnimState = createdNewClip && recordHistory ? captureAnimStateSnapshot() : null;
   if (!clip) {
-    clip = createClipForObject(obj, '', { duration: Math.max(3.0, Math.ceil(time + 0.5)), select: true });
+    const baseDur = animState.defaultDuration || 3.0;
+    clip = createClipForObject(obj, '', { duration: Math.max(baseDur, Math.ceil(time + 0.5)), select: true });
   }
   animState.currentClip = clip;
 
@@ -409,19 +413,38 @@ export function insertKeyframeAt(
   const t = snapTimelineTime(time);
   const before = clip.captureSnapshot();
   const updated = clip.setObjectKeyframe(obj, t, props, { mergeEps: KEYFRAME_HIT_EPS, autoExpand: true });
-  if (!updated) return false;
+  if (!updated) {
+    if (createdNewClip && beforeAnimState) restoreAnimStateSnapshot(beforeAnimState);
+    return false;
+  }
 
   const after = clip.captureSnapshot();
   if (recordHistory) {
     const propLabel = props.length === 1 ? (PROP_LABELS[props[0]] || props[0]) : 'Transformación';
-    history.push({
-      type: 'animClip',
-      clip,
-      owner: obj,
-      before,
-      after,
-      label: `Keyframe ${propLabel} en ${t.toFixed(2)}s`,
-    });
+    const afterAnimState = createdNewClip ? captureAnimStateSnapshot() : null;
+    const pushEntries = () => {
+      if (createdNewClip && beforeAnimState && afterAnimState) {
+        history.push({
+          type: 'animState',
+          before: beforeAnimState,
+          after: afterAnimState,
+          label: 'Crear clip',
+        });
+      }
+      history.push({
+        type: 'animClip',
+        clip,
+        owner: obj,
+        before,
+        after,
+        label: `Keyframe ${propLabel} en ${t.toFixed(2)}s`,
+      });
+    };
+    if (createdNewClip) {
+      history.runGrouped(`Keyframe ${propLabel} en ${t.toFixed(2)}s`, pushEntries);
+    } else {
+      pushEntries();
+    }
   }
   syncSceneClipListToStore();
   syncAnimationUI();
@@ -573,7 +596,7 @@ export function getActiveClipDuration() {
   if (animState.currentClip && animState.currentClip.duration > 0) {
     return animState.currentClip.duration;
   }
-  return 3.0;
+  return animState.defaultDuration || 3.0;
 }
 
 export function jumpToZeroTime() {
@@ -761,14 +784,14 @@ function xToTime(x) {
   return animState.currentTime + (x - _tlWidth * 0.5) / animState.pxPerSec;
 }
 
-function hitTestTimelineKeyframe(clip, x, y) {
+function hitTestTimelineKeyframe(clip, x, y, hitTol = 13) {
   if (!clip || y <= RULER_H) return null;
   const { rows, rowH } = getTimelineRows(_tlHeight);
   const rowIndex = Math.max(0, Math.min(rows.length - 1, Math.floor((y - RULER_H) / rowH)));
   const row = rows[rowIndex];
   const times = clip.getKeyframeTimes(row.filter);
   let bestT = null;
-  let bestDist = 13;
+  let bestDist = hitTol;
   for (const kt of times) {
     const d = Math.abs(timeToX(kt) - x);
     if (d < bestDist) {
@@ -908,10 +931,10 @@ export function drawTimelineCanvas() {
     }
   });
 
-  // Línea amarilla de duración
-  if (xDur >= -20 && xDur <= w + 20) {
+  // Línea amarilla de duración (siempre visible y arrastrable, con o sin clip activo)
+  if (xDur >= -24 && xDur <= w + 24) {
     ctx.strokeStyle = '#facc15';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = _tlHoverZone === 'duration' ? 2.5 : 2;
     ctx.beginPath();
     ctx.moveTo(xDur, 0);
     ctx.lineTo(xDur, h);
@@ -919,15 +942,28 @@ export function drawTimelineCanvas() {
 
     const tagText = `${dur.toFixed(1)}s`;
     ctx.font = '700 10px "JetBrains Mono", monospace';
-    const tagW = Math.max(32, ctx.measureText(tagText).width + 10);
+    const tagW = Math.max(36, ctx.measureText(tagText).width + 12);
+    const pillX = Math.max(2, Math.min(w - tagW - 2, xDur - tagW * 0.5));
     ctx.fillStyle = _tlHoverZone === 'duration' ? '#fef08a' : '#facc15';
     ctx.beginPath();
-    ctx.roundRect(xDur - tagW * 0.5, 2, tagW, 17, 4);
+    ctx.roundRect(pillX, 2, tagW, 19, 4);
     ctx.fill();
     ctx.fillStyle = '#111215';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.fillText(tagText, xDur, 10.5);
+    ctx.fillText(tagText, pillX + tagW * 0.5, 11.5);
+  } else if (xDur > w + 24) {
+    const cueText = `→ ${dur.toFixed(1)}s`;
+    ctx.font = '700 10px "JetBrains Mono", monospace';
+    const cueW = Math.max(46, ctx.measureText(cueText).width + 10);
+    ctx.fillStyle = 'rgba(250, 204, 21, 0.9)';
+    ctx.beginPath();
+    ctx.roundRect(w - cueW - 4, 2, cueW, 19, 4);
+    ctx.fill();
+    ctx.fillStyle = '#111215';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(cueText, w - cueW * 0.5 - 4, 11.5);
   }
 
   // Línea azul centrada del tiempo actual
@@ -982,13 +1018,21 @@ export function syncAnimationHeader() {
       : `Insertar keyframe${propTag} en el tiempo actual`;
   }
 
-  // Botón Play / Stop
+  // Botón Play / Pause (2 rectángulos verticales al reproducir)
   if (dom.btnTlPlay) {
     dom.btnTlPlay.classList.toggle('is-playing', animState.playing);
+    dom.btnTlPlay.setAttribute('aria-pressed', String(animState.playing));
+    dom.btnTlPlay.title = animState.playing ? 'Pausar animación (Espacio)' : 'Reproducir animación (Espacio)';
     const playIcon = dom.btnTlPlay.querySelector('.icon-play');
-    const stopIcon = dom.btnTlPlay.querySelector('.icon-stop');
-    if (playIcon) playIcon.hidden = animState.playing;
-    if (stopIcon) stopIcon.hidden = !animState.playing;
+    const pauseIcon = dom.btnTlPlay.querySelector('.icon-pause') || dom.btnTlPlay.querySelector('.icon-stop');
+    if (playIcon) {
+      playIcon.removeAttribute('hidden');
+      playIcon.style.display = animState.playing ? 'none' : 'block';
+    }
+    if (pauseIcon) {
+      pauseIcon.removeAttribute('hidden');
+      pauseIcon.style.display = animState.playing ? 'block' : 'none';
+    }
   }
 
   // Curva activa en popover
@@ -1323,10 +1367,16 @@ export function bindAnimationUI() {
   });
 
   dom.animSetDuration?.addEventListener('change', (e) => {
-    const clip = animState.currentClip;
-    if (!clip) return;
-    const before = clip.captureSnapshot();
     const nextDur = Math.max(0.2, Math.min(120, Number(e.target.value) || 3));
+    const clip = animState.currentClip;
+    if (!clip) {
+      animState.defaultDuration = nextDur;
+      if (animState.currentTime > nextDur) animState.currentTime = nextDur;
+      syncAnimationHeader();
+      drawTimelineCanvas();
+      return;
+    }
+    const before = clip.captureSnapshot();
     clip.duration = nextDur;
     if (animState.currentTime > nextDur) animState.currentTime = nextDur;
     const after = clip.captureSnapshot();
@@ -1386,10 +1436,12 @@ export function bindAnimationUI() {
     dom.animTlResize.addEventListener('pointercancel', endResize);
   }
 
-  // Interacción sobre el canvas de la línea de tiempo (drag + mantener presionado copiar/pegar)
+  // Interacción sobre el canvas de la línea de tiempo (drag + mantener presionado copiar/pegar + pinch zoom)
   if (dom.animTlCanvas) {
     let tlDrag = null;
     let holdTimer = 0;
+    const activePointers = new Map();
+    let pinchState = null;
 
     const clearHoldTimer = () => {
       if (holdTimer) {
@@ -1404,7 +1456,7 @@ export function bindAnimationUI() {
       const rect = dom.animTlCanvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
-      const hit = hitTestTimelineKeyframe(animState.currentClip, x, y);
+      const hit = hitTestTimelineKeyframe(animState.currentClip, x, y, 16);
       openKeyframeContextMenu({ x, y, hit, clip: animState.currentClip });
     });
 
@@ -1417,32 +1469,56 @@ export function bindAnimationUI() {
       const rect = dom.animTlCanvas.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
+      activePointers.set(e.pointerId, { x, y });
+
+      try {
+        dom.animTlCanvas.setPointerCapture(e.pointerId);
+      } catch {}
+
+      if (activePointers.size >= 2) {
+        const pts = Array.from(activePointers.values());
+        const dist = Math.max(12, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y));
+        pinchState = { startDist: dist, startPxPerSec: animState.pxPerSec };
+        tlDrag = null;
+        return;
+      }
+
+      const isTouch = e.pointerType && e.pointerType !== 'mouse';
+      const durHitTol = isTouch ? 24 : 14;
+      const kfHitTol = isTouch ? 22 : 13;
       const dur = getActiveClipDuration();
       const xDur = timeToX(dur);
 
-      dom.animTlCanvas.setPointerCapture(e.pointerId);
       if (animState.playing) setTimelinePlaying(false);
 
-      // 1. Arrastrar línea amarilla de duración
-      if (animState.currentClip && Math.abs(x - xDur) <= 10) {
+      // 0. Pill lateral "-> Xs" cuando la línea amarilla está fuera de pantalla
+      if (xDur > _tlWidth + 24 && x >= _tlWidth - 62 && y <= RULER_H + 6) {
+        setTimelineTime(dur);
+        return;
+      }
+
+      // 1. Arrastrar línea amarilla de duración (funciona con o sin clip activo)
+      const inDurBadge = y <= RULER_H + 4 && Math.abs(x - xDur) <= Math.max(durHitTol, 28);
+      if (Math.abs(x - xDur) <= durHitTol || inDurBadge) {
         tlDrag = {
           mode: 'duration',
           pointerId: e.pointerId,
           startX: x,
           startY: y,
           startDur: dur,
-          before: animState.currentClip.captureSnapshot(),
+          before: animState.currentClip ? animState.currentClip.captureSnapshot() : null,
           holdTriggered: false,
         };
         return;
       }
 
       // 2. Keyframe en fila (Resumen / Posición / Rotación / Escala)
-      const hit = hitTestTimelineKeyframe(animState.currentClip, x, y);
+      const hit = hitTestTimelineKeyframe(animState.currentClip, x, y, kfHitTol);
       if (hit) {
         tlDrag = {
           mode: 'keyframe',
           pointerId: e.pointerId,
+          pointerType: e.pointerType,
           startX: x,
           startY: y,
           origTime: hit.time,
@@ -1465,6 +1541,7 @@ export function bindAnimationUI() {
       tlDrag = {
         mode: 'scrub',
         pointerId: e.pointerId,
+        pointerType: e.pointerType,
         startX: x,
         startY: y,
         startTime: animState.currentTime,
@@ -1483,10 +1560,24 @@ export function bindAnimationUI() {
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
 
+      if (activePointers.has(e.pointerId)) {
+        activePointers.set(e.pointerId, { x, y });
+      }
+      if (pinchState && activePointers.size >= 2) {
+        const pts = Array.from(activePointers.values());
+        const dist = Math.max(12, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y));
+        const nextPx = pinchState.startPxPerSec * (dist / pinchState.startDist);
+        animState.pxPerSec = Math.max(MIN_PX_PER_SEC, Math.min(MAX_PX_PER_SEC, nextPx));
+        drawTimelineCanvas();
+        return;
+      }
+
       if (!tlDrag) {
         const dur = getActiveClipDuration();
-        const overDur = animState.currentClip && Math.abs(x - timeToX(dur)) <= 10;
-        const overKf = !overDur && Boolean(hitTestTimelineKeyframe(animState.currentClip, x, y));
+        const xDur = timeToX(dur);
+        const overDurBadge = y <= RULER_H + 4 && Math.abs(x - xDur) <= 24;
+        const overDur = Math.abs(x - xDur) <= 14 || overDurBadge;
+        const overKf = !overDur && Boolean(hitTestTimelineKeyframe(animState.currentClip, x, y, 14));
         const nextZone = overDur ? 'duration' : overKf ? 'keyframe' : null;
         if (nextZone !== _tlHoverZone) {
           _tlHoverZone = nextZone;
@@ -1499,7 +1590,8 @@ export function bindAnimationUI() {
       if (e.pointerId !== tlDrag.pointerId || tlDrag.holdTriggered) return;
       const dx = x - tlDrag.startX;
       const dy = y - tlDrag.startY;
-      if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_PX) {
+      const moveTol = (tlDrag.pointerType || e.pointerType) === 'mouse' ? LONG_PRESS_MOVE_PX : 14;
+      if (Math.hypot(dx, dy) > moveTol) {
         tlDrag.moved = true;
         clearHoldTimer();
       }
@@ -1509,10 +1601,11 @@ export function bindAnimationUI() {
         const snapped = Math.max(0.2, Math.min(120, Math.round(rawDur * 20) / 20));
         if (animState.currentClip) {
           animState.currentClip.duration = snapped;
-          if (animState.currentTime > snapped) animState.currentTime = snapped;
-          syncAnimationHeader();
-          drawTimelineCanvas();
+        } else {
+          animState.defaultDuration = snapped;
         }
+        syncAnimationHeader();
+        drawTimelineCanvas();
       } else if (tlDrag.mode === 'keyframe' && animState.currentClip) {
         if (!tlDrag.moved) return;
         const rawT = tlDrag.origTime + dx / animState.pxPerSec;
@@ -1536,6 +1629,9 @@ export function bindAnimationUI() {
     });
 
     const endTlDrag = (e) => {
+      activePointers.delete(e.pointerId);
+      if (activePointers.size < 2) pinchState = null;
+
       if (!tlDrag || e.pointerId !== tlDrag.pointerId) return;
       clearHoldTimer();
       const finished = tlDrag;
@@ -1543,8 +1639,13 @@ export function bindAnimationUI() {
 
       if (finished.holdTriggered) return;
 
-      if (finished.mode === 'duration' && animState.currentClip && finished.before) {
-        if (Math.abs(animState.currentClip.duration - finished.startDur) > 1e-3) {
+      if (finished.mode === 'duration') {
+        const finalDur = getActiveClipDuration();
+        if (animState.currentTime > finalDur) {
+          animState.currentTime = finalDur;
+          evaluateActiveAnimationsAt(animState.currentTime);
+        }
+        if (animState.currentClip && finished.before && Math.abs(finalDur - finished.startDur) > 1e-3) {
           history.push({
             type: 'animClip',
             clip: animState.currentClip,
@@ -1554,6 +1655,8 @@ export function bindAnimationUI() {
             label: 'Duración animación',
           });
         }
+        syncAnimationHeader();
+        drawTimelineCanvas();
       } else if (finished.mode === 'keyframe' && animState.currentClip && finished.before) {
         if (!finished.moved) {
           setTimelineTime(finished.origTime);

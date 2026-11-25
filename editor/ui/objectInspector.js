@@ -604,9 +604,11 @@ export function bindObjectInspector() {
     cam.updateMatrixWorld();
     const afterState = snapshotLocal(cam);
     if (beforeState.p.distanceTo(afterState.p) > 1e-5 || Math.abs(beforeState.q.dot(afterState.q)) < 0.999999) {
-      history.push({ type: 'transform', os: [cam], before: [beforeState], after: [afterState] });
-      recordAutoKeyframeIfNeeded([cam], {
-        properties: AnimationClip.detectChangedProperties(beforeState, afterState),
+      history.runGrouped('Alinear cámara', () => {
+        history.push({ type: 'transform', os: [cam], before: [beforeState], after: [afterState] });
+        recordAutoKeyframeIfNeeded([cam], {
+          properties: AnimationClip.detectChangedProperties(beforeState, afterState),
+        });
       });
     }
     syncGizmoXyzPanel();

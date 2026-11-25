@@ -27,7 +27,7 @@ export class Picker {
     this.raycaster = new Raycaster();
     this.boneTolerance = opts.boneTolerance ?? 10;
     this.lightTolerance = opts.lightTolerance ?? 20;
-    this.cameraTolerance = opts.cameraTolerance ?? 16;
+    this.cameraTolerance = opts.cameraTolerance ?? 20;
     this.prefer = opts.prefer ?? 'bone';     // 'bone' | 'mesh' | 'auto'
     this.mixer = opts.mixer || null;
     this.filter = opts.filter || null;       // fn(object) -> boolean

@@ -12,7 +12,7 @@ import {
   MIN_DENSITY_VERTS,
   MAX_DENSITY_VERTS,
 } from '../src/modules/modeling.js';
-import { drawLightsOverlay } from '../src/modules/gizmo.js';
+import { drawLightsOverlay, drawCamerasOverlay } from '../src/modules/gizmo.js';
 import { dom, setStatus } from './dom.js';
 import {
   viewport,
@@ -768,6 +768,18 @@ export function renderEditOverlay(camera) {
       });
     }
     drawLightsOverlay(
+      ctx,
+      camera,
+      viewport.scene,
+      W,
+      H,
+      {
+        selected: sceneStore.selected,
+        selectedSet,
+        multiSelectSet,
+      }
+    );
+    drawCamerasOverlay(
       ctx,
       camera,
       viewport.scene,

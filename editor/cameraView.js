@@ -12,12 +12,13 @@ import {
   isInScene,
 } from './store.js';
 import { syncCameraHelperSelection, selectObject } from './viewport.js';
-import { syncSelectedUI, renderObjectList } from './inspectorUI.js';
+import { syncSelectedUI, renderObjectList, closeAllPopovers, syncViewCameraQuickBtn } from './inspectorUI.js';
 import { registerUserObject } from './sceneActions.js';
 import {
   getMaxSceneAnimationDuration,
   beginCameraTimelinePlayback,
   stepCameraTimelinePlayback,
+  closeTimelineSubpopovers,
 } from './animationController.js';
 
 const _previewState = {
@@ -228,11 +229,15 @@ export function enterCameraView(cam) {
     recorder.instance.viewportCamera = cameraView.viewCam;
   }
 
-  if (dom.hudHint) dom.hudHint.textContent = 'Vista cámara · Arrastra para encuadrar · Esc: salir · Clic en objeto para editar';
+  closeAllPopovers();
+  closeTimelineSubpopovers();
+  if (dom.viewportWrap) dom.viewportWrap.classList.add('is-camera-view');
+  if (dom.hudHint) dom.hudHint.textContent = '';
   updateViewfinderOverlay();
+  syncViewCameraQuickBtn();
   syncSelectedUI();
   renderObjectList();
-  setStatus(`Viendo desde "${cam.name || 'Cámara'}". Pulsa Esc o "Salir vista cámara" para volver.`);
+  setStatus(`Viendo desde "${cam.name || 'Cámara'}". Pulsa Esc o "Salir" para volver.`);
 }
 
 export function exitCameraView({ restoreSnapshot = true } = {}) {
@@ -280,8 +285,10 @@ export function exitCameraView({ restoreSnapshot = true } = {}) {
   if (recorder.instance) {
     recorder.instance.viewportCamera = viewport.camera;
   }
+  if (dom.viewportWrap) dom.viewportWrap.classList.remove('is-camera-view');
   if (dom.hudHint) dom.hudHint.textContent = DEFAULT_HUD_HINT;
   syncCameraHelperSelection();
+  syncViewCameraQuickBtn();
   syncSelectedUI();
   renderObjectList();
 }

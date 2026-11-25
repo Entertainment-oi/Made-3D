@@ -273,6 +273,6 @@ export function updateDrag(gizmo, d, ray, x, y) {
   }
 
   d.text = text + (snapped ? '  · snap' : '');
-  gizmo.info = { mode: d.type, key: d.key, text: LABEL[d.type] + ' ' + d.text };
+  gizmo.info = { mode: d.type, key: d.key, text: d.text };
   return true;
 }

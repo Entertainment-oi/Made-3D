@@ -1,4 +1,4 @@
-import { Clock, Vec3 } from '../made3d.module.js';
+import { Clock, HistoryManager } from '../made3d.module.js';
 import { Sculptor } from '../src/modules/sculpt.js';
 import { MeshEditor } from '../src/modules/modeling.js';
 
@@ -77,6 +77,7 @@ export const animState = {
   allClips: [],                      // lista ordenada de clips creados en el editor
   currentClip: null,
   currentTime: 0,
+  defaultDuration: 3.0,
   pxPerSec: 120,
   playing: false,
   speed: 1,
@@ -144,29 +145,15 @@ export function isDescendantOrSelf(node, ancestor) {
 }
 
 export function snapshotLocal(o) {
-  return {
-    p: o.position.clone(),
-    q: o.quaternion.clone(),
-    s: o.scale.clone(),
-    pv: o.pivot ? o.pivot.clone() : new Vec3(),
-  };
+  return HistoryManager.snapshotTransform(o);
 }
 
 export function cloneLocalState(s) {
-  return {
-    p: s.p.clone(),
-    q: s.q.clone(),
-    s: s.s.clone(),
-    pv: s.pv ? s.pv.clone() : new Vec3(),
-  };
+  return HistoryManager.cloneTransform(s);
 }
 
 export function restoreLocal(o, st) {
-  o.position.copy(st.p);
-  o.quaternion.copy(st.q);
-  o.scale.copy(st.s);
-  if (o.pivot && st.pv) o.pivot.copy(st.pv);
-  o.updateMatrixWorld();
+  HistoryManager.restoreTransform(o, st);
 }
 
 export function findOwningUserRoot(obj) {

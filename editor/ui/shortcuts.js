@@ -422,13 +422,10 @@ export function bindShortcutsAndModes() {
       syncGizmoSpaceUI(nextSpace);
       setStatus(nextSpace === 'local' ? 'Espacio del gizmo: Local' : 'Espacio del gizmo: Mundo');
     },
-    onReadoutChange: (text) => {
+    onReadoutChange: () => {
       if (!dom.gizmoReadout) return;
-      if (!text) dom.gizmoReadout.hidden = true;
-      else {
-        dom.gizmoReadout.hidden = false;
-        dom.gizmoReadout.textContent = text;
-      }
+      dom.gizmoReadout.hidden = true;
+      dom.gizmoReadout.textContent = '';
     },
     onEditCommit: (ev) => {
       if (ev && ev.beforeState && ev.afterState) {

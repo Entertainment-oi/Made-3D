@@ -1,4 +1,4 @@
-import { SphereGeometry, Mesh } from '../made3d.module.js';
+import { SphereGeometry, Mesh, HistoryManager } from '../made3d.module.js';
 import { MatcapMaterial } from '../src/modules/stylized.js';
 import { Sculptor, subdivideGeometry } from '../src/modules/sculpt.js';
 import { dom, setStatus } from './dom.js';
@@ -180,21 +180,7 @@ export function subdivideSelectedMesh() {
 
   Sculptor.ensureUniqueGeometry(mesh, viewport.scene);
   const beforeGeo = mesh.geometry;
-  const beforeSubsurf = {
-    subsurf: mesh._subsurf
-      ? {
-          level: mesh._subsurf.level | 0,
-          smoothness: mesh._subsurf.smoothness ?? 1,
-          smoothShading: Boolean(mesh._subsurf.smoothShading),
-          showCage: Boolean(mesh._subsurf.showCage),
-          alwaysShowCage: Boolean(mesh._subsurf.alwaysShowCage),
-          baseMesh: mesh._subsurf.baseMesh ? mesh._subsurf.baseMesh.clone() : null,
-        }
-      : null,
-    dirty: Boolean(mesh._subsurfDirtyFromGeometry),
-    modFlag: Boolean(beforeGeo?._modifiedBySculpt),
-    genFlag: Boolean(beforeGeo?._isGeneratedSubsurf),
-  };
+  const beforeSubsurf = HistoryManager.captureSubsurfSnapshot(mesh);
   if (mesh._subsurf) {
     mesh._subsurf = null;
   }

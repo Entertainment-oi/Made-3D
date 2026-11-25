@@ -454,12 +454,8 @@ export function downloadBlob(blob, filename) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-export function updateReadout(gizmo) {
+export function updateReadout() {
   if (!dom.gizmoReadout) return;
-  if (!gizmo || !gizmo.drag || !gizmo.info.text) {
-    dom.gizmoReadout.hidden = true;
-    return;
-  }
-  dom.gizmoReadout.hidden = false;
-  dom.gizmoReadout.textContent = gizmo.info.text;
+  dom.gizmoReadout.hidden = true;
+  dom.gizmoReadout.textContent = '';
 }

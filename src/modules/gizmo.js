@@ -14,3 +14,5 @@ export {
 } from '../gizmo/GizmoTransform.js';
 export { SelectionOutline } from '../gizmo/SelectionOutline.js';
 export { drawLightsOverlay } from '../lights/LightOverlay.js';
+export { drawCamerasOverlay } from '../cameras/CameraOverlay.js';
+

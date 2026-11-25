@@ -75,6 +75,7 @@ export class GizmoBase extends Object3D {
     this.hover = null;
     this._hoverBone = null;
     this.drag = null;
+    this.history = o.history || null;
     this.trackHistory = o.trackHistory !== false;
     this.undoStack = [];
     this.redoStack = [];
@@ -332,6 +333,14 @@ export class GizmoBase extends Object3D {
   }
 
   undo() {
+    if (this.history && typeof this.history.undo === 'function') {
+      const cmd = this.history.undo();
+      if (cmd) {
+        this._changed();
+        this._fire('history', { action: 'undo', entry: cmd });
+      }
+      return cmd;
+    }
     const h = this.undoStack.pop();
     if (h) {
       this._restore(h.os, h.before);
@@ -339,9 +348,18 @@ export class GizmoBase extends Object3D {
       this._changed();
       this._fire('history', { action: 'undo', entry: h });
     }
+    return h || null;
   }
 
   redo() {
+    if (this.history && typeof this.history.redo === 'function') {
+      const cmd = this.history.redo();
+      if (cmd) {
+        this._changed();
+        this._fire('history', { action: 'redo', entry: cmd });
+      }
+      return cmd;
+    }
     const h = this.redoStack.pop();
     if (h) {
       this._restore(h.os, h.after);
@@ -349,6 +367,7 @@ export class GizmoBase extends Object3D {
       this._changed();
       this._fire('history', { action: 'redo', entry: h });
     }
+    return h || null;
   }
 
   cancel() {
@@ -597,7 +616,7 @@ export class GizmoBase extends Object3D {
     this.drag = d;
     if (this.controls) this.controls.enabled = false;
     try { this.domElement.setPointerCapture(e.pointerId); } catch (_) { /* sin captura */ }
-    this.info = { mode: d.type, key: d.key, text: LABEL[d.type] + ' ' + d.key.toUpperCase() };
+    this.info = { mode: d.type, key: d.key, text: '' };
     this._fire('dragging-changed', { value: true });
     this._fire('dragstart', { mode: d.type, key: d.key, objects: this.objects.slice(), before: d.before });
     this._fire('change');
@@ -739,9 +758,13 @@ export class GizmoBase extends Object3D {
       const h = { os: d.st.map((s) => s.o), before: d.before, after: d.st.map((s) => this._local(s.o)) };
       this._fire('dragend', h);
       if (this.trackHistory) {
-        this.undoStack.push(h);
-        this.redoStack.length = 0;
-        this._fire('history');
+        if (this.history && typeof this.history.push === 'function') {
+          this.history.push({ type: 'transform', os: h.os, before: h.before, after: h.after });
+        } else {
+          this.undoStack.push(h);
+          this.redoStack.length = 0;
+        }
+        this._fire('history', { action: 'push', entry: h });
       }
     } else {
       const touch = e.pointerType !== 'mouse';

@@ -134,18 +134,20 @@
                 <span class="vf-line vf-h1"></span>
                 <span class="vf-line vf-h2"></span>
               </div>
-              <div id="vf-label" class="vf-label">Cámara · 1920×1080</div>
             </div>
-            <div class="vf-actions">
-              <div class="vf-action-group">
-                <button type="button" id="btn-vf-render" class="vf-btn is-primary">Renderizar</button>
-                <button type="button" id="btn-vf-video" class="vf-btn is-record">Grabar video</button>
+            <div class="vf-top-hud">
+              <div class="vf-actions">
+                <div class="vf-action-group">
+                  <button type="button" id="btn-vf-render" class="vf-btn is-primary">Renderizar</button>
+                  <button type="button" id="btn-vf-video" class="vf-btn is-record">Grabar video</button>
+                </div>
+                <span class="vf-sep"></span>
+                <div class="vf-action-group">
+                  <button type="button" id="btn-vf-lock" class="vf-btn">Fijar vista</button>
+                  <button type="button" id="btn-vf-exit" class="vf-btn">Salir</button>
+                </div>
               </div>
-              <span class="vf-sep"></span>
-              <div class="vf-action-group">
-                <button type="button" id="btn-vf-lock" class="vf-btn">Fijar vista</button>
-                <button type="button" id="btn-vf-exit" class="vf-btn">Salir</button>
-              </div>
+              <div id="vf-label" class="vf-label">Cámara · 1920×1080</div>
             </div>
           </div>
 
@@ -635,12 +637,13 @@
                   </svg>
                 </button>
 
-                <button type="button" id="btn-tl-play" class="tl-icon-btn tl-play-btn" title="Reproducir / Detener (Espacio)">
+                <button type="button" id="btn-tl-play" class="tl-icon-btn tl-play-btn" title="Reproducir / Pausar (Espacio)">
                   <svg class="icon-play" viewBox="0 0 24 24" fill="currentColor">
                     <polygon points="7,4 20,12 7,20" />
                   </svg>
-                  <svg class="icon-stop" viewBox="0 0 24 24" fill="currentColor" hidden>
-                    <rect x="6" y="6" width="12" height="12" rx="1.5" />
+                  <svg class="icon-pause" viewBox="0 0 24 24" fill="currentColor">
+                    <rect x="6" y="4" width="4.5" height="16" rx="1.2" />
+                    <rect x="13.5" y="4" width="4.5" height="16" rx="1.2" />
                   </svg>
                 </button>
 

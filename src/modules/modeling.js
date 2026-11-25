@@ -1,3 +1,14 @@
+import { HistoryManager } from '../core/HistoryManager.js';
+import {
+  restoreMeshModelingState,
+  syncEditableBaseFromGeometry,
+} from '../modeling/SubdivisionSurface.js';
+
+HistoryManager.registerHandlers({
+  restoreMeshModelingState,
+  syncEditableBaseFromGeometry,
+});
+
 export { EditableMesh, edgeKey } from '../modeling/EditableMesh.js';
 export {
   MAX_SUBSURF_FACES,

@@ -77,7 +77,7 @@ export function switchTab(tabName) {
 export function syncViewCameraQuickBtn() {
   const activeMode = viewport.appMode || 'pose';
   const isCamSelected = Boolean(sceneStore.selected && sceneStore.selected.isCamera);
-  const inCamView = Boolean(cameraView.activeSceneCam && cameraView.activeSceneCam === sceneStore.selected);
+  const inCamView = Boolean(cameraView.activeSceneCam);
   const allowedMode = (activeMode === 'pose' || activeMode === 'animacion') && !sculpt.active && !edit.active;
   const show = allowedMode && isCamSelected && !inCamView;
 

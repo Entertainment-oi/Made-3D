@@ -249,13 +249,15 @@ export function buildGizmo(style) {
   gizmo.addEventListener('dragend', (e) => {
     if (dom.gizmoReadout) dom.gizmoReadout.hidden = true;
     if (e && e.os && e.before && e.after) {
-      history.push({
-        type: 'transform',
-        os: e.os.slice(),
-        before: e.before.map(cloneLocalState),
-        after: e.after.map(cloneLocalState),
+      history.runGrouped('Transformar', () => {
+        history.push({
+          type: 'transform',
+          os: e.os.slice(),
+          before: e.before.map(cloneLocalState),
+          after: e.after.map(cloneLocalState),
+        });
+        recordAutoKeyframeIfNeeded(e.os, { beforeList: e.before, afterList: e.after });
       });
-      recordAutoKeyframeIfNeeded(e.os, { beforeList: e.before, afterList: e.after });
     }
     history.updateButtons();
   });

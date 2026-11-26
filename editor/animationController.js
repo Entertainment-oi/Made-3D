@@ -11,7 +11,7 @@ import { history } from './history.js';
 import { syncRangeVisual } from './ui/rangeControls.js';
 
 const KEYFRAME_HIT_EPS = 0.035;
-const MIN_PX_PER_SEC = 28;
+const MIN_PX_PER_SEC = 4;
 const MAX_PX_PER_SEC = 480;
 const LONG_PRESS_MS = 460;
 const LONG_PRESS_MOVE_PX = 6;
@@ -592,8 +592,7 @@ export function pasteKeyframeAtCurrentTime(targetObj = null, time = animState.cu
 // ============================================================
 
 export function setTimelineTime(t) {
-  const dur = getActiveClipDuration();
-  animState.currentTime = Math.max(0, Math.min(Math.max(dur, 120), t));
+  animState.currentTime = Math.max(0, Number(t) || 0);
   evaluateActiveAnimationsAt(animState.currentTime);
   syncAnimationHeader();
   drawTimelineCanvas();
@@ -776,11 +775,11 @@ function formatTickNumber(val) {
 }
 
 function chooseTickStep(pxPerSec) {
-  const candidates = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30];
+  const candidates = [0.05, 0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
   for (const step of candidates) {
     if (step * pxPerSec >= 46) return step;
   }
-  return 30;
+  return 600;
 }
 
 function timeToX(t) {
@@ -1245,17 +1244,32 @@ function openKeyframeContextMenu({ x, y, hit, clip }) {
     copyBtn.type = 'button';
     copyBtn.className = 'anim-kf-menu-btn';
     copyBtn.textContent = 'Copiar keyframe';
-    copyBtn.addEventListener('click', () => {
+    copyBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       copyKeyframeFromTimeline(clip, hit.time, props);
       closeKeyframeContextMenu();
     });
     menu.appendChild(copyBtn);
 
+    if (animState.copiedKeyframe) {
+      const pasteBtn = document.createElement('button');
+      pasteBtn.type = 'button';
+      pasteBtn.className = 'anim-kf-menu-btn';
+      pasteBtn.textContent = `Pegar keyframe en ${hit.time.toFixed(2)}s`;
+      pasteBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        pasteKeyframeAtCurrentTime(null, hit.time);
+        closeKeyframeContextMenu();
+      });
+      menu.appendChild(pasteBtn);
+    }
+
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
     delBtn.className = 'anim-kf-menu-btn is-danger';
     delBtn.textContent = 'Eliminar keyframe';
-    delBtn.addEventListener('click', () => {
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       removeKeyframeAt(clip, hit.time, { properties: props });
       setStatus(`Keyframe eliminado en ${hit.time.toFixed(2)}s.`);
       closeKeyframeContextMenu();
@@ -1277,7 +1291,8 @@ function openKeyframeContextMenu({ x, y, hit, clip }) {
     pasteBtn.type = 'button';
     pasteBtn.className = 'anim-kf-menu-btn';
     pasteBtn.textContent = `Pegar keyframe en ${targetT.toFixed(2)}s`;
-    pasteBtn.addEventListener('click', () => {
+    pasteBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
       pasteKeyframeAtCurrentTime(null, targetT);
       closeKeyframeContextMenu();
     });
@@ -1285,10 +1300,15 @@ function openKeyframeContextMenu({ x, y, hit, clip }) {
   }
 
   menu.hidden = false;
-  const maxLeft = Math.max(6, wrap.clientWidth - menu.offsetWidth - 6);
-  const maxTop = Math.max(6, wrap.clientHeight - menu.offsetHeight - 6);
-  menu.style.left = `${Math.max(6, Math.min(maxLeft, x - menu.offsetWidth * 0.5))}px`;
-  menu.style.top = `${Math.max(6, Math.min(maxTop, y - menu.offsetHeight - 8))}px`;
+  const menuW = menu.offsetWidth || 176;
+  const menuH = menu.offsetHeight || 72;
+  const maxLeft = Math.max(6, wrap.clientWidth - menuW - 6);
+  const left = Math.max(6, Math.min(maxLeft, x - menuW * 0.5));
+  const rawTop = y - menuH - 8;
+  const minTop = -(wrap.offsetTop + 140);
+  const maxTop = Math.max(minTop, wrap.clientHeight - menuH - 4);
+  menu.style.left = `${left}px`;
+  menu.style.top = `${Math.max(minTop, Math.min(maxTop, rawTop))}px`;
 }
 
 export function closeTimelineSubpopovers(exceptId = null) {
@@ -1384,7 +1404,7 @@ export function bindAnimationUI() {
   });
 
   dom.animSetDuration?.addEventListener('change', (e) => {
-    const nextDur = Math.max(0.2, Math.min(120, Number(e.target.value) || 3));
+    const nextDur = Math.max(0.2, Number(e.target.value) || 3);
     const clip = animState.currentClip;
     if (!clip) {
       animState.defaultDuration = nextDur;
@@ -1419,6 +1439,7 @@ export function bindAnimationUI() {
       closeKeyframeContextMenu();
     }
     const inside =
+      e.target.closest('#anim-kf-menu') ||
       e.target.closest('#anim-manager-popover') ||
       e.target.closest('#btn-anim-menu') ||
       e.target.closest('#anim-curve-popover') ||
@@ -1427,6 +1448,8 @@ export function bindAnimationUI() {
       e.target.closest('#btn-tl-more');
     if (!inside) closeTimelineSubpopovers();
   });
+
+  dom.animKfMenu?.addEventListener('contextmenu', (e) => e.preventDefault());
 
   // Barra superior de redimensionamiento vertical del timeline
   if (dom.animTlResize && dom.animTimeline) {
@@ -1467,6 +1490,7 @@ export function bindAnimationUI() {
   if (dom.animTlCanvas) {
     let tlDrag = null;
     let holdTimer = 0;
+    let lastHoldOpenedAt = 0;
     const activePointers = new Map();
     let pinchState = null;
 
@@ -1480,8 +1504,12 @@ export function bindAnimationUI() {
     dom.animTlCanvas.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       clearHoldTimer();
+      if (tlDrag?.holdTriggered || performance.now() - lastHoldOpenedAt < 650) {
+        return;
+      }
       const [x, y] = clientToLocalPoint(dom.animTlCanvas, e);
-      const hit = hitTestTimelineKeyframe(animState.currentClip, x, y, 16);
+      const isTouchCtx = Boolean(e.pointerType && e.pointerType !== 'mouse') || Boolean(e.sourceCapabilities?.firesTouchEvents);
+      const hit = hitTestTimelineKeyframe(animState.currentClip, x, y, isTouchCtx ? 22 : 16);
       openKeyframeContextMenu({ x, y, hit, clip: animState.currentClip });
     });
 
@@ -1555,6 +1583,7 @@ export function bindAnimationUI() {
         holdTimer = setTimeout(() => {
           if (!tlDrag || tlDrag.pointerId !== e.pointerId || tlDrag.moved) return;
           tlDrag.holdTriggered = true;
+          lastHoldOpenedAt = performance.now();
           openKeyframeContextMenu({ x, y, hit: tlDrag.hit, clip: animState.currentClip });
         }, LONG_PRESS_MS);
         return;
@@ -1574,6 +1603,7 @@ export function bindAnimationUI() {
       holdTimer = setTimeout(() => {
         if (!tlDrag || tlDrag.pointerId !== e.pointerId || tlDrag.moved) return;
         tlDrag.holdTriggered = true;
+        lastHoldOpenedAt = performance.now();
         openKeyframeContextMenu({ x, y, hit: null, clip: animState.currentClip });
       }, LONG_PRESS_MS);
     });
@@ -1619,7 +1649,7 @@ export function bindAnimationUI() {
 
       if (tlDrag.mode === 'duration') {
         const rawDur = tlDrag.startDur + dx / animState.pxPerSec;
-        const snapped = Math.max(0.2, Math.min(120, Math.round(rawDur * 20) / 20));
+        const snapped = Math.max(0.2, Math.round(rawDur * 20) / 20);
         if (animState.currentClip) {
           animState.currentClip.duration = snapped;
         } else {

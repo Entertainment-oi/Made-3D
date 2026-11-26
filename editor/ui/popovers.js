@@ -1,6 +1,7 @@
 import { loadZipLoader } from '../../made3d.module.js';
 import { dom } from '../dom.js';
-import { viewport, sceneStore, cameraView, sculpt, edit } from '../store.js';
+import { viewport, sceneStore, cameraView, sculpt, edit, rig } from '../store.js';
+import { history } from '../history.js';
 import { enterCameraView, addSceneCamera } from '../cameraView.js';
 import { setSculptMode, addClaySphere } from '../sculptController.js';
 import { setEditMode } from '../editController.js';
@@ -33,6 +34,7 @@ const APP_MODE_LABELS = {
   pose: 'Pose',
   modelar: 'Modelar',
   edicion: 'Edición',
+  esqueleto: 'Esqueleto',
   animacion: 'Animación',
 };
 
@@ -80,7 +82,7 @@ export function syncViewCameraQuickBtn() {
   const activeMode = viewport.appMode || 'pose';
   const isCamSelected = Boolean(sceneStore.selected && sceneStore.selected.isCamera);
   const inCamView = Boolean(cameraView.activeSceneCam);
-  const allowedMode = (activeMode === 'pose' || activeMode === 'animacion') && !sculpt.active && !edit.active;
+  const allowedMode = (activeMode === 'pose' || activeMode === 'animacion') && !sculpt.active && !edit.active && !rig.active;
   const show = allowedMode && isCamSelected && !inCamView;
 
   if (dom.btnViewCameraQuick) {
@@ -103,6 +105,8 @@ export function syncAppModeUI(mode = null) {
       ? 'modelar'
       : edit.active
       ? 'edicion'
+      : rig.active
+      ? 'esqueleto'
       : viewport.appMode === 'animacion'
       ? 'animacion'
       : 'pose');
@@ -190,7 +194,7 @@ export function bindPopoverNav() {
     });
   });
 
-  // Selector de Modo: Pose / Modelar / Edición / Animación
+  // Selector de Modo: Pose / Modelar / Edición / Esqueleto / Animación
   document.querySelectorAll('#menu-mode [data-app-mode]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const mode = btn.dataset.appMode;
@@ -198,15 +202,19 @@ export function bindPopoverNav() {
       if (mode === 'pose') {
         if (edit.active) setEditMode(false);
         if (sculpt.active) setSculptMode(false);
+        if (rig.active) history._hooks.setRigMode?.(false);
         syncAppModeUI('pose');
       } else if (mode === 'animacion') {
         if (edit.active) setEditMode(false);
         if (sculpt.active) setSculptMode(false);
+        if (rig.active) history._hooks.setRigMode?.(false);
         syncAppModeUI('animacion');
       } else if (mode === 'modelar') {
         setSculptMode(true);
       } else if (mode === 'edicion') {
         setEditMode(true);
+      } else if (mode === 'esqueleto') {
+        history._hooks.setRigMode?.(true);
       }
     });
   });

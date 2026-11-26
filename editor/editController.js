@@ -20,6 +20,7 @@ import {
   cameraView,
   sculpt,
   edit,
+  rig,
 } from './store.js';
 import { history } from './history.js';
 import { setSculptMode } from './sculptController.js';
@@ -437,6 +438,7 @@ export function setEditMode(enabled) {
   if (next) {
     if (cameraView.activeSceneCam) exitCameraView();
     if (sculpt.active) setSculptMode(false);
+    if (rig.active) history._hooks.setRigMode?.(false);
     if (viewport.gizmo?.drag) {
       viewport.gizmo.cancel();
       if (dom.gizmoReadout) dom.gizmoReadout.hidden = true;
@@ -445,7 +447,7 @@ export function setEditMode(enabled) {
     const candidate = getEditablePrimaryMesh();
     if (!candidate) {
       setStatus('Selecciona o crea una malla editable primero.', true);
-      syncAppModeUI(sculpt.active ? 'modelar' : viewport.appMode === 'animacion' ? 'animacion' : 'pose');
+      syncAppModeUI(sculpt.active ? 'modelar' : rig.active ? 'esqueleto' : viewport.appMode === 'animacion' ? 'animacion' : 'pose');
       return false;
     }
 
@@ -476,8 +478,9 @@ export function setEditMode(enabled) {
     viewport.controls.enabled = !(cameraView.activeSceneCam && cameraView.camViewLocked);
   }
   if (viewport.gizmo) {
-    viewport.gizmo.enabled = !next && !sculpt.active;
-    viewport.gizmo.visible = !next && !sculpt.active && !(cameraView.activeSceneCam && sceneStore.selected === cameraView.activeSceneCam);
+    const rigHidingGizmo = rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint);
+    viewport.gizmo.enabled = !next && !sculpt.active && !rigHidingGizmo;
+    viewport.gizmo.visible = !next && !sculpt.active && !rigHidingGizmo && !(cameraView.activeSceneCam && sceneStore.selected === cameraView.activeSceneCam);
     if (!next) {
       document.querySelectorAll('.seg-btn[data-mode]').forEach((btn) => {
         btn.classList.toggle('is-active', btn.dataset.mode === viewport.gizmo.mode);
@@ -489,6 +492,8 @@ export function setEditMode(enabled) {
     ? 'edicion'
     : sculpt.active
     ? 'modelar'
+    : rig.active
+    ? 'esqueleto'
     : !wasActive && viewport.appMode === 'animacion'
     ? 'animacion'
     : 'pose';

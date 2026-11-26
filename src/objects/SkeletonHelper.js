@@ -436,12 +436,24 @@ export class SkeletonHelper extends Object3D {
             bx: this._projB.x, by: this._projB.y,
             active, hovered,
           });
-          if (this._projB.w > 0.01) tails.push({ x: this._projB.x, y: this._projB.y, active, hovered });
+          if (this._projB.w > 0.01) {
+            let level = 0, pa = b.parent;
+            while (pa) { if (pa.isBone) level++; pa = pa.parent; }
+            tails.push({
+              bone: b,
+              x: this._projB.x,
+              y: this._projB.y,
+              w: this._projB.w,
+              level,
+              active,
+              hovered,
+            });
+          }
         }
       }
     }
 
-    this._rigScreens = { joints, segs };
+    this._rigScreens = { joints, segs, tails };
 
     c.save();
     c.lineCap = 'round';
@@ -483,13 +495,21 @@ export class SkeletonHelper extends Object3D {
 
     for (let i = 0; i < tails.length; i++) {
       const tp = tails[i];
+      const tr = tp.hovered ? 5.2 : tp.active ? 4.8 : 3.8;
       c.beginPath();
-      c.arc(tp.x, tp.y, 2.8, 0, 7);
-      c.fillStyle = tp.active ? _ORANGE_ACTIVE : tp.hovered ? _HOT : '#5eead4';
-      c.strokeStyle = 'rgba(10, 14, 20, 0.8)';
-      c.lineWidth = 1.2;
+      c.arc(tp.x, tp.y, tr, 0, 7);
+      c.fillStyle = tp.hovered ? _HOT : tp.active ? _ORANGE_ACTIVE : '#5eead4';
+      c.strokeStyle = 'rgba(10, 14, 20, 0.88)';
+      c.lineWidth = 1.5;
       c.fill();
       c.stroke();
+      if (tp.hovered || tp.active) {
+        c.beginPath();
+        c.arc(tp.x, tp.y, tr + 3.2, 0, 7);
+        c.strokeStyle = tp.hovered ? 'rgba(255, 214, 10, 0.78)' : 'rgba(255, 170, 64, 0.72)';
+        c.lineWidth = 1.2;
+        c.stroke();
+      }
     }
 
     for (let i = 0; i < joints.length; i++) {
@@ -527,7 +547,16 @@ export class SkeletonHelper extends Object3D {
       if (j.w <= 0.01) continue;
       if (j.bone.isPickable ? !j.bone.isPickable() : (j.bone.userData && j.bone.userData.pickable === false)) continue;
       const d = Math.hypot(x - j.x, y - j.y);
-      if (d <= jTol) jointHits.push({ bone: j.bone, px: d, level: j.level, x: j.x, y: j.y });
+      if (d <= jTol) jointHits.push({ bone: j.bone, px: d, level: j.level, x: j.x, y: j.y, hitKind: 'joint' });
+    }
+    if (rs.tails) {
+      for (let i = 0; i < rs.tails.length; i++) {
+        const tp = rs.tails[i];
+        if (!tp.bone || tp.w <= 0.01) continue;
+        if (tp.bone.isPickable ? !tp.bone.isPickable() : (tp.bone.userData && tp.bone.userData.pickable === false)) continue;
+        const d = Math.hypot(x - tp.x, y - tp.y);
+        if (d <= jTol) jointHits.push({ bone: tp.bone, px: d, level: tp.level, x: tp.x, y: tp.y, hitKind: 'tail' });
+      }
     }
     if (jointHits.length) {
       jointHits.sort((a, b) => {
@@ -543,7 +572,7 @@ export class SkeletonHelper extends Object3D {
           if (!seen.has(h.bone)) { seen.add(h.bone); candidates.push(h.bone); }
         }
       }
-      return { bone: first.bone, px: first.px, level: first.level, candidates };
+      return { bone: first.bone, px: first.px, level: first.level, hitKind: first.hitKind, candidates };
     }
 
     const segHits = [];
@@ -572,7 +601,7 @@ export class SkeletonHelper extends Object3D {
         candidates.push(h.bone);
       }
     }
-    return { bone: first.bone, px: first.px, level: first.level, candidates };
+    return { bone: first.bone, px: first.px, level: first.level, hitKind: 'segment', candidates };
   }
 
   // Picking aproximado en 3D contra todos los segmentos del esqueleto (padre→hijos y punta terminal).

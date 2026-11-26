@@ -177,10 +177,14 @@ export class Picker {
     for (const bone of this._bones(roots)) {
       if (!bone.visible) continue;
       if (!this._isPickAllowed(bone, camera)) continue;
+      bone.updateWorldMatrix(true, false);
       const head0 = _v1.setFromMatrixPosition(bone.matrixWorld);
       const childBones = [];
       for (const c of bone.children) {
-        if (c.isBone && c.visible && (c.isPickable ? c.isPickable() : (!c.userData || c.userData.pickable !== false))) childBones.push(c);
+        if (c.isBone && c.visible && (c.isPickable ? c.isPickable() : (!c.userData || c.userData.pickable !== false))) {
+          c.updateWorldMatrix(true, false);
+          childBones.push(c);
+        }
       }
       const tails = childBones.length
         ? childBones.map((c) => new Vec3().setFromMatrixPosition(c.matrixWorld))

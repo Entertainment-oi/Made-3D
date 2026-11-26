@@ -376,6 +376,9 @@ export class GizmoBase extends Object3D {
     const d = this.drag;
     if (!d) return;
     this._restore(d.st.map((s) => s.o), d.before);
+    if (d.key === 'boneTail' && !d.wasSelected && d.prevObjects) {
+      this.attach(d.prevObjects);
+    }
     this._end(d);
     try {
       if (this.domElement.hasPointerCapture && this.domElement.hasPointerCapture(d.id)) {
@@ -601,7 +604,62 @@ export class GizmoBase extends Object3D {
     }
 
     const [x, y] = this._xy(e, true);
-    const s = this._pick(x, y, e.pointerType !== 'mouse');
+    const touch = e.pointerType !== 'mouse';
+    const s = this._pick(x, y, touch);
+
+    let rigHit = null;
+    if (this.pickRigBones && !this._has3DSkeletonHelper() && !this._editPivot) {
+      const rigHelper = this._getRigHelper();
+      if (rigHelper && rigHelper.pickScreen) {
+        rigHit = rigHelper.pickScreen(x, y, touch);
+      }
+    }
+
+    if (
+      rigHit &&
+      rigHit.hitKind === 'tail' &&
+      !e.shiftKey &&
+      !this.multiSelectMode &&
+      (!s || s.kind === 'ring' || rigHit.bone !== this.object || rigHit.px <= (touch ? 14 : 8))
+    ) {
+      const prevObjects = this.objects.slice();
+      const wasSelected = this.objects.length === 1 && this.objects[0] === rigHit.bone;
+      if (!wasSelected) this.attach(rigHit.bone);
+      const F = this._frame();
+      const r = F ? this._ray(x, y) : null;
+      const d = F ? beginDrag(this, 'boneTail', F, r, x, y, e) : null;
+      if (d) {
+        d.rigHit = rigHit;
+        d.wasSelected = wasSelected;
+        d.prevObjects = prevObjects;
+        e.stopImmediatePropagation();
+        e.preventDefault();
+        this._clearLongPress();
+        this._tap = null;
+        this._rightTap = null;
+        this.drag = d;
+        if (this.controls) this.controls.enabled = false;
+        try { this.domElement.setPointerCapture(e.pointerId); } catch (_) { /* sin captura */ }
+        this.info = { mode: d.type, key: d.key, text: '' };
+        this._fire('dragging-changed', { value: true });
+        this._fire('dragstart', { mode: d.type, key: d.key, objects: this.objects.slice(), before: d.before });
+        this._fire('change');
+        return;
+      }
+      if (!wasSelected) this.attach(prevObjects);
+    }
+
+    if (
+      s &&
+      s.kind === 'ring' &&
+      rigHit &&
+      rigHit.hitKind === 'joint' &&
+      rigHit.bone !== this.object &&
+      rigHit.px <= (touch ? 14 : 9)
+    ) {
+      return;
+    }
+
     if (!s) return;
 
     const F = this._frame();
@@ -636,12 +694,19 @@ export class GizmoBase extends Object3D {
       if (e.pointerType === 'mouse' && this.enabled && this._vis && this.objects.length) {
         const [x, y] = this._xy(e);
         const s = this._pick(x, y, false);
-        const h = s ? s.key : null;
+        let h = s ? s.key : null;
         let hb = null;
-        if (!h && this.pickRigBones && !this._has3DSkeletonHelper()) {
+        if (this.pickRigBones && !this._has3DSkeletonHelper()) {
           const rigHelper = this._getRigHelper();
           const rh = rigHelper && rigHelper.pickScreen ? rigHelper.pickScreen(x, y, false) : null;
-          if (rh) hb = rh.bone;
+          if (rh && (
+            !h ||
+            (rh.hitKind === 'tail' && !this._editPivot && this._mode !== 'select' && (!s || s.kind === 'ring' || rh.bone !== this.object || rh.px <= 8)) ||
+            (rh.hitKind === 'joint' && rh.bone !== this.object && s && s.kind === 'ring' && rh.px <= 9)
+          )) {
+            hb = rh.bone;
+            h = null;
+          }
         }
         if (h !== this.hover || hb !== this._hoverBone) {
           this.hover = h;
@@ -772,19 +837,43 @@ export class GizmoBase extends Object3D {
       const touch = e.pointerType !== 'mouse';
       const tapTol = touch ? 14 : 6;
       const isTap = Math.hypot(e.clientX - d.clientX0, e.clientY - d.clientY0) <= tapTol;
-      const canRigPick = isTap && this.pickRigBones && !this._has3DSkeletonHelper();
-      const rigHelper = canRigPick ? this._getRigHelper() : null;
-      const rigHit = rigHelper && rigHelper.pickScreen ? rigHelper.pickScreen(...this._xy(e), touch) : null;
-      const isCenter = d.key === 'free' || d.key === 'uni';
-      if (rigHit && (!isCenter || (this.cycleOverlap && rigHit.candidates && rigHit.candidates.length > 1))) {
-        this._selectRigBone(rigHit, d.shift);
-      } else if (isCenter) {
-        const now = performance.now();
-        if (now - this._lastTap < 350) {
-          this.setSpace(this._space === 'world' ? 'local' : 'world');
-          this._lastTap = 0;
-        } else {
-          this._lastTap = now;
+      if (d.key === 'boneTail' && d.rigHit) {
+        if (isTap) {
+          if (d.wasSelected) {
+            this._selectRigBone(d.rigHit, d.shift);
+          } else {
+            const bone = d.rigHit.bone;
+            const candidates = d.rigHit.candidates && d.rigHit.candidates.length ? d.rigHit.candidates : [bone];
+            this._lastSelectTap = { t: performance.now(), obj: bone };
+            const anims = this.picker && this.picker.mixer ? this.picker.mixer.findTracks(bone) : [];
+            const hit = {
+              type: 'bone',
+              object: bone,
+              bone,
+              screenDistance: d.rigHit.px,
+              candidates,
+              distance: this._proj(_tmpVec.setFromMatrixPosition(bone.matrixWorld)).w,
+              animations: anims,
+              animation: anims.length && this.picker ? this.picker._animInfo(anims[0]) : null,
+            };
+            this._fire('pick', { hit, object: bone, objects: this.objects.slice() });
+          }
+        }
+      } else {
+        const canRigPick = isTap && this.pickRigBones && !this._has3DSkeletonHelper();
+        const rigHelper = canRigPick ? this._getRigHelper() : null;
+        const rigHit = rigHelper && rigHelper.pickScreen ? rigHelper.pickScreen(...this._xy(e), touch) : null;
+        const isCenter = d.key === 'free' || d.key === 'uni';
+        if (rigHit && (!isCenter || rigHit.bone !== this.object || (this.cycleOverlap && rigHit.candidates && rigHit.candidates.length > 1))) {
+          this._selectRigBone(rigHit, d.shift);
+        } else if (isCenter) {
+          const now = performance.now();
+          if (now - this._lastTap < 350) {
+            this.setSpace(this._space === 'world' ? 'local' : 'world');
+            this._lastTap = 0;
+          } else {
+            this._lastTap = now;
+          }
         }
       }
     }

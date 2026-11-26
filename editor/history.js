@@ -11,6 +11,7 @@ import {
   recorder,
   sculpt,
   edit,
+  rig,
   isInScene,
   isDescendantOrSelf,
 } from './store.js';
@@ -54,6 +55,16 @@ function detachEditorToolsIfInside(target) {
   }
   if (sculpt.sculptor?.hover?.mesh && isDescendantOrSelf(sculpt.sculptor.hover.mesh, target)) {
     sculpt.sculptor.hover = null;
+  }
+  if (rig.rigger.activeTipBone && isDescendantOrSelf(rig.rigger.activeTipBone, target)) {
+    rig.rigger.activeTipBone = null;
+    rig.rigger.activeTipAttach = 'tail';
+  }
+  if (rig.rigger.selectedBone && isDescendantOrSelf(rig.rigger.selectedBone, target)) {
+    rig.rigger.selectedBone = null;
+  }
+  if (rig.rigger.hover?.mesh && isDescendantOrSelf(rig.rigger.hover.mesh, target)) {
+    rig.rigger.hover = null;
   }
   if (viewport.gizmo && viewport.gizmo.objects.some((item) => isDescendantOrSelf(item, target))) {
     viewport.gizmo.detach();
@@ -192,6 +203,7 @@ export const history = new HistoryManager({
       history._hooks.syncSelectedUI?.();
       history._hooks.syncSculptUI?.();
       history._hooks.syncEditUI?.();
+      history._hooks.syncRigUI?.();
       history._hooks.syncAnimationUI?.();
       history._hooks.renderObjectList?.();
     },

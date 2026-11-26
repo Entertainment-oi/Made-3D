@@ -791,3 +791,240 @@ test('viewportCoords detecta teléfonos móviles y transforma punteros en modo h
   assert.deepEqual(clientToLocalPointFromRect(rotRect, { clientX: 200, clientY: 421 }, 758, 400, fakeDocOn), [379, 200]);
 });
 
+test('Librería rigging: Rigger, pesos automáticos, pincel/borrador, espejo, imán y fijado con undo/redo', async () => {
+  const {
+    Bone,
+    Skeleton,
+    SkeletonHelper,
+    SkinnedMesh,
+    Rigger,
+    computeAutoSkinWeights,
+    applyWeightBrushAt,
+    bindMeshesToSkeleton,
+  } = await loadRigging();
+
+  const geo = new Geometry();
+  // Dos triángulos simples en Y=0 y Y=2
+  geo.setAttribute('position', new Float32Array([
+    -0.2, 0, 0,
+     0.2, 0, 0,
+     0.0, 1, 0,
+    -0.2, 2, 0,
+     0.2, 2, 0,
+  ]), 3);
+  geo.setAttribute('normal', new Float32Array([
+    0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 1,
+  ]), 3);
+  geo.setIndex([0, 1, 2, 2, 3, 4]);
+
+  const bRoot = new Bone();
+  bRoot.name = 'Base';
+  bRoot.length = 1.0;
+
+  const bTop = new Bone();
+  bTop.name = 'Punta';
+  bTop.position.set(0, 1, 0);
+  bTop.length = 1.0;
+  bRoot.add(bTop);
+
+  const skinned = new SkinnedMesh(geo, new StandardMaterial({ color: 0xffffff, vertexColors: true }));
+  skinned.position.set(2, 0, 0);
+  skinned.add(bRoot);
+  skinned.updateWorldMatrix(true, true);
+
+  const bones = [bRoot, bTop];
+  const { skinIndex, skinWeight } = computeAutoSkinWeights(geo, skinned.matrixWorld, bones);
+  geo.setAttribute('skinIndex', skinIndex, 4);
+  geo.setAttribute('skinWeight', skinWeight, 4);
+  skinned.bind(new Skeleton(bones), skinned.matrixWorld.clone());
+
+  // Cada vértice debe sumar ~1.0 en sus pesos
+  for (let v = 0; v < 5; v++) {
+    const sum = skinWeight[v * 4] + skinWeight[v * 4 + 1] + skinWeight[v * 4 + 2] + skinWeight[v * 4 + 3];
+    assert.ok(Math.abs(sum - 1) < 1e-4, `peso vértice ${v} = ${sum}`);
+  }
+  // Vértice inferior (y=0) debe estar dominado por bRoot (índice 0); vértice superior (y=2) por bTop (índice 1)
+  assert.equal(Math.round(skinIndex[0]), 0);
+  assert.equal(Math.round(skinIndex[3 * 4]), 1);
+
+  // Pintar influencia de bTop cerca del vértice inferior (2, 0, 0)
+  const changedPaint = applyWeightBrushAt(skinned, new Vec3(2, 0, 0), bTop, 0.6, 0.85, false);
+  assert.equal(changedPaint, true);
+  assert.ok(geo.attributes.color, 'heatmap color attribute creado');
+
+  // Borrar pesos de bTop cerca de (2, 2, 0)
+  const changedErase = applyWeightBrushAt(skinned, new Vec3(2, 2, 0), bTop, 0.6, 0.9, true);
+  assert.equal(changedErase, true);
+
+  // Verificar deformación tras rotar bTop 90°
+  bTop.quaternion.setFromAxisAngle(new Vec3(0, 0, 1), Math.PI * 0.5);
+  skinned.updateWorldMatrix(true, true);
+  skinned.skeleton.update();
+  const out = new Float32Array(15);
+  skinned.computeSkinnedWorld(out, 5);
+  assert.ok(Number.isFinite(out[9]) && Number.isFinite(out[10]));
+
+  // En un cubo ancho (1.3x1.3x1.3) con 2 huesos, la parte inferior (y=-0.5) y las esquinas de la punta (y=+0.65)
+  // deben quedar aisladas al 100% en su hueso respectivo sin fugas ni pellizcos en la punta
+  const cubeGeo = new BoxGeometry(1.3, 1.3, 1.3, 8, 8, 8);
+  const cRoot = new Bone();
+  cRoot.position.set(0, -0.5, 0);
+  cRoot.length = 0.5;
+  const cTop = new Bone();
+  cTop.position.set(0, 0.5, 0);
+  cTop.length = 0.5;
+  cRoot.add(cTop);
+  const cubeMesh = new SkinnedMesh(cubeGeo, new StandardMaterial());
+  cubeMesh.add(cRoot);
+  cubeMesh.updateWorldMatrix(true, true);
+
+  const { skinIndex: cIdx, skinWeight: cWt } = computeAutoSkinWeights(cubeGeo, cubeMesh.matrixWorld, [cRoot, cTop]);
+  const cPos = cubeGeo.attributes.position.array;
+  const weightOf = (vi, boneIdx) => {
+    let w = 0;
+    for (let j = 0; j < 4; j++) {
+      if (cWt[vi * 4 + j] > 0 && Math.round(cIdx[vi * 4 + j]) === boneIdx) w += cWt[vi * 4 + j];
+    }
+    return w;
+  };
+  let checkedBottom = 0, checkedTopCorner = 0, checkedJoint = 0;
+  for (let vi = 0; vi < cubeGeo.attributes.position.count; vi++) {
+    const x = cPos[vi * 3], y = cPos[vi * 3 + 1], z = cPos[vi * 3 + 2];
+    if (y <= -0.35) {
+      assert.ok(weightOf(vi, 1) < 0.01, `parte inferior y=${y} no debe deformarse con hueso superior`);
+      checkedBottom++;
+    } else if (y >= 0.45 && Math.abs(x) > 0.5 && Math.abs(z) > 0.5) {
+      assert.ok(weightOf(vi, 1) > 0.99, `esquina superior y=${y} debe moverse 100% con la punta`);
+      checkedTopCorner++;
+    } else if (Math.abs(y) < 0.01) {
+      const w0 = weightOf(vi, 0);
+      const w1 = weightOf(vi, 1);
+      assert.ok(Math.abs(w0 - 0.5) < 0.05 && Math.abs(w1 - 0.5) < 0.05);
+      checkedJoint++;
+    }
+  }
+  assert.ok(checkedBottom > 0 && checkedTopCorner > 0 && checkedJoint > 0);
+
+  // SkeletonHelper.pickScreen permite tocar la punta (tail) del último hueso
+  const helper = new SkeletonHelper(cubeMesh);
+  const testCam = new PerspectiveCamera(50, 1, 0.1, 100);
+  testCam.position.set(0, 0, 5);
+  testCam.lookAt(0, 0, 0);
+  testCam.updateMatrixWorld();
+  testCam.updateProjection();
+
+  const noop = () => {};
+  const fakeCtx = {
+    save: noop, restore: noop, beginPath: noop, moveTo: noop, lineTo: noop,
+    closePath: noop, fill: noop, stroke: noop, arc: noop, setLineDash: noop,
+  };
+  helper.draw2D(fakeCtx, testCam, 400, 400, { sceneRoot: cubeMesh });
+  const tailScreen = helper._rigScreens?.tails?.[0];
+  assert.ok(tailScreen && tailScreen.bone === cTop);
+  const pickedTip = helper.pickScreen(tailScreen.x + 8, tailScreen.y, true);
+  assert.ok(pickedTip && pickedTip.bone === cTop, 'tocar la punta del último hueso debe seleccionarlo');
+  assert.equal(pickedTip.hitKind, 'tail');
+
+  // Flujo completo de Rigger desde la librería (imán + espejo + cadena + fijado + undo/redo)
+  const scene = new Scene();
+  const rawMesh = new Mesh(new BoxGeometry(1.4, 2.0, 1.0, 2, 4, 2), new StandardMaterial());
+  scene.add(rawMesh);
+  scene.updateMatrixWorld(true, true);
+
+  const rigEditor = new Rigger({ boneTool: true, mirror: true, magnet: true });
+  rigEditor.setEnabled(true);
+
+  const r1 = rigEditor.tapBoneTool(165, 260, 400, 400, testCam, Rigger.collectContext(rawMesh), { scene });
+  assert.equal(r1.action, 'startRoot');
+  assert.ok(r1.bone && r1.mirrorBone, 'espejo debe crear hueso izquierdo y derecho');
+  assert.ok(Math.abs(r1.bone.position.z) < 1e-3, 'imán debe centrar el hueso en Z=0');
+
+  const r2 = rigEditor.tapBoneTool(165, 200, 400, 400, testCam, Rigger.collectContext(rawMesh), { scene });
+  assert.equal(r2.action, 'extendRoot');
+  assert.ok(r2.bone.length > 0.2);
+
+  const r3 = rigEditor.tapBoneTool(165, 140, 400, 400, testCam, Rigger.collectContext(rawMesh), { scene });
+  assert.equal(r3.action, 'chainChild');
+  assert.ok(r3.bone.parent === r1.bone && r3.mirrorBone.parent === r1.mirrorBone);
+
+  const bindRes = rigEditor.bindRig(Rigger.collectContext(rawMesh), { scene });
+  assert.equal(bindRes.ok, true);
+  assert.ok(bindRes.primarySkinned.isSkinnedMesh);
+  assert.equal(scene.children.includes(bindRes.primarySkinned), true);
+  assert.equal(scene.children.includes(rawMesh), false);
+
+  bindRes.undo();
+  assert.equal(scene.children.includes(rawMesh), true);
+  bindRes.redo();
+  assert.equal(scene.children.includes(bindRes.primarySkinned), true);
+
+  // bindMeshesToSkeleton standalone
+  const plain = new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial());
+  const soloBone = new Bone();
+  soloBone.length = 0.8;
+  plain.add(soloBone);
+  const directBind = bindMeshesToSkeleton([plain], [soloBone]);
+  assert.equal(directBind.ok, true);
+  assert.equal(directBind.primarySkinned.isSkinnedMesh, true);
+
+  // GizmoBase: seleccionar y arrastrar directamente la cabecita/punta del último hueso
+  const gizmoCtx = {
+    setTransform: noop, clearRect: noop, save: noop, restore: noop,
+    beginPath: noop, moveTo: noop, lineTo: noop, closePath: noop,
+    fill: noop, stroke: noop, arc: noop, setLineDash: noop,
+    fillRect: noop, measureText: () => ({ width: 20 }), fillText: noop, roundRect: noop,
+  };
+  const gizmoDom = {
+    clientWidth: 400,
+    clientHeight: 400,
+    style: {},
+    addEventListener: noop,
+    removeEventListener: noop,
+    setPointerCapture: noop,
+    releasePointerCapture: noop,
+    hasPointerCapture: () => false,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 400 }),
+  };
+  const gizmoOverlay = { width: 400, height: 400, style: {}, getContext: () => gizmoCtx };
+  const rigGizmo = new GizmoBase(testCam, gizmoDom, { overlay: gizmoOverlay, mode: 'rotate' });
+  rigGizmo.attach(bindRes.primarySkinned);
+  rigGizmo._draw2D(true);
+  const rigHelper = rigGizmo._getRigHelper();
+  const lastTipScreen = rigHelper._rigScreens?.tails?.[0];
+  assert.ok(lastTipScreen, 'el último hueso debe proyectar su punta en GizmoBase');
+  const tipBone = lastTipScreen.bone;
+  const beforeTailWorld = tipBone.getWorldTail().clone();
+
+  rigGizmo._down({
+    pointerId: 7,
+    pointerType: 'mouse',
+    button: 0,
+    clientX: lastTipScreen.x,
+    clientY: lastTipScreen.y,
+    shiftKey: false,
+    stopImmediatePropagation: noop,
+    preventDefault: noop,
+  });
+  assert.equal(rigGizmo.object, tipBone, 'tocar la punta debe seleccionar el último hueso');
+  assert.equal(rigGizmo.drag?.key, 'boneTail', 'arrastrar la punta debe iniciar modo boneTail');
+
+  rigGizmo._move({
+    pointerId: 7,
+    pointerType: 'mouse',
+    clientX: lastTipScreen.x + 48,
+    clientY: lastTipScreen.y + 12,
+  });
+  assert.equal(rigGizmo.drag?.moved, true);
+  rigGizmo._up({
+    pointerId: 7,
+    pointerType: 'mouse',
+    clientX: lastTipScreen.x + 48,
+    clientY: lastTipScreen.y + 12,
+  });
+  const afterTailWorld = tipBone.getWorldTail();
+  assert.ok(afterTailWorld.distanceTo(beforeTailWorld) > 0.1, 'arrastrar la punta debe rotar/mover el último hueso');
+  rigGizmo.dispose();
+});
+
+
+

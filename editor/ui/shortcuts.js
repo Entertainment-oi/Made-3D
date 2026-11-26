@@ -1,7 +1,7 @@
 import { SCULPT_SYMMETRIES, SCULPT_FALLOFFS } from '../../src/modules/sculpt.js';
 import { snapshotMeshModelingState } from '../../src/modules/modeling.js';
 import { dom, setStatus, bindDoubleTap } from '../dom.js';
-import { viewport, sceneStore, cameraView, sculpt, edit } from '../store.js';
+import { viewport, sceneStore, cameraView, sculpt, edit, rig } from '../store.js';
 import { history } from '../history.js';
 import { focusOnObject, setGizmoMode, setEditPivotMode, syncGizmoSpaceUI } from '../viewport.js';
 import { exitCameraView } from '../cameraView.js';
@@ -340,9 +340,18 @@ export function bindShortcutsAndModes() {
         closeAllPopovers();
         return;
       }
-      if (!sculpt.active && cameraView.activeSceneCam) {
+      if (!sculpt.active && !rig.active && cameraView.activeSceneCam) {
         e.preventDefault();
         exitCameraView();
+        return;
+      }
+      if (rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint)) {
+        e.preventDefault();
+        rig.rigger.boneTool = false;
+        rig.rigger.weightPaint = false;
+        rig.rigger.hover = null;
+        history._hooks.ensureRigWeightPaintRestored?.();
+        history._hooks.syncRigUI?.();
         return;
       }
     }
@@ -368,7 +377,7 @@ export function bindShortcutsAndModes() {
       return;
     }
 
-    if (e.code === 'Space' && viewport.appMode === 'animacion' && !edit.active && !sculpt.active) {
+    if (e.code === 'Space' && viewport.appMode === 'animacion' && !edit.active && !sculpt.active && !rig.active) {
       e.preventDefault();
       toggleTimelinePlayback();
       return;

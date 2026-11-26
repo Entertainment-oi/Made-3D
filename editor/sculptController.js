@@ -8,6 +8,7 @@ import {
   cameraView,
   sculpt,
   edit,
+  rig,
 } from './store.js';
 import { history } from './history.js';
 import { selectObject, focusOnObject } from './viewport.js';
@@ -97,6 +98,9 @@ export function setSculptMode(enabled) {
   if (next && edit.active) {
     setEditMode(false);
   }
+  if (next && rig.active) {
+    history._hooks.setRigMode?.(false);
+  }
   if (viewport.gizmo?.drag) {
     viewport.gizmo.cancel();
     if (dom.gizmoReadout) dom.gizmoReadout.hidden = true;
@@ -120,8 +124,9 @@ export function setSculptMode(enabled) {
     viewport.controls.enabled = !(cameraView.activeSceneCam && cameraView.camViewLocked);
   }
   if (viewport.gizmo) {
-    viewport.gizmo.enabled = !next && !edit.active;
-    viewport.gizmo.visible = !next && !edit.active && !(cameraView.activeSceneCam && sceneStore.selected === cameraView.activeSceneCam);
+    const rigHidingGizmo = rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint);
+    viewport.gizmo.enabled = !next && !edit.active && !rigHidingGizmo;
+    viewport.gizmo.visible = !next && !edit.active && !rigHidingGizmo && !(cameraView.activeSceneCam && sceneStore.selected === cameraView.activeSceneCam);
   }
 
   if (dom.sculptOverlay) {
@@ -137,6 +142,8 @@ export function setSculptMode(enabled) {
     ? 'modelar'
     : edit.active
     ? 'edicion'
+    : rig.active
+    ? 'esqueleto'
     : !wasActive && viewport.appMode === 'animacion'
     ? 'animacion'
     : 'pose';

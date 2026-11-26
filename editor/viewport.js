@@ -33,6 +33,7 @@ import {
   cameraView,
   sculpt,
   edit,
+  rig,
   cloneLocalState,
 } from './store.js';
 import { history } from './history.js';
@@ -105,14 +106,16 @@ export function selectObject(obj) {
     }
   }
   if (viewport.gizmo) {
+    const rigHidingGizmo = rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint);
     viewport.gizmo.setMultiSelectMode?.(false);
     viewport.gizmo.attach(obj || null);
-    viewport.gizmo.visible = !sculpt.active && !edit.active && !(cameraView.activeSceneCam && obj === cameraView.activeSceneCam);
+    viewport.gizmo.visible = !sculpt.active && !edit.active && !rigHidingGizmo && !(cameraView.activeSceneCam && obj === cameraView.activeSceneCam);
   }
   syncCameraHelperSelection();
   syncSelectedUI();
   syncSculptUI();
   syncEditUI();
+  history._hooks.syncRigUI?.();
   syncGizmoXyzPanel();
   syncViewCameraQuickBtn();
   syncAnimationUI();
@@ -208,7 +211,10 @@ export function buildGizmo(style) {
     const list = gizmo.objects ? gizmo.objects.slice() : [];
     sceneStore.selectedList = list;
     sceneStore.selected = e.object || (list.length ? list[list.length - 1] : null);
-    if (cameraView.activeSceneCam) {
+    const rigHidingGizmo = rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint);
+    if (rigHidingGizmo || sculpt.active || edit.active) {
+      gizmo.visible = false;
+    } else if (cameraView.activeSceneCam) {
       gizmo.visible = sceneStore.selected !== cameraView.activeSceneCam;
     } else {
       gizmo.visible = true;
@@ -216,6 +222,7 @@ export function buildGizmo(style) {
     syncCameraHelperSelection();
     syncSelectedUI();
     syncEditUI();
+    history._hooks.syncRigUI?.();
     syncGizmoXyzPanel();
     syncViewCameraQuickBtn();
     syncAnimationUI();
@@ -283,7 +290,7 @@ export function buildGizmo(style) {
     gizmo.visible = sceneStore.selected !== cameraView.activeSceneCam;
     gizmo.deselectOnEscape = false;
   }
-  if (sculpt.active || edit.active) {
+  if (sculpt.active || edit.active || (rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint))) {
     gizmo.enabled = false;
     gizmo.visible = false;
   }
@@ -304,6 +311,13 @@ export function setGizmoStyle(style) {
 
 export function setGizmoMode(mode) {
   if (sculpt.active) setSculptMode(false);
+  if (rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint)) {
+    rig.rigger.boneTool = false;
+    rig.rigger.weightPaint = false;
+    rig.rigger.hover = null;
+    history._hooks.ensureRigWeightPaintRestored?.();
+    history._hooks.syncRigUI?.();
+  }
   if (edit.active) {
     edit.editor.setTransformMode(mode);
     document.querySelectorAll('.seg-btn[data-mode]').forEach((btn) => {
@@ -328,6 +342,7 @@ export function setGizmoMode(mode) {
 export function setEditPivotMode(on) {
   if (sculpt.active && on) setSculptMode(false);
   if (edit.active && on) setEditMode(false);
+  if (rig.active && on) history._hooks.setRigMode?.(false);
   const next = Boolean(on);
   if (viewport.gizmo) viewport.gizmo.setEditPivot(next);
   syncEditPivotUI();

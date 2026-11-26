@@ -40,6 +40,26 @@ function hasInvertibleMatrix3(m) {
   return Number.isFinite(det) && Math.abs(det) > 1e-12;
 }
 
+function quatFromUnitVectors(from, to, out = new Quaternion()) {
+  let r = from.x * to.x + from.y * to.y + from.z * to.z + 1;
+  if (r < 1e-6) {
+    r = 0;
+    if (Math.abs(from.x) > Math.abs(from.z)) {
+      out.set(-from.y, from.x, 0, r);
+    } else {
+      out.set(0, -from.z, from.y, r);
+    }
+  } else {
+    out.set(
+      from.y * to.z - from.z * to.y,
+      from.z * to.x - from.x * to.z,
+      from.x * to.y - from.y * to.x,
+      r
+    );
+  }
+  return out.normalize();
+}
+
 export function screenRay(camera, raycaster, x, y, W, H) {
   camera.updateWorldMatrix(true, false);
   if (camera.updateViewMatrix) camera.updateViewMatrix();
@@ -136,6 +156,26 @@ export function beginDrag(gizmo, key, F, ray, x, y, e) {
     acc: 0,
   };
 
+  if (key === 'boneTail') {
+    const bone = st[0]?.o;
+    if (!bone || !bone.isBone) return null;
+    const headW = st[0].p.clone();
+    const tail0 = bone.getWorldTail(new Vector3());
+    const dir0 = new Vector3().subVectors(tail0, headW);
+    const len = dir0.length();
+    if (len < 1e-6) return null;
+    dir0.multiplyScalar(1 / len);
+    d.type = 'boneTail';
+    d.headW = headW;
+    d.tail0 = tail0;
+    d.dir0 = dir0;
+    d.boneLen = len;
+    d.n = F.back;
+    d.h0 = planeHit(tail0, d.n, ray);
+    if (!d.h0) return null;
+    return d;
+  }
+
   if (m === 'rotate') {
     d.A = key === 'view' ? F.back : A;
     const h = planeHit(F.P, d.A, ray);
@@ -220,6 +260,20 @@ export function updateDrag(gizmo, d, ray, x, y) {
         }
       }
     }
+  } else if (d.type === 'boneTail') {
+    const h = planeHit(d.tail0, d.n, ray);
+    if (!h) return false;
+    const dir = _tmpVec.subVectors(h, d.headW);
+    const len = dir.length();
+    if (len < 1e-5) return false;
+    dir.multiplyScalar(1 / len);
+    const dq = quatFromUnitVectors(d.dir0, dir, _tmpQuat2);
+    const s = st[0];
+    const worldQuat = _tmpQuat.copy(s.q).premultiply(dq);
+    setWorldTransform(s.o, null, worldQuat);
+    s.o.updateMatrixWorld(true, true);
+    const deg = (2 * Math.acos(Math.min(1, Math.abs(dq.w))) * 180) / Math.PI;
+    text = `${deg.toFixed(1)}°`;
   } else if (d.type === 'rotate') {
     const h = planeHit(d.P0, d.A, ray);
     if (!h) return false;

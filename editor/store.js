@@ -1,6 +1,7 @@
 import { Clock, HistoryManager } from '../made3d.module.js';
 import { Sculptor } from '../src/modules/sculpt.js';
 import { MeshEditor } from '../src/modules/modeling.js';
+import { Rigger } from '../src/modules/rigging.js';
 
 export const clock = new Clock();
 
@@ -18,7 +19,7 @@ export const viewport = {
   orthoHalfH: 5.5,
   ktx2Loader: null,
   dracoLoader: null,
-  appMode: 'pose', // 'pose' | 'modelar' | 'edicion' | 'animacion'
+  appMode: 'pose', // 'pose' | 'modelar' | 'edicion' | 'esqueleto' | 'animacion'
   gizmoXyzOpen: false,
   openPopover: null,
   scheduler: null,
@@ -99,6 +100,11 @@ export const edit = {
   active: false,
   subtab: 'sculpt',
   editor: new MeshEditor(),
+};
+
+export const rig = {
+  active: false,
+  rigger: new Rigger(),
 };
 
 export const debug = {

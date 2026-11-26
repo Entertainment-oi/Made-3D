@@ -37,6 +37,12 @@ import {
   renderEditOverlay,
 } from './editor/editController.js';
 import {
+  setRigMode,
+  syncRigUI,
+  renderRigOverlay,
+  ensureRigWeightPaintRestored,
+} from './editor/rigController.js';
+import {
   initDefaultScene,
 } from './editor/sceneActions.js';
 import {
@@ -71,6 +77,9 @@ history.setHooks({
   syncSculptUI,
   syncEditUI,
   setEditMode,
+  setRigMode,
+  syncRigUI,
+  ensureRigWeightPaintRestored,
   renderObjectList,
   invalidateRigHelpers: () =>
     SkeletonHelper.invalidateScene(viewport.scene, {
@@ -193,6 +202,10 @@ scheduler.register('editOverlay', (_dt, ctx) => {
 
 scheduler.register('sculptOverlay', (_dt, ctx) => {
   renderSculptOverlay(ctx.activeViewportCam);
+});
+
+scheduler.register('rigOverlay', (_dt, ctx) => {
+  renderRigOverlay(ctx.activeViewportCam);
 });
 
 if (await initEngine()) {

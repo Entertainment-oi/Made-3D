@@ -40,6 +40,7 @@ import {
   lighting,
   sculpt,
   edit,
+  rig,
   getCameraMeta,
   setCameraMeta,
   isInScene,
@@ -113,11 +114,16 @@ export function clearUserObjects({ dispose = false, keepSceneLights = false } = 
   if (viewport.picker) viewport.picker.setMixer(null);
   if (edit.active) setEditMode(false);
   if (sculpt.active) setSculptMode(false);
+  if (rig.active) history._hooks.setRigMode?.(false);
+  rig.rigger.activeTipBone = null;
+  rig.rigger.selectedBone = null;
+  rig.rigger.hover = null;
   syncAppModeUI('pose');
   syncCameraHelperSelection();
   syncSelectedUI();
   syncSculptUI();
   syncEditUI();
+  history._hooks.syncRigUI?.();
   syncAnimationUI();
   renderObjectList();
 }
@@ -236,6 +242,7 @@ export function deleteSelected(explicitTarget = null) {
 
   if (!targets.length) return;
 
+  history._hooks.ensureRigWeightPaintRestored?.();
   const sceneMeta = history.captureSceneMeta();
   const skeletonPatches = [];
   const removals = [];
@@ -292,6 +299,7 @@ export function deleteSelected(explicitTarget = null) {
     syncSelectedUI();
     syncSculptUI();
     syncEditUI();
+    history._hooks.syncRigUI?.();
     syncAnimationUI();
     renderObjectList();
   }

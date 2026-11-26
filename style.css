@@ -295,7 +295,8 @@ html.is-mobile-landscape-90 .app-shell {
 }
 
 .edit-overlay,
-.sculpt-overlay {
+.sculpt-overlay,
+.rig-overlay {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -305,7 +306,8 @@ html.is-mobile-landscape-90 .app-shell {
 }
 
 .edit-overlay { z-index: 4; }
-.sculpt-overlay { z-index: 5; }
+.sculpt-overlay,
+.rig-overlay { z-index: 5; }
 
 /* ============================================================
    TOAST, RECORDING, READOUT, VIEWFINDER
@@ -378,7 +380,9 @@ html.is-mobile-landscape-90 .app-shell {
 .viewport-wrap.is-camera-view .edit-sel-bar,
 .viewport-wrap.is-camera-view .edit-tool-bar,
 .viewport-wrap.is-camera-view .sculpt-brush-bar,
-.viewport-wrap.is-camera-view .sculpt-params-bar {
+.viewport-wrap.is-camera-view .sculpt-params-bar,
+.viewport-wrap.is-camera-view #rig-tool-bar,
+.viewport-wrap.is-camera-view #rig-weights-bar {
   display: none !important;
 }
 
@@ -673,9 +677,25 @@ html.is-mobile-landscape-90 .app-shell {
   color: #fde68a;
 }
 
-.tool-cube-btn:disabled {
-  opacity: 0.38;
+.tool-cube-btn:disabled,
+.brush-btn:disabled {
+  opacity: 0.36;
   cursor: not-allowed;
+}
+
+.brush-btn.rig-right-btn {
+  width: 38px;
+  min-height: 40px;
+  padding: 4px 2px;
+}
+
+.brush-btn.rig-right-btn svg {
+  width: 17px;
+  height: 17px;
+}
+
+.brush-btn.rig-right-btn span {
+  font-size: 8.5px;
 }
 
 .tool-mini-label,
@@ -2728,7 +2748,7 @@ input[type="range"]:disabled {
   position: relative;
   flex: 1;
   min-height: 0;
-  overflow: hidden;
+  overflow: visible;
   border-radius: 0 0 var(--radius-lg) var(--radius-lg);
 }
 
@@ -2736,6 +2756,7 @@ input[type="range"]:disabled {
   display: block;
   width: 100%;
   height: 100%;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
@@ -3198,8 +3219,31 @@ html.is-mobile-landscape-90 .tool-cube-btn svg {
   height: 20px;
 }
 
-html.is-mobile-landscape-90 #sculpt-brush-bar {
+html.is-mobile-landscape-90 #sculpt-brush-bar,
+html.is-mobile-landscape-90 #rig-tool-bar {
   max-height: calc(var(--app-vh) - 104px);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
+html.is-mobile-landscape-90 #rig-tool-bar .brush-btn {
+  min-height: 36px;
+  padding: 3px 2px;
+}
+
+html.is-mobile-landscape-90 .brush-btn.rig-right-btn {
+  width: 30px;
+  min-height: 34px;
+  padding: 2px 1px;
+}
+
+html.is-mobile-landscape-90 .brush-btn.rig-right-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+html.is-mobile-landscape-90 .brush-btn.rig-right-btn span {
+  font-size: 7.5px;
 }
 
 html.is-mobile-landscape-90 .side-flyout,

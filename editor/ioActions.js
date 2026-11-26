@@ -133,73 +133,78 @@ export async function exportSceneFormat(kind) {
   const info = buildExportTarget();
   if (!info) return;
 
-  if (kind === 'glb' || kind === 'gltf') {
-    const detectedAnims = collectExportableAnimations(info.target);
-    let animationsToExport = [];
-    if (detectedAnims.length > 0) {
-      const picked = await promptExportAnimationSelection(detectedAnims, `.${kind}`);
-      if (picked === null) {
-        setStatus('Exportación cancelada.');
-        return;
+  history._hooks.ensureRigWeightPaintRestored?.();
+  try {
+    if (kind === 'glb' || kind === 'gltf') {
+      const detectedAnims = collectExportableAnimations(info.target);
+      let animationsToExport = [];
+      if (detectedAnims.length > 0) {
+        const picked = await promptExportAnimationSelection(detectedAnims, `.${kind}`);
+        if (picked === null) {
+          setStatus('Exportación cancelada.');
+          return;
+        }
+        animationsToExport = picked;
       }
-      animationsToExport = picked;
+
+      try {
+        setStatus(`Generando archivo .${kind}...`);
+        const { GLTFExporter } = await loadGLTFExporter();
+        const exporter = new GLTFExporter();
+        if (kind === 'glb') {
+          const buffer = await exporter.parse(info.target, { binary: true, animations: animationsToExport });
+          downloadBlob(new Blob([buffer], { type: 'model/gltf-binary' }), `${info.baseName}.glb`);
+          setStatus(
+            `Exportado: ${info.baseName}.glb (${(buffer.byteLength / 1024).toFixed(1)} KB${
+              animationsToExport.length ? ` · ${animationsToExport.length} anim.` : ''
+            })`
+          );
+        } else {
+          const json = await exporter.parse(info.target, { binary: false, animations: animationsToExport });
+          const text = JSON.stringify(json, null, 2);
+          downloadBlob(new Blob([text], { type: 'model/gltf+json' }), `${info.baseName}.gltf`);
+          setStatus(
+            `Exportado: ${info.baseName}.gltf (${(text.length / 1024).toFixed(1)} KB${
+              animationsToExport.length ? ` · ${animationsToExport.length} anim.` : ''
+            })`
+          );
+        }
+      } catch (err) {
+        setStatus(`Error al exportar ${kind.toUpperCase()}: ${err.message}`, true);
+      }
+      return;
     }
 
-    try {
-      setStatus(`Generando archivo .${kind}...`);
-      const { GLTFExporter } = await loadGLTFExporter();
-      const exporter = new GLTFExporter();
-      if (kind === 'glb') {
-        const buffer = await exporter.parse(info.target, { binary: true, animations: animationsToExport });
-        downloadBlob(new Blob([buffer], { type: 'model/gltf-binary' }), `${info.baseName}.glb`);
-        setStatus(
-          `Exportado: ${info.baseName}.glb (${(buffer.byteLength / 1024).toFixed(1)} KB${
-            animationsToExport.length ? ` · ${animationsToExport.length} anim.` : ''
-          })`
-        );
-      } else {
-        const json = await exporter.parse(info.target, { binary: false, animations: animationsToExport });
-        const text = JSON.stringify(json, null, 2);
-        downloadBlob(new Blob([text], { type: 'model/gltf+json' }), `${info.baseName}.gltf`);
-        setStatus(
-          `Exportado: ${info.baseName}.gltf (${(text.length / 1024).toFixed(1)} KB${
-            animationsToExport.length ? ` · ${animationsToExport.length} anim.` : ''
-          })`
-        );
+    if (kind === 'obj') {
+      try {
+        const { OBJExporter } = await loadOBJExporter();
+        const exporter = new OBJExporter();
+        const { obj } = exporter.parseWithMaterials(info.target, { mtlFilename: `${info.baseName}.mtl` });
+        downloadBlob(new Blob([obj], { type: 'text/plain;charset=utf-8' }), `${info.baseName}.obj`);
+        setStatus(`Exportado: ${info.baseName}.obj (${(obj.length / 1024).toFixed(1)} KB)`);
+      } catch (err) {
+        setStatus(`Error al exportar OBJ: ${err.message}`, true);
       }
-    } catch (err) {
-      setStatus(`Error al exportar ${kind.toUpperCase()}: ${err.message}`, true);
+      return;
     }
-    return;
-  }
 
-  if (kind === 'obj') {
-    try {
-      const { OBJExporter } = await loadOBJExporter();
-      const exporter = new OBJExporter();
-      const { obj } = exporter.parseWithMaterials(info.target, { mtlFilename: `${info.baseName}.mtl` });
-      downloadBlob(new Blob([obj], { type: 'text/plain;charset=utf-8' }), `${info.baseName}.obj`);
-      setStatus(`Exportado: ${info.baseName}.obj (${(obj.length / 1024).toFixed(1)} KB)`);
-    } catch (err) {
-      setStatus(`Error al exportar OBJ: ${err.message}`, true);
-    }
-    return;
-  }
-
-  if (kind === 'mtl') {
-    try {
-      const { OBJExporter } = await loadOBJExporter();
-      const exporter = new OBJExporter();
-      const { mtl } = exporter.parseWithMaterials(info.target, { mtlFilename: `${info.baseName}.mtl` });
-      if (!mtl) {
-        setStatus('La selección no tiene materiales para exportar .mtl.', true);
-        return;
+    if (kind === 'mtl') {
+      try {
+        const { OBJExporter } = await loadOBJExporter();
+        const exporter = new OBJExporter();
+        const { mtl } = exporter.parseWithMaterials(info.target, { mtlFilename: `${info.baseName}.mtl` });
+        if (!mtl) {
+          setStatus('La selección no tiene materiales para exportar .mtl.', true);
+          return;
+        }
+        downloadBlob(new Blob([mtl], { type: 'text/plain;charset=utf-8' }), `${info.baseName}.mtl`);
+        setStatus(`Exportado: ${info.baseName}.mtl`);
+      } catch (err) {
+        setStatus(`Error al exportar MTL: ${err.message}`, true);
       }
-      downloadBlob(new Blob([mtl], { type: 'text/plain;charset=utf-8' }), `${info.baseName}.mtl`);
-      setStatus(`Exportado: ${info.baseName}.mtl`);
-    } catch (err) {
-      setStatus(`Error al exportar MTL: ${err.message}`, true);
     }
+  } finally {
+    history._hooks.syncRigUI?.();
   }
 }
 

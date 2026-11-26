@@ -12,6 +12,7 @@ export const dom = {
   canvas: el('viewport'),
   editOverlay: el('edit-overlay'),
   sculptOverlay: el('sculpt-overlay'),
+  rigOverlay: el('rig-overlay'),
 
   // Topbar & Popovers
   btnNavScene: el('btn-nav-scene'),
@@ -59,6 +60,19 @@ export const dom = {
   sculptParamsBar: el('sculpt-params-bar'),
   btnSculptMore: el('btn-sculpt-more'),
   popSculptMore: el('pop-sculpt-more'),
+
+  // Rigging (Esqueleto) Mode floating UI
+  rigToolBar: el('rig-tool-bar'),
+  btnRigBone: el('btn-rig-bone'),
+  btnRigMirror: el('btn-rig-mirror'),
+  btnRigMagnet: el('btn-rig-magnet'),
+  btnRigBind: el('btn-rig-bind'),
+  btnRigWeights: el('btn-rig-weights'),
+  rigWeightsBar: el('rig-weights-bar'),
+  rigBrushSize: el('rig-brush-size'),
+  rigBrushSizeVal: el('rig-brush-size-val'),
+  btnRigEraser: el('btn-rig-eraser'),
+
   undoRedoBar: el('undo-redo-bar'),
   bottomDock: el('bottom-dock'),
   dockUndoSep: el('dock-undo-sep'),

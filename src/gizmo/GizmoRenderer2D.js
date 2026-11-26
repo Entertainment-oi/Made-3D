@@ -401,6 +401,23 @@ export class GizmoRenderer2D {
       c.strokeStyle = HOT;
       c.lineWidth = 1.5;
       c.stroke();
+    } else if (d.type === 'boneTail' && d.st[0]?.o?.getWorldTail) {
+      const tCur = d.st[0].o.getWorldTail(_tmpVec);
+      const pt = this.project(gizmo.camera, tCur, gizmo.W, gizmo.H);
+      if (pt.w > 0.01) {
+        c.setLineDash([4, 4]);
+        c.strokeStyle = HOT;
+        c.lineWidth = 1.6;
+        c.beginPath();
+        c.moveTo(p0.x, p0.y);
+        c.lineTo(pt.x, pt.y);
+        c.stroke();
+        c.setLineDash([]);
+        c.fillStyle = HOT;
+        c.beginPath();
+        c.arc(pt.x, pt.y, 4.2, 0, 7);
+        c.fill();
+      }
     } else if (d.type === 'translate' || d.type === 'pivot') {
       const o0 = this.project(gizmo.camera, d.P0, gizmo.W, gizmo.H);
       const accent = d.type === 'pivot' ? PIVOT_ACCENT : HOT;

@@ -28,9 +28,33 @@ export class Texture extends EventEmitter {
     this.colorSpace = opts.colorSpace || 'srgb';        // 'srgb' (colores) | 'linear' (normales, datos)
     this.userData = opts.userData ? { ...opts.userData } : {};
     this.version = 0;
+    this._dirtyRect = null;
+    this._deferMipmaps = false;
   }
   // Marcar al cambiar la imagen o los filtros/wrap.
-  set needsUpdate(v) { if (v) this.version++; }
+  set needsUpdate(v) {
+    if (v) {
+      this._dirtyRect = null;
+      this._deferMipmaps = false;
+      this.version++;
+    }
+  }
+  markRegionDirty(x0, y0, x1, y1, deferMipmaps = false) {
+    const minX = Math.max(0, x0 | 0);
+    const minY = Math.max(0, y0 | 0);
+    const maxX = Math.max(minX, x1 | 0);
+    const maxY = Math.max(minY, y1 | 0);
+    if (!this._dirtyRect) {
+      this._dirtyRect = { minX, minY, maxX, maxY };
+    } else {
+      if (minX < this._dirtyRect.minX) this._dirtyRect.minX = minX;
+      if (minY < this._dirtyRect.minY) this._dirtyRect.minY = minY;
+      if (maxX > this._dirtyRect.maxX) this._dirtyRect.maxX = maxX;
+      if (maxY > this._dirtyRect.maxY) this._dirtyRect.maxY = maxY;
+    }
+    this._deferMipmaps = Boolean(deferMipmaps);
+    this.version++;
+  }
   isReady() {
     if (this.mipmaps && this.mipmaps.length > 0) return true;
     const i = this.image;

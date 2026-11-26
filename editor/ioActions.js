@@ -55,62 +55,238 @@ function collectExportableAnimations(target) {
   return out;
 }
 
-function promptExportAnimationSelection(clips, formatLabel) {
-  const modal = dom.exportAnimModal;
-  const listEl = dom.exportAnimList;
-  if (!modal || !listEl) return Promise.resolve(clips);
+function inspectExportCapabilities(target) {
+  let hasRigging = false;
+  let hasTextures = false;
+  if (target && typeof target.traverse === 'function') {
+    target.traverse((node) => {
+      if (node.isSkinnedMesh || node.isBone || node.skeleton) {
+        hasRigging = true;
+      }
+      if (node.isMesh) {
+        const mat = node.material;
+        const hasMaps = Boolean(
+          mat &&
+            (mat.map ||
+              mat.normalMap ||
+              mat.roughnessMap ||
+              mat.metalnessMap ||
+              mat.aoMap ||
+              mat.emissiveMap)
+        );
+        const hasColors = Boolean(node.geometry?.attributes?.color);
+        const hasUV = Boolean(node.geometry?.attributes?.uv);
+        if (hasMaps || hasColors || hasUV) hasTextures = true;
+      }
+    });
+  }
+  const clips = collectExportableAnimations(target);
+  return { hasRigging, hasTextures, clips };
+}
 
-  if (dom.exportAnimDesc) {
-    dom.exportAnimDesc.textContent =
-      `Se detectaron ${clips.length} animaciones para exportar a ${formatLabel}. Elige cuáles incluir:`;
+function promptExportOptions(kind) {
+  const modal = dom.exportOptionsModal;
+  if (!modal) {
+    const info = buildExportTarget();
+    if (!info) return Promise.resolve(null);
+    return Promise.resolve({
+      target: info.target,
+      baseName: info.baseName,
+      includeRigging: true,
+      includeTextures: true,
+      animations: collectExportableAnimations(info.target),
+    });
   }
 
-  listEl.innerHTML = '';
-  const checkboxes = [];
-  clips.forEach((clip) => {
-    const owner = getClipOwner(clip);
-    const kfCount = getClipKeyframeTimes(clip).length;
-    const dur = clip.duration > 0 ? clip.duration.toFixed(1) : '0.0';
+  const objects = sceneStore.userObjects || [];
+  const supportsRigging = kind === 'glb' || kind === 'gltf' || kind === 'obj';
+  const supportsAnimations = kind === 'glb' || kind === 'gltf';
 
-    const row = document.createElement('label');
-    row.className = 'export-anim-item';
-    const cb = document.createElement('input');
-    cb.type = 'checkbox';
-    cb.checked = true;
-    checkboxes.push({ cb, clip });
+  if (dom.exportOptTitle) {
+    dom.exportOptTitle.textContent = `Exportar a .${kind}`;
+  }
 
-    const info = document.createElement('div');
-    info.className = 'export-anim-item-info';
-    const nameEl = document.createElement('span');
-    nameEl.className = 'export-anim-item-name';
-    nameEl.textContent = clip.name || 'Animación';
-    const subEl = document.createElement('span');
-    subEl.className = 'export-anim-item-sub';
-    subEl.textContent = `${owner?.name || 'Escena'} · ${dur}s · ${kfCount} keyframes · ${clip.tracks.length} pistas`;
+  // Poblar selector de objeto específico
+  if (dom.exportOptTarget) {
+    dom.exportOptTarget.innerHTML = '';
+    let defaultIdx = 0;
+    objects.forEach((obj, idx) => {
+      const opt = document.createElement('option');
+      opt.value = String(idx);
+      opt.textContent = obj.name || `Objeto ${idx + 1}`;
+      if (obj === sceneStore.selected) defaultIdx = idx;
+      dom.exportOptTarget.appendChild(opt);
+    });
+    if (objects.length) {
+      dom.exportOptTarget.value = String(defaultIdx);
+    }
+  }
 
-    info.append(nameEl, subEl);
-    row.append(cb, info);
-    listEl.appendChild(row);
-  });
+  if (dom.exportOptScope) {
+    const initScope = dom.exportScope?.value === 'selected' && sceneStore.selected ? 'selected' : 'scene';
+    dom.exportOptScope.value = initScope;
+  }
 
+  let clipCheckboxes = [];
+
+  const resolveCurrentTarget = () => {
+    const scope = dom.exportOptScope?.value === 'selected' ? 'selected' : 'scene';
+    if (scope === 'selected') {
+      const idx = Math.max(0, Math.min(objects.length - 1, Number(dom.exportOptTarget?.value) || 0));
+      const obj = objects[idx] || sceneStore.selected;
+      if (obj) {
+        return { target: obj, baseName: (obj.name || 'modelo').replace(/\s+/g, '_') };
+      }
+    }
+    return { target: viewport.scene, baseName: 'escena_made3d' };
+  };
+
+  const renderAnimChecklist = (clips) => {
+    const listEl = dom.exportOptAnimList;
+    if (!listEl) return;
+    listEl.innerHTML = '';
+    clipCheckboxes = [];
+    if (dom.exportAnimDesc) {
+      dom.exportAnimDesc.textContent = `Clips detectados (${clips.length}):`;
+    }
+    clips.forEach((clip) => {
+      const owner = getClipOwner(clip);
+      const kfCount = getClipKeyframeTimes(clip).length;
+      const dur = clip.duration > 0 ? clip.duration.toFixed(1) : '0.0';
+
+      const row = document.createElement('label');
+      row.className = 'export-anim-item';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox';
+      cb.checked = true;
+      clipCheckboxes.push({ cb, clip });
+
+      const info = document.createElement('div');
+      info.className = 'export-anim-item-info';
+      const nameEl = document.createElement('span');
+      nameEl.className = 'export-anim-item-name';
+      nameEl.textContent = clip.name || 'Animación';
+      const subEl = document.createElement('span');
+      subEl.className = 'export-anim-item-sub';
+      subEl.textContent = `${owner?.name || 'Escena'} · ${dur}s · ${kfCount} keyframes · ${clip.tracks.length} pistas`;
+
+      info.append(nameEl, subEl);
+      row.append(cb, info);
+      listEl.appendChild(row);
+    });
+  };
+
+  const syncModalToTarget = () => {
+    const scope = dom.exportOptScope?.value === 'selected' ? 'selected' : 'scene';
+    if (dom.exportOptTargetRow) {
+      dom.exportOptTargetRow.hidden = scope !== 'selected';
+    }
+    const { target } = resolveCurrentTarget();
+    const { hasRigging, hasTextures, clips } = inspectExportCapabilities(target);
+
+    if (dom.rowExportOptRigging) {
+      dom.rowExportOptRigging.hidden = !supportsRigging;
+      const labelSpan = dom.rowExportOptRigging.querySelector('span');
+      if (labelSpan) {
+        labelSpan.textContent = hasRigging
+          ? kind === 'obj'
+            ? 'Rigging y pose actual'
+            : 'Rigging y esqueleto'
+          : 'Rigging y esqueleto (no detectado)';
+      }
+    }
+    if (dom.exportOptRigging) {
+      dom.exportOptRigging.checked = supportsRigging && hasRigging;
+      dom.exportOptRigging.disabled = !supportsRigging || !hasRigging;
+    }
+
+    if (dom.rowExportOptTextures) {
+      dom.rowExportOptTextures.hidden = false;
+      const labelSpan = dom.rowExportOptTextures.querySelector('span');
+      if (labelSpan) {
+        labelSpan.textContent =
+          kind === 'mtl'
+            ? 'Texturas y materiales (.mtl)'
+            : hasTextures
+            ? 'Texturas, pintura y UVs'
+            : 'Texturas, pintura y UVs (color base)';
+      }
+    }
+    if (dom.exportOptTextures) {
+      dom.exportOptTextures.checked = true;
+      dom.exportOptTextures.disabled = kind === 'mtl';
+    }
+
+    if (dom.rowExportOptAnimations) {
+      dom.rowExportOptAnimations.hidden = !supportsAnimations;
+      const labelSpan = dom.rowExportOptAnimations.querySelector('span');
+      if (labelSpan) {
+        labelSpan.textContent = clips.length
+          ? `Animaciones (${clips.length})`
+          : 'Animaciones (no detectadas)';
+      }
+    }
+    if (dom.exportOptAnimations) {
+      dom.exportOptAnimations.checked = supportsAnimations && clips.length > 0;
+      dom.exportOptAnimations.disabled = !supportsAnimations || clips.length === 0;
+    }
+
+    renderAnimChecklist(clips);
+    if (dom.exportOptAnimWrap) {
+      dom.exportOptAnimWrap.hidden = !(
+        supportsAnimations &&
+        clips.length > 0 &&
+        dom.exportOptAnimations?.checked
+      );
+    }
+  };
+
+  syncModalToTarget();
   modal.hidden = false;
 
   return new Promise((resolve) => {
     const cleanup = () => {
       modal.hidden = true;
-      dom.btnExportAnimAll?.removeEventListener('click', onAll);
-      dom.btnExportAnimNone?.removeEventListener('click', onNone);
-      dom.btnExportAnimConfirm?.removeEventListener('click', onConfirm);
-      dom.btnExportAnimCancel?.removeEventListener('click', onCancel);
-      dom.btnExportAnimX?.removeEventListener('click', onCancel);
+      dom.exportOptScope?.removeEventListener('change', syncModalToTarget);
+      dom.exportOptTarget?.removeEventListener('change', syncModalToTarget);
+      dom.exportOptAnimations?.removeEventListener('change', onAnimToggle);
+      dom.btnExportOptAnimAll?.removeEventListener('click', onAll);
+      dom.btnExportOptAnimNone?.removeEventListener('click', onNone);
+      dom.btnExportOptConfirm?.removeEventListener('click', onConfirm);
+      dom.btnExportOptCancel?.removeEventListener('click', onCancel);
+      dom.btnExportOptX?.removeEventListener('click', onCancel);
       modal.removeEventListener('click', onBackdrop);
     };
-    const onAll = () => checkboxes.forEach(({ cb }) => { cb.checked = true; });
-    const onNone = () => checkboxes.forEach(({ cb }) => { cb.checked = false; });
+    const onAnimToggle = () => {
+      if (dom.exportOptAnimWrap) {
+        dom.exportOptAnimWrap.hidden = !(
+          supportsAnimations &&
+          clipCheckboxes.length > 0 &&
+          dom.exportOptAnimations?.checked
+        );
+      }
+    };
+    const onAll = () => clipCheckboxes.forEach(({ cb }) => { cb.checked = true; });
+    const onNone = () => clipCheckboxes.forEach(({ cb }) => { cb.checked = false; });
     const onConfirm = () => {
-      const selected = checkboxes.filter(({ cb }) => cb.checked).map(({ clip }) => clip);
+      const { target, baseName } = resolveCurrentTarget();
+      if (dom.exportScope && dom.exportOptScope) {
+        dom.exportScope.value = dom.exportOptScope.value;
+      }
+      const includeRigging = supportsRigging && Boolean(dom.exportOptRigging?.checked);
+      const includeTextures = dom.exportOptTextures ? Boolean(dom.exportOptTextures.checked) : true;
+      const includeAnimations = supportsAnimations && Boolean(dom.exportOptAnimations?.checked);
+      const animations = includeAnimations
+        ? clipCheckboxes.filter(({ cb }) => cb.checked).map(({ clip }) => clip)
+        : [];
       cleanup();
-      resolve(selected);
+      resolve({
+        target,
+        baseName,
+        includeRigging,
+        includeTextures,
+        animations,
+      });
     };
     const onCancel = () => {
       cleanup();
@@ -120,52 +296,61 @@ function promptExportAnimationSelection(clips, formatLabel) {
       if (e.target === modal) onCancel();
     };
 
-    dom.btnExportAnimAll?.addEventListener('click', onAll);
-    dom.btnExportAnimNone?.addEventListener('click', onNone);
-    dom.btnExportAnimConfirm?.addEventListener('click', onConfirm);
-    dom.btnExportAnimCancel?.addEventListener('click', onCancel);
-    dom.btnExportAnimX?.addEventListener('click', onCancel);
+    dom.exportOptScope?.addEventListener('change', syncModalToTarget);
+    dom.exportOptTarget?.addEventListener('change', syncModalToTarget);
+    dom.exportOptAnimations?.addEventListener('change', onAnimToggle);
+    dom.btnExportOptAnimAll?.addEventListener('click', onAll);
+    dom.btnExportOptAnimNone?.addEventListener('click', onNone);
+    dom.btnExportOptConfirm?.addEventListener('click', onConfirm);
+    dom.btnExportOptCancel?.addEventListener('click', onCancel);
+    dom.btnExportOptX?.addEventListener('click', onCancel);
     modal.addEventListener('click', onBackdrop);
   });
 }
 
 export async function exportSceneFormat(kind) {
-  const info = buildExportTarget();
-  if (!info) return;
+  const exportables = viewport.scene.getExportables({ recursive: false });
+  if (!sceneStore.userObjects.length || !exportables.length) {
+    setStatus('No hay objetos exportables en la escena.', true);
+    return;
+  }
+
+  const options = await promptExportOptions(kind);
+  if (!options) {
+    setStatus('Exportación cancelada.');
+    return;
+  }
+
+  const { target, baseName, includeRigging, includeTextures, animations } = options;
 
   history._hooks.ensureRigWeightPaintRestored?.();
   try {
     if (kind === 'glb' || kind === 'gltf') {
-      const detectedAnims = collectExportableAnimations(info.target);
-      let animationsToExport = [];
-      if (detectedAnims.length > 0) {
-        const picked = await promptExportAnimationSelection(detectedAnims, `.${kind}`);
-        if (picked === null) {
-          setStatus('Exportación cancelada.');
-          return;
-        }
-        animationsToExport = picked;
-      }
-
       try {
         setStatus(`Generando archivo .${kind}...`);
         const { GLTFExporter } = await loadGLTFExporter();
         const exporter = new GLTFExporter();
+        const parseOpts = {
+          binary: kind === 'glb',
+          animations,
+          includeRigging,
+          includeTextures,
+        };
         if (kind === 'glb') {
-          const buffer = await exporter.parse(info.target, { binary: true, animations: animationsToExport });
-          downloadBlob(new Blob([buffer], { type: 'model/gltf-binary' }), `${info.baseName}.glb`);
+          const buffer = await exporter.parse(target, parseOpts);
+          downloadBlob(new Blob([buffer], { type: 'model/gltf-binary' }), `${baseName}.glb`);
           setStatus(
-            `Exportado: ${info.baseName}.glb (${(buffer.byteLength / 1024).toFixed(1)} KB${
-              animationsToExport.length ? ` · ${animationsToExport.length} anim.` : ''
+            `Exportado: ${baseName}.glb (${(buffer.byteLength / 1024).toFixed(1)} KB${
+              animations.length ? ` · ${animations.length} anim.` : ''
             })`
           );
         } else {
-          const json = await exporter.parse(info.target, { binary: false, animations: animationsToExport });
+          const json = await exporter.parse(target, parseOpts);
           const text = JSON.stringify(json, null, 2);
-          downloadBlob(new Blob([text], { type: 'model/gltf+json' }), `${info.baseName}.gltf`);
+          downloadBlob(new Blob([text], { type: 'model/gltf+json' }), `${baseName}.gltf`);
           setStatus(
-            `Exportado: ${info.baseName}.gltf (${(text.length / 1024).toFixed(1)} KB${
-              animationsToExport.length ? ` · ${animationsToExport.length} anim.` : ''
+            `Exportado: ${baseName}.gltf (${(text.length / 1024).toFixed(1)} KB${
+              animations.length ? ` · ${animations.length} anim.` : ''
             })`
           );
         }
@@ -179,9 +364,13 @@ export async function exportSceneFormat(kind) {
       try {
         const { OBJExporter } = await loadOBJExporter();
         const exporter = new OBJExporter();
-        const { obj } = exporter.parseWithMaterials(info.target, { mtlFilename: `${info.baseName}.mtl` });
-        downloadBlob(new Blob([obj], { type: 'text/plain;charset=utf-8' }), `${info.baseName}.obj`);
-        setStatus(`Exportado: ${info.baseName}.obj (${(obj.length / 1024).toFixed(1)} KB)`);
+        const { obj } = exporter.parseWithMaterials(target, {
+          mtlFilename: `${baseName}.mtl`,
+          includeRigging,
+          includeTextures,
+        });
+        downloadBlob(new Blob([obj], { type: 'text/plain;charset=utf-8' }), `${baseName}.obj`);
+        setStatus(`Exportado: ${baseName}.obj (${(obj.length / 1024).toFixed(1)} KB)`);
       } catch (err) {
         setStatus(`Error al exportar OBJ: ${err.message}`, true);
       }
@@ -192,13 +381,17 @@ export async function exportSceneFormat(kind) {
       try {
         const { OBJExporter } = await loadOBJExporter();
         const exporter = new OBJExporter();
-        const { mtl } = exporter.parseWithMaterials(info.target, { mtlFilename: `${info.baseName}.mtl` });
+        const { mtl } = exporter.parseWithMaterials(target, {
+          mtlFilename: `${baseName}.mtl`,
+          includeRigging,
+          includeTextures: true,
+        });
         if (!mtl) {
           setStatus('La selección no tiene materiales para exportar .mtl.', true);
           return;
         }
-        downloadBlob(new Blob([mtl], { type: 'text/plain;charset=utf-8' }), `${info.baseName}.mtl`);
-        setStatus(`Exportado: ${info.baseName}.mtl`);
+        downloadBlob(new Blob([mtl], { type: 'text/plain;charset=utf-8' }), `${baseName}.mtl`);
+        setStatus(`Exportado: ${baseName}.mtl`);
       } catch (err) {
         setStatus(`Error al exportar MTL: ${err.message}`, true);
       }

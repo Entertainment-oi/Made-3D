@@ -549,7 +549,7 @@ export class GL2Resources {
         this.forgetTex(t.tex);
         gl.deleteTexture(t.tex); this._tex.delete(tex); r.info.memory.textures--;
       };
-      t = { tex: gl.createTexture(), version: -1, loaded: false, srgb: null, onDispose };
+      t = { tex: gl.createTexture(), version: -1, loaded: false, srgb: null, w: 0, h: 0, compressed: false, mipLen: 0, minFilterMode: null, onDispose };
       this._tex.set(tex, t);
       r.info.memory.textures++;
       gl.activeTexture(gl.TEXTURE0 + unit);
@@ -572,6 +572,67 @@ export class GL2Resources {
 
   uploadTexture(tex, t, srgb) {
     const gl = this.b.gl, T = gl.TEXTURE_2D;
+    const dirty = tex._dirtyRect;
+    if (
+      dirty &&
+      t.loaded &&
+      t.srgb === srgb &&
+      !t.compressed &&
+      !tex.compressed &&
+      !tex.flipY &&
+      tex.mipmaps &&
+      tex.mipmaps.length === 1 &&
+      t.mipLen === 1 &&
+      t.w === tex.mipmaps[0].width &&
+      t.h === tex.mipmaps[0].height
+    ) {
+      const mip = tex.mipmaps[0];
+      const rx = Math.max(0, Math.min(mip.width - 1, dirty.minX | 0));
+      const ry = Math.max(0, Math.min(mip.height - 1, dirty.minY | 0));
+      const rx1 = Math.max(rx, Math.min(mip.width - 1, dirty.maxX | 0));
+      const ry1 = Math.max(ry, Math.min(mip.height - 1, dirty.maxY | 0));
+      const rw = rx1 - rx + 1;
+      const rh = ry1 - ry + 1;
+
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, mip.width);
+      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, rx);
+      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, ry);
+      gl.texSubImage2D(T, 0, rx, ry, rw, rh, gl.RGBA, gl.UNSIGNED_BYTE, mip.data);
+      gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+      gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+      gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+
+      let min;
+      let nextMode;
+      if (tex._deferMipmaps) {
+        min = tex.minFilter === 'nearest' ? gl.NEAREST : gl.LINEAR;
+        nextMode = `defer:${min}`;
+        if (t.minFilterMode !== nextMode) {
+          gl.texParameteri(T, gl.TEXTURE_MAX_LEVEL, 0);
+          gl.texParameteri(T, gl.TEXTURE_MIN_FILTER, min);
+          t.minFilterMode = nextMode;
+        }
+      } else if (tex.minFilter === 'linear-mipmap') {
+        gl.texParameteri(T, gl.TEXTURE_MAX_LEVEL, 1000);
+        gl.generateMipmap(T);
+        min = gl.LINEAR_MIPMAP_LINEAR;
+        gl.texParameteri(T, gl.TEXTURE_MIN_FILTER, min);
+        t.minFilterMode = 'mipmap';
+      } else {
+        min = tex.minFilter === 'nearest' ? gl.NEAREST : gl.LINEAR;
+        nextMode = `flat:${min}`;
+        if (t.minFilterMode !== nextMode) {
+          gl.texParameteri(T, gl.TEXTURE_MAX_LEVEL, 0);
+          gl.texParameteri(T, gl.TEXTURE_MIN_FILTER, min);
+          t.minFilterMode = nextMode;
+        }
+      }
+      t.version = tex.version;
+      tex._dirtyRect = null;
+      return;
+    }
+
     const wrap = { repeat: gl.REPEAT, clamp: gl.CLAMP_TO_EDGE, mirror: gl.MIRRORED_REPEAT };
     gl.texParameteri(T, gl.TEXTURE_WRAP_S, wrap[tex.wrapS] || gl.REPEAT);
     gl.texParameteri(T, gl.TEXTURE_WRAP_T, wrap[tex.wrapT] || gl.REPEAT);
@@ -597,7 +658,7 @@ export class GL2Resources {
       if (tex.mipmaps.length > 1) {
         gl.texParameteri(T, gl.TEXTURE_MAX_LEVEL, tex.mipmaps.length - 1);
         min = tex.minFilter === 'nearest' ? gl.NEAREST : tex.minFilter === 'linear' ? gl.LINEAR : gl.LINEAR_MIPMAP_LINEAR;
-      } else if (!tex.compressed && tex.minFilter === 'linear-mipmap') {
+      } else if (!tex.compressed && !tex._deferMipmaps && tex.minFilter === 'linear-mipmap') {
         gl.texParameteri(T, gl.TEXTURE_MAX_LEVEL, 1000);
         gl.generateMipmap(T);
         min = gl.LINEAR_MIPMAP_LINEAR;
@@ -605,6 +666,10 @@ export class GL2Resources {
         gl.texParameteri(T, gl.TEXTURE_MAX_LEVEL, 0);
         min = tex.minFilter === 'nearest' ? gl.NEAREST : gl.LINEAR;
       }
+      t.w = tex.mipmaps[0].width;
+      t.h = tex.mipmaps[0].height;
+      t.compressed = Boolean(tex.compressed);
+      t.mipLen = tex.mipmaps.length;
     } else {
       gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, tex.flipY);
       gl.texImage2D(T, 0, srgb ? gl.SRGB8_ALPHA8 : gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, tex.image);
@@ -612,13 +677,19 @@ export class GL2Resources {
       gl.texParameteri(T, gl.TEXTURE_MAX_LEVEL, 1000);
       if (tex.minFilter === 'nearest') min = gl.NEAREST;
       else if (tex.minFilter === 'linear-mipmap') { gl.generateMipmap(T); min = gl.LINEAR_MIPMAP_LINEAR; }
+      t.w = tex.image?.naturalWidth || tex.image?.videoWidth || tex.image?.width || 0;
+      t.h = tex.image?.naturalHeight || tex.image?.videoHeight || tex.image?.height || 0;
+      t.compressed = false;
+      t.mipLen = 0;
     }
 
     gl.texParameteri(T, gl.TEXTURE_MIN_FILTER, min);
+    t.minFilterMode = null;
     if (this.b._aniso && min === gl.LINEAR_MIPMAP_LINEAR) {
       gl.texParameterf(T, this.b._aniso.TEXTURE_MAX_ANISOTROPY_EXT, Math.min(4, gl.getParameter(this.b._aniso.MAX_TEXTURE_MAX_ANISOTROPY_EXT)));
     }
     t.version = tex.version; t.loaded = true; t.srgb = srgb;
+    tex._dirtyRect = null;
   }
 
   disposeAll() {

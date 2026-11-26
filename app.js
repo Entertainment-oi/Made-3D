@@ -68,6 +68,7 @@ import {
   restoreAnimStateSnapshot,
   setAnimationHooks,
 } from './editor/animationController.js';
+import { initPWA } from './editor/pwaController.js';
 
 setAnimationHooks({
   syncTransformInputs,
@@ -202,8 +203,15 @@ scheduler.register('videoRecorder', (dt, ctx) => {
 scheduler.register('render', (_dt, ctx) => {
   if (ctx.skipRender) return;
   if (!ctx.alreadyRenderedViewport && viewport.renderer && viewport.scene && ctx.activeViewportCam) {
+    const reuseDuringPaint =
+      paint.active &&
+      paint.painter.isStroking &&
+      !lighting.orbitLight &&
+      !timeline.playing &&
+      !sceneStore.animPlaying &&
+      sceneStore.spinObjects.length === 0;
     viewport.renderer.render(viewport.scene, ctx.activeViewportCam, {
-      reuseShadowMap: Boolean(ctx.didCaptureFrame),
+      reuseShadowMap: Boolean(ctx.didCaptureFrame || reuseDuringPaint),
     });
   }
 });
@@ -223,6 +231,8 @@ scheduler.register('paintOverlay', (_dt, ctx) => {
 scheduler.register('rigOverlay', (_dt, ctx) => {
   renderRigOverlay(ctx.activeViewportCam);
 });
+
+initPWA();
 
 if (await initEngine()) {
   if (dom.renderBackend && viewport.renderer) {

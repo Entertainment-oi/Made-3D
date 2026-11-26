@@ -19,12 +19,17 @@ import {
 import {
   Painter,
   PAINT_TOOLS,
+  PAINT_BRUSH_PRESETS,
   PAINT_SYMMETRIES,
   PAINT_MODES,
   PAINT_RESOLUTIONS,
   hasOverlappingOrMissingUVs,
   unwrapBoxAtlas,
   rgbToHex,
+  rgbToHsv,
+  hsvToRgb,
+  hexToHsv,
+  hsvToHex,
 } from '../src/modules/paint.js';
 
 function createFrontCamera() {
@@ -292,3 +297,235 @@ test('Modo Vértices, fillAll, clearPaint, SkinnedMesh y HistoryManager undo/red
   const resized = Painter.resizePaintTexture(skinnedTex, 1024, scene);
   assert.ok(resized && resized.mipmaps[0].width === 1024 && resized.mipmaps[0].height === 1024);
 });
+
+test('previewHoverAtCenter muestra el pincel al instante y resizePaintTexture interpola suavemente', () => {
+  const scene = new Scene();
+  const cam = createFrontCamera();
+  const mesh = new Mesh(new BoxGeometry(1.6, 1.6, 1.6), new StandardMaterial({ color: 0xe2e8f0 }));
+  scene.add(mesh);
+  mesh.updateMatrixWorld(true);
+
+  const painter = new Painter({
+    tool: 'brush',
+    color: '#2563eb',
+    radius: 0.3,
+    strength: 1.0,
+    hardness: 0.6,
+    resolution: 512,
+  });
+
+  // 1) Vista previa inmediata del pincel en el centro del modelo
+  const initialHover = painter.previewHoverAtCenter(cam, [mesh]);
+  assert.ok(initialHover && initialHover.mesh === mesh && painter.hover === initialHover);
+
+  // 2) Trazo largo interpolado suavemente sin huecos entre puntos separados
+  painter.beginStroke(mesh, initialHover, cam, { scene });
+  const endHit = painter.stepStroke(cam, 0.22, 0.08);
+  assert.ok(endHit);
+  const res = painter.commitStroke();
+  assert.ok(res && res.diff && res.diff.indices.length > 50);
+
+  const midHit = painter.pickSurface(cam, 0.11, 0.04, [mesh]);
+  assert.ok(midHit && midHit.uv);
+  const midPx = readTexelAtUV(mesh.material.map, midHit.uv);
+  assert.ok(midPx[2] > 180 && midPx[0] < 120, `Se esperaba azul continuo a mitad del trazo, obtenido ${midPx}`);
+
+  // 3) Reescalado bilineal mantiene dimensiones y rango cromático válido
+  const upscaled = Painter.resizePaintTexture(mesh, 1024, scene);
+  assert.ok(upscaled && upscaled.mipmaps[0].width === 1024 && upscaled.mipmaps[0].height === 1024);
+  const upPx = readTexelAtUV(upscaled, midHit.uv);
+  assert.ok(upPx[2] > 170, `Textura reescalada conserva el color pintado, obtenido ${upPx}`);
+});
+
+test('Región sucia parcial (_dirtyRect), mipmaps diferidos y aceleración espacial 3D en malla densa', () => {
+  const scene = new Scene();
+  const cam = createFrontCamera();
+  // Esfera densa (32x24 -> >1400 triángulos) para activar la cuadrícula espacial 3D
+  const mesh = new Mesh(new SphereGeometry(1, 32, 24), new StandardMaterial({ color: 0xf1f5f9 }));
+  scene.add(mesh);
+  mesh.updateMatrixWorld(true);
+
+  const painter = new Painter({
+    tool: 'brush',
+    color: '#ec4899',
+    radius: 0.25,
+    strength: 1.0,
+    hardness: 0.8,
+    isMobile: true,
+  });
+  assert.equal(painter.resolution, 512);
+
+  const hit = painter.pickSurface(cam, 0, 0, [mesh]);
+  assert.ok(hit && hit.uv && hit.faceIndex >= 0);
+
+  const started = painter.beginStroke(mesh, hit, cam, { scene });
+  assert.equal(started, true);
+
+  const tex = mesh.material.map;
+  assert.ok(tex._dirtyRect, 'Debe registrar un rectángulo sucio parcial tras el primer dab');
+  assert.equal(tex._deferMipmaps, true, 'Debe diferir mipmaps durante el trazo activo');
+  assert.ok(
+    tex._dirtyRect.maxX - tex._dirtyRect.minX < 256,
+    'El área sucia debe estar acotada alrededor del pincel y no cubrir toda la textura'
+  );
+
+  const prevRect = { ...tex._dirtyRect };
+  const stepHit = painter.stepStroke(cam, 0.15, 0.08);
+  assert.ok(stepHit && stepHit.uv);
+  assert.ok(
+    tex._dirtyRect.minX <= prevRect.minX && tex._dirtyRect.maxX >= prevRect.maxX,
+    'Los dabs consecutivos amplían el rectángulo sucio acumulado'
+  );
+
+  const res = painter.commitStroke();
+  assert.ok(res && res.diff && res.diff.indices.length > 20);
+  assert.equal(tex._deferMipmaps, false, 'commitStroke debe restaurar la generación normal de mipmaps');
+  assert.equal(tex._dirtyRect, null, 'commitStroke debe limpiar _dirtyRect tras disparar actualización completa');
+
+  const endPx = readTexelAtUV(tex, stepHit.uv);
+  assert.ok(endPx[0] > 200 && endPx[2] > 120, `Se esperaba rosa en el punto final, obtenido ${endPx}`);
+});
+
+test('Todos los tipos de pincel (PAINT_BRUSH_PRESETS) pintan con geometrías distintas y conversiones HSV precisas', () => {
+  assert.ok(PAINT_BRUSH_PRESETS.includes('round'));
+  assert.ok(PAINT_BRUSH_PRESETS.includes('hard'));
+  assert.ok(PAINT_BRUSH_PRESETS.includes('soft'));
+  assert.ok(PAINT_BRUSH_PRESETS.includes('chisel'));
+  assert.ok(PAINT_BRUSH_PRESETS.includes('stipple'));
+  assert.ok(PAINT_BRUSH_PRESETS.includes('splatter'));
+  assert.ok(PAINT_BRUSH_PRESETS.includes('pixel'));
+  assert.ok(PAINT_BRUSH_PRESETS.includes('rake'));
+
+  // HSV round-trip
+  for (const hex of ['#ef4444', '#22c55e', '#3b82f6', '#f59e0b', '#ffffff', '#000000', '#7c3aed']) {
+    const hsv = hexToHsv(hex);
+    const out = hsvToHex(hsv.h, hsv.s, hsv.v);
+    assert.equal(out, hex, `HSV round-trip falló para ${hex}: ${out}`);
+  }
+  const [r, g, b] = hsvToRgb(240, 1, 1);
+  assert.deepEqual([r, g, b], [0, 0, 255]);
+  assert.equal(Math.round(rgbToHsv(0, 0, 255).h), 240);
+
+  const scene = new Scene();
+  const cam = createFrontCamera();
+  const counts = {};
+
+  for (const preset of PAINT_BRUSH_PRESETS) {
+    const mesh = new Mesh(new BoxGeometry(1.6, 1.6, 1.6), new StandardMaterial({ color: 0xffffff }));
+    scene.add(mesh);
+    mesh.updateMatrixWorld(true);
+
+    const painter = new Painter({
+      tool: 'brush',
+      brushPreset: preset,
+      color: '#ef4444',
+      radius: 0.35,
+      strength: 1.0,
+      hardness: 0.5,
+      resolution: 512,
+    });
+    assert.equal(painter.brushPreset, preset);
+    const hit = painter.pickSurface(cam, 0, 0, [mesh]);
+    assert.ok(hit);
+    assert.equal(painter.beginStroke(mesh, hit, cam, { scene }), true);
+    painter.stepStroke(cam, 0.12, 0.05);
+    const res = painter.commitStroke();
+    assert.ok(res && res.diff && res.diff.indices.length > 10, `Preset ${preset} debe modificar texels`);
+    counts[preset] = res.diff.indices.length;
+  }
+
+  // El pincel biselado / salpicadura / cerdas cubren menos área llena que el cuadrado píxel
+  assert.ok(counts.pixel > counts.chisel, `pixel (${counts.pixel}) debe cubrir más que chisel (${counts.chisel})`);
+  assert.ok(counts.hard > counts.splatter, `hard (${counts.hard}) debe cubrir más que splatter (${counts.splatter})`);
+
+  // También funciona en modo vértices
+  const vMesh = new Mesh(new SphereGeometry(1, 20, 16), new StandardMaterial({ color: 0xffffff }));
+  scene.add(vMesh);
+  vMesh.updateMatrixWorld(true);
+  const vPainter = new Painter({ paintMode: 'vertex', tool: 'brush', brushPreset: 'rake', radius: 0.6, strength: 1 });
+  const vHit = vPainter.pickSurface(cam, 0, 0, [vMesh]);
+  assert.ok(vHit);
+  vPainter.beginStroke(vMesh, vHit, cam, { scene });
+  vPainter.stepStroke(cam, 0.15, 0.0);
+  const vRes = vPainter.commitStroke();
+  assert.ok(vRes && vRes.diff.indices.length > 0);
+});
+
+test('Segmentos cápsula continuos, buffer pool reutilizable en trazos consecutivos, cancelStroke y filtro suave', () => {
+  const scene = new Scene();
+  const cam = createFrontCamera();
+  const mesh = new Mesh(new SphereGeometry(1, 32, 24), new StandardMaterial({ color: 0xffffff }));
+  scene.add(mesh);
+  mesh.updateMatrixWorld(true);
+
+  const history = new HistoryManager();
+  history.registerHandlers({ Painter });
+
+  const painter = new Painter({
+    tool: 'brush',
+    brushPreset: 'round',
+    color: '#ef4444',
+    radius: 0.22,
+    strength: 1.0,
+    hardness: 0.75,
+    isMobile: true,
+  });
+
+  // 1) Trazo rápido curvo por segmentos cápsula: todo punto intermedio recibe pigmento continuo sin huecos
+  const startHit = painter.pickSurface(cam, -0.25, -0.1, [mesh]);
+  assert.ok(startHit);
+  assert.equal(painter.beginStroke(mesh, startHit, cam, { scene }), true);
+  painter.stepStroke(cam, 0.0, 0.18);
+  painter.stepStroke(cam, 0.25, -0.05);
+  const res1 = painter.commitStroke();
+  assert.ok(res1 && res1.diff && res1.diff.indices.length > 40);
+  history.push({ type: 'paint', label: 'Trazo 1', mesh: res1.mesh, geometry: res1.geometry, texture: res1.texture, diff: res1.diff });
+
+  for (const [nx, ny] of [[-0.12, 0.04], [0.0, 0.18], [0.12, 0.06]]) {
+    const checkHit = painter.pickSurface(cam, nx, ny, [mesh]);
+    assert.ok(checkHit && checkHit.uv);
+    const px = readTexelAtUV(mesh.material.map, checkHit.uv);
+    assert.ok(px[0] > 210 && px[1] < 100 && px[2] < 100, `Trazo continuo esperado rojo en (${nx},${ny}), obtenido ${px}`);
+  }
+
+  // 2) Segundo trazo con otro color reutilizando el pool de buffers + undo/redo exacto
+  painter.setColor('#3b82f6');
+  const h2 = painter.pickSurface(cam, 0.0, 0.18, [mesh]);
+  assert.ok(h2);
+  painter.beginStroke(mesh, h2, cam, { scene });
+  painter.stepStroke(cam, 0.2, 0.2);
+  const res2 = painter.commitStroke();
+  assert.ok(res2 && res2.diff);
+  history.push({ type: 'paint', label: 'Trazo 2', mesh: res2.mesh, geometry: res2.geometry, texture: res2.texture, diff: res2.diff });
+
+  const bluePx = readTexelAtUV(mesh.material.map, h2.uv);
+  assert.ok(bluePx[2] > 200 && bluePx[0] < 90, `Esperado azul antes de undo, obtenido ${bluePx}`);
+
+  assert.ok(history.undo());
+  const restoredRed = readTexelAtUV(mesh.material.map, h2.uv);
+  assert.ok(restoredRed[0] > 210 && restoredRed[2] < 95, `Undo debe restaurar rojo previo, obtenido ${restoredRed}`);
+
+  assert.ok(history.redo());
+  const restoredBlue = readTexelAtUV(mesh.material.map, h2.uv);
+  assert.ok(restoredBlue[2] > 200 && restoredBlue[0] < 90, `Redo debe restaurar azul, obtenido ${restoredBlue}`);
+
+  // 3) cancelStroke revierte únicamente los texels modificados manteniendo trazos anteriores intactos
+  painter.setColor('#22c55e');
+  painter.beginStroke(mesh, h2, cam, { scene });
+  painter.stepStroke(cam, -0.1, 0.15);
+  assert.equal(painter.cancelStroke(), true);
+  const afterCancel = readTexelAtUV(mesh.material.map, h2.uv);
+  assert.ok(afterCancel[2] > 200 && afterCancel[0] < 90, `cancelStroke debe devolver el azul previo, obtenido ${afterCancel}`);
+
+  // 4) Filtro adaptativo 1-Euro atenúa jitter a baja velocidad y sigue rápido a alta velocidad
+  painter._smoothFilter = { x: 0, y: 0, t: 1000 };
+  const slow = painter._filterStrokePoint(0.02, 0.02, 1100);
+  assert.ok(slow.x > 0 && slow.x < 0.015, `A baja velocidad debe suavizar jitter: ${slow.x}`);
+  painter._smoothFilter = { x: 0, y: 0, t: 1000 };
+  const fast = painter._filterStrokePoint(0.5, 0.0, 1016);
+  assert.ok(fast.x > 0.4, `A alta velocidad debe responder casi inmediato: ${fast.x}`);
+});
+
+
+
+

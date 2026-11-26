@@ -4,6 +4,8 @@ import zlib from 'zlib';
 import { fileURLToPath } from 'url';
 import { defineConfig } from 'vite';
 
+import { VitePWA } from 'vite-plugin-pwa';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const CRC_TABLE = (() => {
@@ -54,7 +56,8 @@ function collectLibraryFiles(rootDir) {
     '.env.example',
     '.gitignore',
   ];
-  const includeDirs = ['src', 'editor', 'tests'];
+  const includeDirs = ['src', 'editor', 'tests', 'public'];
+  const skipPrefixes = ['public/zip', 'public/assets/aistudio'];
   const files = [];
 
   for (const rel of rootFiles) {
@@ -71,6 +74,7 @@ function collectLibraryFiles(rootDir) {
     for (const entry of entries) {
       if (entry.name === '.DS_Store' || entry.name === 'Thumbs.db') continue;
       const rel = `${dirRel}/${entry.name}`;
+      if (skipPrefixes.some((prefix) => rel === prefix || rel.startsWith(`${prefix}/`))) continue;
       const abs = path.join(rootDir, rel);
       if (entry.isDirectory()) {
         walk(rel);
@@ -175,7 +179,89 @@ function packMade3dZipPlugin() {
 
 export default defineConfig(() => {
   return {
-    plugins: [packMade3dZipPlugin()],
+    plugins: [
+      packMade3dZipPlugin(),
+      VitePWA({
+        registerType: 'autoUpdate',
+        includeAssets: [
+          'icon.svg',
+          'apple-touch-icon.png',
+          'pwa-192x192.png',
+          'pwa-512x512.png',
+          'pwa-maskable-512x512.png',
+        ],
+        manifest: {
+          id: '/',
+          name: 'Made3D Studio',
+          short_name: 'Made3D',
+          description: 'Estudio 3D interactivo WebGL2 y WebGPU para modelar, esculpir, pintar, hacer rigging y animar.',
+          theme_color: '#0d0e12',
+          background_color: '#0d0e12',
+          display: 'standalone',
+          start_url: '/',
+          scope: '/',
+          icons: [
+            {
+              src: '/pwa-192x192.png',
+              sizes: '192x192',
+              type: 'image/png',
+              purpose: 'any',
+            },
+            {
+              src: '/pwa-512x512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'any',
+            },
+            {
+              src: '/pwa-maskable-512x512.png',
+              sizes: '512x512',
+              type: 'image/png',
+              purpose: 'maskable',
+            },
+          ],
+        },
+        workbox: {
+          globPatterns: ['**/*.{js,css,html,ico,png,svg,wasm,woff,woff2}'],
+          globIgnores: ['**/zip/**', '**/assets/aistudio/**'],
+          maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+          runtimeCaching: [
+            {
+              urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'google-fonts-cache',
+                expiration: {
+                  maxEntries: 10,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
+            {
+              urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
+              handler: 'CacheFirst',
+              options: {
+                cacheName: 'gstatic-fonts-cache',
+                expiration: {
+                  maxEntries: 10,
+                  maxAgeSeconds: 60 * 60 * 24 * 365,
+                },
+                cacheableResponse: {
+                  statuses: [0, 200],
+                },
+              },
+            },
+          ],
+        },
+        devOptions: {
+          enabled: true,
+          type: 'module',
+        },
+      }),
+    ],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

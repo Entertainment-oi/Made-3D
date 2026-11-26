@@ -194,10 +194,13 @@ export class GPUResources {
   getSampler(tex) {
     const wrapS = tex?.wrapS || 'repeat';
     const wrapT = tex?.wrapT || 'repeat';
-    const minF = tex?.minFilter || 'linear-mipmap';
+    const deferMips = Boolean(tex?._deferMipmaps);
+    const minF = deferMips && (tex?.minFilter || 'linear-mipmap') === 'linear-mipmap'
+      ? 'linear'
+      : (tex?.minFilter || 'linear-mipmap');
     const magF = tex?.magFilter || 'linear';
     const aniso = (minF === 'linear-mipmap' && !this.b.renderer.isMobile) ? 4 : 1;
-    const key = `${wrapS}|${wrapT}|${minF}|${magF}|${aniso}`;
+    const key = `${wrapS}|${wrapT}|${minF}|${magF}|${aniso}|${deferMips ? 1 : 0}`;
     let s = this._samplers.get(key);
     if (s) return s;
 
@@ -207,14 +210,16 @@ export class GPUResources {
     const mipmapFilter = minF === 'linear-mipmap' ? 'linear' : 'nearest';
     const maxAnisotropy = (magFilter === 'linear' && minFilter === 'linear' && mipmapFilter === 'linear') ? aniso : 1;
 
-    s = this.device.createSampler({
+    const desc = {
       addressModeU: mapAddr(wrapS),
       addressModeV: mapAddr(wrapT),
       magFilter,
       minFilter,
       mipmapFilter,
       maxAnisotropy,
-    });
+    };
+    if (deferMips) desc.lodMaxClamp = 0.0;
+    s = this.device.createSampler(desc);
     this._samplers.set(key, s);
     return s;
   }
@@ -808,6 +813,44 @@ export class GPUResources {
         ? (Math.floor(Math.log2(Math.max(w, h))) + 1)
         : activeMipmaps.length;
 
+      const dirty = tex._dirtyRect;
+      if (
+        dirty &&
+        !isCompressed &&
+        !tex.flipY &&
+        activeMipmaps.length === 1 &&
+        !t._fallbackMip0 &&
+        t.gpuTex &&
+        t.loaded &&
+        t.srgb === srgb &&
+        t.w === w &&
+        t.h === h &&
+        t.fmt === fmt &&
+        t.wantMips === wantMips
+      ) {
+        const mip = activeMipmaps[0];
+        const rx = Math.max(0, Math.min(w - 1, dirty.minX | 0));
+        const ry = Math.max(0, Math.min(h - 1, dirty.minY | 0));
+        const rx1 = Math.max(rx, Math.min(w - 1, dirty.maxX | 0));
+        const ry1 = Math.max(ry, Math.min(h - 1, dirty.maxY | 0));
+        const rw = rx1 - rx + 1;
+        const rh = ry1 - ry + 1;
+
+        this.device.queue.writeTexture(
+          { texture: t.gpuTex, mipLevel: 0, origin: [rx, ry, 0] },
+          mip.data,
+          { offset: (ry * w + rx) * 4, bytesPerRow: w * 4, rowsPerImage: rh },
+          [rw, rh, 1]
+        );
+        if (!tex._deferMipmaps && wantMips > 1) {
+          this._generateMipmaps(t.gpuTex, fmt, w, h, wantMips);
+        }
+        t.version = tex.version;
+        t._fallbackDirty = false;
+        tex._dirtyRect = null;
+        return;
+      }
+
       if (t.gpuTex) t.gpuTex.destroy();
       const usage = isCompressed
         ? (GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST)
@@ -837,11 +880,13 @@ export class GPUResources {
           );
         }
       }
-      if (wantMips > activeMipmaps.length && !isCompressed) {
+      if (wantMips > activeMipmaps.length && !isCompressed && !tex._deferMipmaps) {
         this._generateMipmaps(t.gpuTex, fmt, w, h, wantMips);
       }
       t.view = t.gpuTex.createView();
+      t.w = w; t.h = h; t.fmt = fmt; t.wantMips = wantMips;
       t.version = tex.version; t.loaded = true; t.srgb = srgb; t._fallbackDirty = false;
+      tex._dirtyRect = null;
       this._group2Cache.clear();
       return;
     }

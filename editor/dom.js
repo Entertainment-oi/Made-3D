@@ -74,6 +74,18 @@ export const dom = {
   btnPaintUvX: el('btn-paint-uv-x'),
   btnPaintUvClose: el('btn-paint-uv-close'),
   btnPaintUvDownload: el('btn-paint-uv-download'),
+  btnPaintBrush: el('btn-paint-brush'),
+  popPaintBrushes: el('pop-paint-brushes'),
+  paintBrushPresetBadge: el('paint-brush-preset-badge'),
+  btnPaintColor: el('btn-paint-color'),
+  popPaintColor: el('pop-paint-color'),
+  paintColorHexBadge: el('paint-color-hex-badge'),
+  paintColorWheelWrap: el('paint-color-wheel-wrap'),
+  paintColorWheel: el('paint-color-wheel'),
+  paintWheelCursor: el('paint-wheel-cursor'),
+  paintColorValue: el('paint-color-value'),
+  paintColorValueNum: el('paint-color-value-num'),
+  paintWheelSwatch: el('paint-wheel-swatch'),
   btnPaintMore: el('btn-paint-more'),
   popPaintMore: el('pop-paint-more'),
   paintColor: el('paint-color'),
@@ -447,6 +459,19 @@ export const dom = {
   mobileRotateCountdown: el('mobile-rotate-countdown'),
   btnMobileRotateCancel: el('btn-mobile-rotate-cancel'),
   btnMobileRotateNow: el('btn-mobile-rotate-now'),
+
+  // PWA (Instalación y modo sin conexión)
+  btnInstallPwa: el('btn-install-pwa'),
+  btnInstallPwaLabel: el('btn-install-pwa-label'),
+  btnSettingsInstallPwa: el('btn-settings-install-pwa'),
+  settingsInstallPwaState: el('settings-install-pwa-state'),
+  pwaOfflineBanner: el('pwa-offline-banner'),
+  pwaInstallModal: el('pwa-install-modal'),
+  pwaInstallModalTitle: el('pwa-install-modal-title'),
+  pwaInstallGuideIos: el('pwa-install-guide-ios'),
+  pwaInstallGuideBrowser: el('pwa-install-guide-browser'),
+  btnPwaInstallX: el('btn-pwa-install-x'),
+  btnPwaInstallClose: el('btn-pwa-install-close'),
 };
 
 let _statusTimer = 0;

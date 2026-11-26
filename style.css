@@ -228,6 +228,17 @@ html.is-mobile-landscape-90 .app-shell {
   height: 15px;
 }
 
+.top-install-btn {
+  background: var(--accent-soft);
+  border-color: rgba(245, 158, 11, 0.35);
+  color: #fde68a;
+}
+
+.top-install-btn:hover {
+  background: rgba(245, 158, 11, 0.25);
+  border-color: rgba(245, 158, 11, 0.55);
+}
+
 .chev-icon {
   width: 13px;
   height: 13px;
@@ -386,6 +397,7 @@ html.is-mobile-landscape-90 .app-shell {
 .viewport-wrap.is-camera-view .sculpt-params-bar,
 .viewport-wrap.is-camera-view #paint-brush-bar,
 .viewport-wrap.is-camera-view #paint-params-bar,
+.viewport-wrap.is-camera-view #paint-uv-card,
 .viewport-wrap.is-camera-view #rig-tool-bar,
 .viewport-wrap.is-camera-view #rig-weights-bar {
   display: none !important;
@@ -611,9 +623,9 @@ html.is-mobile-landscape-90 .app-shell {
 
 .float-bar-right {
   right: 10px;
-  width: 44px;
+  width: 46px;
   gap: 6px;
-  padding: 8px 4px;
+  padding: 8px 3px;
 }
 
 .tool-slot {
@@ -648,6 +660,56 @@ html.is-mobile-landscape-90 .app-shell {
   height: 18px;
 }
 
+.paint-uv-card {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 23;
+  width: 92px;
+  height: 92px;
+  padding: 4px;
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(12px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  cursor: pointer;
+  transition: border-color 140ms ease, transform 140ms ease;
+}
+
+.paint-uv-card:hover {
+  border-color: var(--accent);
+  transform: translateY(-1px);
+}
+
+.paint-uv-mini-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  background: #14171f;
+}
+
+.paint-uv-card-badge {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  padding: 1px 5px;
+  border-radius: 5px;
+  background: rgba(12, 14, 19, 0.86);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #fde68a;
+  pointer-events: none;
+}
+
 .paint-color-trigger {
   position: relative;
   width: 32px;
@@ -664,11 +726,12 @@ html.is-mobile-landscape-90 .app-shell {
   transition: border-color 140ms ease, transform 140ms ease;
 }
 
-.paint-color-trigger:hover {
+.paint-color-trigger:hover,
+.paint-color-trigger.is-active {
   border-color: var(--accent);
 }
 
-.paint-color-trigger:focus-within {
+.paint-color-trigger:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -688,6 +751,160 @@ html.is-mobile-landscape-90 .app-shell {
   height: 100%;
   opacity: 0;
   cursor: pointer;
+}
+
+/* Submenú de tipos de pincel (2× tap) */
+.brush-btn.has-sub-corner {
+  position: relative;
+}
+
+.brush-sub-corner {
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 0 0 6px 6px;
+  border-color: transparent transparent rgba(255, 255, 255, 0.52) transparent;
+  pointer-events: none;
+}
+
+.brush-btn.is-active .brush-sub-corner {
+  border-color: transparent transparent #fde68a transparent;
+}
+
+.paint-brushes-flyout {
+  left: 80px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 248px;
+}
+
+.paint-brush-presets-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.paint-preset-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 40px;
+  padding: 6px 9px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background 130ms ease, border-color 130ms ease, color 130ms ease;
+}
+
+.paint-preset-btn svg {
+  width: 19px;
+  height: 19px;
+  flex-shrink: 0;
+}
+
+.paint-preset-btn:hover {
+  background: rgba(255, 255, 255, 0.09);
+  color: var(--text);
+}
+
+.paint-preset-btn.is-active {
+  background: var(--accent-soft);
+  border-color: rgba(245, 158, 11, 0.55);
+  color: #fde68a;
+}
+
+/* Círculo cromático HSV */
+.side-flyout.flyout-right.paint-color-flyout {
+  top: -4px;
+  bottom: auto;
+  width: 228px;
+}
+
+.paint-color-wheel-wrap {
+  position: relative;
+  width: 176px;
+  height: 176px;
+  margin: 2px auto 0;
+  border-radius: 50%;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: crosshair;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.14), 0 4px 14px rgba(0, 0, 0, 0.4);
+}
+
+.paint-color-wheel {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+}
+
+.paint-wheel-cursor {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.85), 0 2px 6px rgba(0, 0, 0, 0.5);
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+
+.paint-hex-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.paint-wheel-swatch {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: #ef4444;
+  flex-shrink: 0;
+}
+
+.paint-hex-row .paint-hex-input {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+
+.paint-native-picker-btn {
+  position: relative;
+  width: 30px;
+  height: 28px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-dim);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.paint-native-picker-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--text);
+}
+
+.paint-native-picker-btn svg {
+  width: 16px;
+  height: 16px;
 }
 
 .paint-palette-grid {
@@ -1185,9 +1402,16 @@ html.is-mobile-landscape-90 .app-shell {
 }
 
 .vslider-title {
-  font-size: 9px;
+  font-size: 7.8px;
   font-weight: 600;
+  line-height: 1.05;
+  letter-spacing: -0.025em;
   color: var(--text-dim);
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-align: center;
 }
 
 .vslider-num {
@@ -1625,6 +1849,9 @@ html.is-mobile-landscape-90 .app-shell {
 }
 
 .settings-foot {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   padding: 9px 12px 11px;
   border-top: 1px solid var(--border);
   background: rgba(10, 12, 17, 0.42);
@@ -1857,6 +2084,28 @@ input[type="range"]::-moz-range-thumb {
   background: #fde68a;
   border: 2px solid var(--accent);
   box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45);
+}
+
+.paint-value-range::-webkit-slider-runnable-track {
+  height: 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: linear-gradient(90deg, #000000 0%, var(--val-full-color, #ef4444) 100%);
+}
+
+.paint-value-range::-webkit-slider-thumb {
+  margin-top: -4px;
+}
+
+.paint-value-range::-moz-range-track {
+  height: 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  background: linear-gradient(90deg, #000000 0%, var(--val-full-color, #ef4444) 100%);
+}
+
+.paint-value-range::-moz-range-progress {
+  background: transparent;
 }
 
 input[type="range"]:disabled {
@@ -2345,6 +2594,19 @@ input[type="range"]:disabled {
   .side-flyout.flyout-wide {
     width: min(238px, calc(var(--app-vw) - 74px));
     max-height: calc(var(--app-vh) - 135px);
+  }
+
+  .paint-brushes-flyout {
+    left: 68px;
+  }
+
+  .side-flyout.flyout-right.paint-color-flyout {
+    width: min(220px, calc(var(--app-vw) - 64px));
+  }
+
+  .paint-color-wheel-wrap {
+    width: 156px;
+    height: 156px;
   }
 
   .outliner-drawer {
@@ -2952,6 +3214,73 @@ input[type="range"]:disabled {
   width: min(440px, calc(var(--app-vw) - 24px));
 }
 
+.paint-uv-modal-card {
+  width: min(520px, calc(var(--app-vw) - 24px));
+}
+
+.paint-uv-large-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #090b0f;
+}
+
+.paint-uv-large-canvas {
+  display: block;
+  width: min(100%, 420px, calc(var(--app-vh) - 240px));
+  aspect-ratio: 1 / 1;
+  height: auto;
+  border-radius: 6px;
+}
+
+.paint-uv-modal-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.export-options-card {
+  width: min(460px, calc(var(--app-vw) - 24px));
+  overflow-y: auto;
+}
+
+.export-opt-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.export-opt-subtitle {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.export-opt-anim-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.export-opt-anim-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .studio-modal-head {
   display: flex;
   align-items: center;
@@ -3051,6 +3380,58 @@ input[type="range"]:disabled {
   gap: 8px;
 }
 
+.pwa-offline-banner {
+  position: absolute;
+  left: 12px;
+  bottom: calc(64px + env(safe-area-inset-bottom, 0px));
+  z-index: 54;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  border-radius: 9px;
+  background: rgba(24, 18, 10, 0.94);
+  border: 1px solid rgba(245, 158, 11, 0.48);
+  color: #fde68a;
+  font-size: 11.5px;
+  font-weight: 500;
+  box-shadow: var(--shadow);
+  pointer-events: none;
+}
+
+.pwa-offline-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: pwaPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pwaPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.45; transform: scale(0.8); }
+}
+
+.pwa-install-card {
+  width: min(400px, calc(var(--app-vw) - 24px));
+}
+
+.pwa-install-intro {
+  margin: 0 0 8px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+}
+
+.pwa-steps-list {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text);
+}
+
 @media (max-width: 900px) {
   .anim-timeline {
     width: calc(var(--app-vw) - 12px);
@@ -3119,6 +3500,43 @@ input[type="range"]:disabled {
   .anim-top-left {
     top: 10px;
     left: 10px;
+  }
+
+  .paint-uv-card {
+    top: 8px;
+    left: 8px;
+    width: 68px;
+    height: 68px;
+    padding: 3px;
+    border-radius: 10px;
+  }
+
+  .paint-uv-mini-canvas {
+    border-radius: 7px;
+  }
+
+  .paint-uv-card-badge {
+    right: 5px;
+    bottom: 5px;
+    font-size: 8px;
+    padding: 1px 4px;
+  }
+}
+
+@media (max-height: 660px) {
+  .paint-uv-card {
+    top: 8px;
+    left: 8px;
+    width: 64px;
+    height: 64px;
+    padding: 3px;
+    border-radius: 10px;
+  }
+
+  #paint-brush-bar {
+    top: 78px;
+    transform: none;
+    max-height: calc(var(--app-vh) - var(--topbar-h) - 144px);
   }
 }
 
@@ -3298,9 +3716,14 @@ html.is-mobile-landscape-90 .float-bar {
 }
 
 html.is-mobile-landscape-90 .float-bar-right {
-  width: 36px;
-  padding: 4px 3px;
+  width: 40px;
+  padding: 4px 2px;
   gap: 3px;
+}
+
+html.is-mobile-landscape-90 .vslider-title {
+  font-size: 6.8px;
+  letter-spacing: -0.04em;
 }
 
 html.is-mobile-landscape-90 .vslider-wrap {
@@ -3327,8 +3750,35 @@ html.is-mobile-landscape-90 .tool-cube-btn svg {
   height: 20px;
 }
 
+html.is-mobile-landscape-90 .paint-uv-card {
+  top: 8px;
+  left: 8px;
+  width: 58px;
+  height: 58px;
+  padding: 3px;
+  border-radius: 10px;
+}
+
+html.is-mobile-landscape-90 .paint-uv-mini-canvas {
+  border-radius: 7px;
+}
+
+html.is-mobile-landscape-90 .paint-uv-card-badge {
+  right: 4px;
+  bottom: 4px;
+  font-size: 7.5px;
+  padding: 1px 3px;
+}
+
+html.is-mobile-landscape-90 #paint-brush-bar {
+  top: 72px;
+  transform: none;
+  max-height: calc(var(--app-vh) - var(--topbar-h) - 134px);
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+
 html.is-mobile-landscape-90 #sculpt-brush-bar,
-html.is-mobile-landscape-90 #paint-brush-bar,
 html.is-mobile-landscape-90 #rig-tool-bar {
   max-height: calc(var(--app-vh) - 104px);
   overflow-y: auto;
@@ -3365,6 +3815,23 @@ html.is-mobile-landscape-90 #pop-paint-more {
   top: auto;
   bottom: 0;
   transform: none;
+}
+
+html.is-mobile-landscape-90 .paint-brushes-flyout {
+  left: 68px;
+  top: 72px;
+  transform: none;
+}
+
+html.is-mobile-landscape-90 .side-flyout.flyout-right.paint-color-flyout {
+  top: -10px;
+  bottom: auto;
+  max-height: calc(var(--app-vh) - 108px);
+}
+
+html.is-mobile-landscape-90 .paint-color-wheel-wrap {
+  width: 144px;
+  height: 144px;
 }
 
 /* En modo animación 90°, línea de tiempo más pequeña y elevada sobre la barra unificada */

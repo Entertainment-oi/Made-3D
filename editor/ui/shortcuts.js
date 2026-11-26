@@ -44,6 +44,7 @@ import { toggleTimelinePlayback } from '../animationController.js';
 import { closeAllPopovers } from './popovers.js';
 import { renderObjectList } from './outliner.js';
 import { syncSelectedUI } from './objectInspector.js';
+import { closePaintFlyouts } from '../paintController.js';
 
 export function bindShortcutsAndModes() {
   const SCULPT_FALLOFF_LABELS = { smooth: 'Suave', sphere: 'Esférica', tip: 'Punta fina' };
@@ -139,8 +140,7 @@ export function bindShortcutsAndModes() {
       closeEditFlyouts();
       if (dom.popSculptMore) dom.popSculptMore.hidden = true;
       dom.btnSculptMore?.classList.remove('is-active');
-      if (dom.popPaintMore) dom.popPaintMore.hidden = true;
-      dom.btnPaintMore?.classList.remove('is-active');
+      closePaintFlyouts();
     });
   });
 
@@ -149,8 +149,7 @@ export function bindShortcutsAndModes() {
     closeEditFlyouts();
     if (dom.popSculptMore) dom.popSculptMore.hidden = true;
     dom.btnSculptMore?.classList.remove('is-active');
-    if (dom.popPaintMore) dom.popPaintMore.hidden = true;
-    dom.btnPaintMore?.classList.remove('is-active');
+    closePaintFlyouts();
   });
 
   const readWeldSolidity = () => {
@@ -339,6 +338,21 @@ export function bindShortcutsAndModes() {
   // Atajos de teclado
   window.addEventListener('keydown', (e) => {
     if (e.key === 'Escape' && !e.defaultPrevented) {
+      if (dom.paintUvModal && !dom.paintUvModal.hidden) {
+        e.preventDefault();
+        dom.paintUvModal.hidden = true;
+        return;
+      }
+      if (dom.exportOptionsModal && !dom.exportOptionsModal.hidden) {
+        e.preventDefault();
+        dom.btnExportOptCancel?.click();
+        return;
+      }
+      if (dom.renderPreviewModal && !dom.renderPreviewModal.hidden) {
+        e.preventDefault();
+        dom.btnRenderPreviewClose?.click();
+        return;
+      }
       if (viewport.openPopover) {
         e.preventDefault();
         closeAllPopovers();

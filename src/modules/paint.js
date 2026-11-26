@@ -1,12 +1,17 @@
 export {
   Painter,
   PAINT_TOOLS,
+  PAINT_BRUSH_PRESETS,
   PAINT_SYMMETRIES,
   PAINT_MODES,
   PAINT_RESOLUTIONS,
   PAINT_DEFAULT_PALETTE,
   parseHexColor,
   rgbToHex,
+  rgbToHsv,
+  hsvToRgb,
+  hexToHsv,
+  hsvToHex,
   hasOverlappingOrMissingUVs,
   unwrapBoxAtlas,
 } from '../paint/Painter.js';

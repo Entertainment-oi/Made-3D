@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Made3D Studio</title>
     <meta name="description" content="Entorno interactivo con la librería 3D WebGL2 y WebGPU Made3D (v0.1.0)." />
+    <meta name="theme-color" content="#0d0e12" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Made3D" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/png" sizes="192x192" href="/pwa-192x192.png" />
     <meta property="og:title" content="Made3D Studio" />
     <meta property="og:description" content="Entorno interactivo con la librería 3D WebGL2 y WebGPU Made3D (v0.1.0)." />
     <meta property="og:type" content="website" />
@@ -64,6 +72,20 @@
         </div>
 
         <div class="topbar-right">
+          <button
+            type="button"
+            id="btn-install-pwa"
+            class="top-menu-btn top-install-btn"
+            title="Instalar Made3D Studio como aplicación"
+            aria-label="Instalar aplicación"
+            hidden
+          >
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+            </svg>
+            <span id="btn-install-pwa-label">Instalar app</span>
+          </button>
+
           <button
             type="button"
             id="btn-nav-settings"
@@ -535,12 +557,13 @@
 
           <!-- ========================== MODO PINTAR: BARRA DE PINCELES IZQUIERDA ========================== -->
           <div id="paint-brush-bar" class="float-bar float-bar-left" role="toolbar" aria-label="Herramientas de pintura" hidden>
-            <button type="button" class="brush-btn is-active" data-paint-tool="brush" title="Pincel de pintura suave">
+            <button type="button" id="btn-paint-brush" class="brush-btn has-sub-corner is-active" data-paint-tool="brush" title="Pincel (2× clic para tipos de pincel)">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
                 <path d="M18.37 2.63L14 7l-1.59-1.59a2 2 0 0 0-2.82 0L8 7l9 9 1.59-1.59a2 2 0 0 0 0-2.82L17 10l4.37-4.37a2.12 2.12 0 1 0-3-3Z" />
                 <path d="M9 8c-2 3-4 3.5-7 4l8 10c2-1 6-5 6-7" />
               </svg>
               <span>Pincel</span>
+              <span class="brush-sub-corner" aria-hidden="true"></span>
             </button>
             <button type="button" class="brush-btn" data-paint-tool="airbrush" title="Aerógrafo difuso">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
@@ -594,12 +617,122 @@
             </button>
           </div>
 
+          <!-- Submenú de tipos de pincel (2× tap en Pincel) -->
+          <div id="pop-paint-brushes" class="side-flyout flyout-wide paint-brushes-flyout" hidden>
+            <div class="flyout-header">
+              <span class="flyout-title">Tipos de pincel</span>
+              <div class="flyout-header-right">
+                <span id="paint-brush-preset-badge" class="flyout-badge">Redondo</span>
+                <button type="button" class="flyout-close-btn" data-close-flyout aria-label="Cerrar">×</button>
+              </div>
+            </div>
+            <div class="paint-brush-presets-grid" role="group" aria-label="Tipos de pincel">
+              <button type="button" class="paint-preset-btn is-active" data-paint-brush-preset="round" title="Punta redonda clásica equilibrada">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <circle cx="12" cy="12" r="7" fill="currentColor" fill-opacity="0.22" />
+                </svg>
+                <span>Redondo</span>
+              </button>
+              <button type="button" class="paint-preset-btn" data-paint-brush-preset="hard" title="Tinta sólida con borde definido">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <circle cx="12" cy="12" r="7" fill="currentColor" />
+                </svg>
+                <span>Duro</span>
+              </button>
+              <button type="button" class="paint-preset-btn" data-paint-brush-preset="soft" title="Pincel suave muy difuminado">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <circle cx="12" cy="12" r="8" stroke-dasharray="2.5 2.5" opacity="0.55" />
+                  <circle cx="12" cy="12" r="4.5" fill="currentColor" fill-opacity="0.35" stroke="none" />
+                </svg>
+                <span>Suave</span>
+              </button>
+              <button type="button" class="paint-preset-btn" data-paint-brush-preset="chisel" title="Pluma biselada caligráfica angular">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <ellipse cx="12" cy="12" rx="8.5" ry="3.1" transform="rotate(-35 12 12)" fill="currentColor" fill-opacity="0.35" />
+                </svg>
+                <span>Biselado</span>
+              </button>
+              <button type="button" class="paint-preset-btn" data-paint-brush-preset="stipple" title="Tiza / Punteado con textura granulada">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="8" cy="8" r="1.4" />
+                  <circle cx="14" cy="7" r="1.1" />
+                  <circle cx="11" cy="12" r="1.6" />
+                  <circle cx="16.5" cy="11.5" r="1.3" />
+                  <circle cx="7.5" cy="14.5" r="1.2" />
+                  <circle cx="13" cy="16.5" r="1.4" />
+                  <circle cx="16.5" cy="16" r="0.9" />
+                </svg>
+                <span>Tiza</span>
+              </button>
+              <button type="button" class="paint-preset-btn" data-paint-brush-preset="splatter" title="Salpicadura orgánica de gotas">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="12" cy="12" r="3.4" />
+                  <circle cx="6" cy="7.5" r="1.5" />
+                  <circle cx="18" cy="7" r="1.8" />
+                  <circle cx="18.5" cy="15.5" r="1.4" />
+                  <circle cx="7" cy="17" r="1.9" />
+                  <circle cx="12.5" cy="5.5" r="1" />
+                </svg>
+                <span>Salpicar</span>
+              </button>
+              <button type="button" class="paint-preset-btn" data-paint-brush-preset="pixel" title="Punta cuadrada nítida estilo píxel">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                  <rect x="6" y="6" width="12" height="12" fill="currentColor" fill-opacity="0.32" />
+                </svg>
+                <span>Píxel</span>
+              </button>
+              <button type="button" class="paint-preset-btn" data-paint-brush-preset="rake" title="Cerdas paralelas para pelaje o pincel seco">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+                  <path d="M5 7h14" />
+                  <path d="M5 10.5h14" />
+                  <path d="M5 14h14" />
+                  <path d="M5 17.5h14" />
+                </svg>
+                <span>Cerdas</span>
+              </button>
+            </div>
+          </div>
+
           <!-- ========================== MODO PINTAR: BARRA VERTICAL DERECHA (COLOR / RADIO / OPACIDAD + ⋯) ========================== -->
           <div id="paint-params-bar" class="float-bar float-bar-right" aria-label="Ajustes de pintura" hidden>
-            <label class="paint-color-trigger" title="Elegir color de pintura">
-              <span id="paint-color-preview" class="paint-color-preview"></span>
-              <input type="color" id="paint-color" class="paint-color-native" value="#ef4444" aria-label="Color de pintura" />
-            </label>
+            <div class="tool-slot tool-slot-right">
+              <button type="button" id="btn-paint-color" class="paint-color-trigger" title="Círculo cromático y color" aria-expanded="false">
+                <span id="paint-color-preview" class="paint-color-preview"></span>
+              </button>
+              <div id="pop-paint-color" class="side-flyout flyout-right flyout-wide paint-color-flyout" hidden>
+                <div class="flyout-header">
+                  <span class="flyout-title">Círculo cromático</span>
+                  <div class="flyout-header-right">
+                    <span id="paint-color-hex-badge" class="flyout-badge">#EF4444</span>
+                    <button type="button" class="flyout-close-btn" data-close-flyout aria-label="Cerrar">×</button>
+                  </div>
+                </div>
+                <div id="paint-color-wheel-wrap" class="paint-color-wheel-wrap">
+                  <canvas id="paint-color-wheel" class="paint-color-wheel" width="176" height="176" aria-label="Círculo cromático HSV"></canvas>
+                  <span id="paint-wheel-cursor" class="paint-wheel-cursor" aria-hidden="true"></span>
+                </div>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label">Brillo</span>
+                  <input type="range" id="paint-color-value" class="paint-value-range" min="0" max="100" step="1" value="94" aria-label="Brillo del color" />
+                  <span id="paint-color-value-num" class="paint-num-badge">94%</span>
+                </div>
+                <div class="paint-hex-row">
+                  <span id="paint-wheel-swatch" class="paint-wheel-swatch" aria-hidden="true"></span>
+                  <input type="text" id="paint-hex-input" class="paint-hex-input" value="#EF4444" maxlength="7" spellcheck="false" aria-label="Código hexadecimal de color" />
+                  <label class="paint-native-picker-btn" title="Selector de color del sistema">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                      <circle cx="12" cy="12" r="9" />
+                      <circle cx="9.5" cy="9.5" r="1" fill="currentColor" stroke="none" />
+                      <circle cx="14.5" cy="9.5" r="1" fill="currentColor" stroke="none" />
+                      <circle cx="9.5" cy="14.5" r="1" fill="currentColor" stroke="none" />
+                      <circle cx="14.5" cy="14.5" r="1" fill="currentColor" stroke="none" />
+                    </svg>
+                    <input type="color" id="paint-color" class="paint-color-native" value="#ef4444" aria-label="Selector nativo de color" />
+                  </label>
+                </div>
+                <div id="paint-palette-grid" class="paint-palette-grid" role="group" aria-label="Paleta rápida"></div>
+              </div>
+            </div>
 
             <div class="vslider-group">
               <span class="vslider-title">Radio</span>
@@ -629,11 +762,6 @@
                 <div class="flyout-header">
                   <span class="flyout-title">Opciones de pintura</span>
                   <button type="button" class="flyout-close-btn" data-close-flyout aria-label="Cerrar">×</button>
-                </div>
-                <div id="paint-palette-grid" class="paint-palette-grid" role="group" aria-label="Paleta rápida"></div>
-                <div class="flyout-slider-row">
-                  <span class="flyout-label">Hex</span>
-                  <input type="text" id="paint-hex-input" class="paint-hex-input" value="#EF4444" maxlength="7" spellcheck="false" aria-label="Código hexadecimal de color" />
                 </div>
                 <div class="flyout-slider-row">
                   <span class="flyout-label">Dureza</span>
@@ -991,6 +1119,10 @@
                     <button type="button" id="btn-export-mtl" class="action-btn">.mtl</button>
                   </div>
                 </div>
+                <a id="btn-scene-download-zip" class="menu-item-btn download-link" href="./zip/Made-3D.zip" download="Made-3D.zip">
+                  <span>Descargar app PWA (.zip)</span>
+                  <small>Made-3D.zip</small>
+                </a>
               </div>
             </div>
 
@@ -1432,6 +1564,20 @@
             <div class="settings-foot">
               <button
                 type="button"
+                id="btn-settings-install-pwa"
+                class="menu-item-btn mobile-landscape-btn"
+                title="Instalar Made3D Studio como aplicación (PWA)"
+              >
+                <span class="mobile-landscape-label">
+                  <svg class="btn-inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
+                    <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
+                  </svg>
+                  <span>Instalar como app</span>
+                </span>
+                <small id="settings-install-pwa-state">PWA</small>
+              </button>
+              <button
+                type="button"
                 id="btn-mobile-landscape"
                 class="menu-item-btn mobile-landscape-btn"
                 aria-pressed="false"
@@ -1588,6 +1734,41 @@
             <div class="drop-card">
               <h2 class="drop-title">Suelta tu archivo 3D aquí</h2>
               <p class="drop-sub">Compatible con .glb, .gltf, .obj/.mtl, texturas .ktx2 y paquetes .zip</p>
+            </div>
+          </div>
+
+          <!-- Indicador de modo sin conexión (PWA) -->
+          <div id="pwa-offline-banner" class="pwa-offline-banner" role="status" aria-live="polite" hidden>
+            <span class="pwa-offline-dot" aria-hidden="true"></span>
+            <span>Modo sin conexión — usando caché local</span>
+          </div>
+
+          <!-- Modal guía de instalación PWA (iOS Safari / navegador) -->
+          <div id="pwa-install-modal" class="studio-modal" role="dialog" aria-modal="true" aria-labelledby="pwa-install-modal-title" hidden>
+            <div class="studio-modal-card pwa-install-card">
+              <div class="studio-modal-head">
+                <h2 id="pwa-install-modal-title" class="group-title">Instalar Made3D Studio</h2>
+                <button type="button" id="btn-pwa-install-x" class="xyz-panel-close" aria-label="Cerrar instrucciones">×</button>
+              </div>
+              <div id="pwa-install-guide-ios" class="pwa-install-steps" hidden>
+                <p class="pwa-install-intro">Agrega Made3D Studio a tu pantalla de inicio para abrirla como aplicación:</p>
+                <ol class="pwa-steps-list">
+                  <li>Toca el botón <strong>Compartir</strong> en la barra de Safari.</li>
+                  <li>Desplázate hacia abajo y elige <strong>Añadir a pantalla de inicio</strong>.</li>
+                  <li>Toca <strong>Añadir</strong> para finalizar.</li>
+                </ol>
+              </div>
+              <div id="pwa-install-guide-browser" class="pwa-install-steps" hidden>
+                <p class="pwa-install-intro">Puedes instalar esta web como aplicación (PWA) directamente desde tu navegador:</p>
+                <ol class="pwa-steps-list">
+                  <li>Abre el menú del navegador (<strong>⋮</strong> o barra de direcciones).</li>
+                  <li>Selecciona <strong>Instalar aplicación</strong> o <strong>Añadir a pantalla de inicio</strong>.</li>
+                  <li>Una vez instalada funcionará en ventana propia y sin conexión.</li>
+                </ol>
+              </div>
+              <div class="studio-modal-foot">
+                <button type="button" id="btn-pwa-install-close" class="action-btn is-accent">Entendido</button>
+              </div>
             </div>
           </div>
 

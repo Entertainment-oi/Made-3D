@@ -22,6 +22,7 @@ import { bindSettingsPanel } from './ui/settingsPanel.js';
 import { bindShortcutsAndModes } from './ui/shortcuts.js';
 import { bindRangeControls } from './ui/rangeControls.js';
 import { bindRigControls } from './rigController.js';
+import { bindPaintControls } from './paintController.js';
 
 export {
   closeAllPopovers,
@@ -45,5 +46,6 @@ export function bindUI() {
   bindShortcutsAndModes();
   bindRangeControls();
   bindRigControls();
+  bindPaintControls();
   bindRenderPreviewModal();
 }

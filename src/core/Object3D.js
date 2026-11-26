@@ -11,7 +11,7 @@ const _m = new Mat4();
 const _up = new Vec3(0, 1, 0);
 const _zero = new Vec3(0, 0, 0);
 const _t = new Vec3(), _p = new Vec3(), _pp = new Vec3(), _ps = new Vec3();
-const _w = new Mat4(), _pq = new Quat();
+const _w = new Mat4(), _pq = new Quat(), _mQuatScratch = new Quat();
 
 function cloneUserDataValue(v, seen = new WeakMap()) {
   if (v === null || typeof v !== 'object') return v;
@@ -329,6 +329,41 @@ export class Object3D extends EventEmitter {
   getWorldScale(target = new Vec3()) {
     this.matrixWorld.decompose(_pp, _pq, target);
     return target;
+  }
+  copyWorldTransformFrom(source) {
+    if (!source) return this;
+    source.updateWorldMatrix(true, false);
+    const worldPos = source.getWorldPosition(_pp);
+    const worldQuat = source.getWorldQuaternion(_pq);
+    if (this.parent) {
+      this.parent.updateWorldMatrix(true, false);
+      _w.copyInverse(this.parent.matrixWorld);
+      this.position.copy(worldPos).applyMatrix4(_w);
+      this.parent.matrixWorld.decompose(_p, _mQuatScratch, _ps);
+      _mQuatScratch.conjugate();
+      this.quaternion.copy(_mQuatScratch).multiply(worldQuat).normalize();
+    } else {
+      this.position.copy(worldPos);
+      this.quaternion.copy(worldQuat);
+    }
+    this.updateWorldMatrix(true, true);
+    return this;
+  }
+  hasShadowCaster() {
+    if (this.castShadow) return true;
+    let found = false;
+    this.traverse((node) => {
+      if (node.isMesh && node.castShadow) found = true;
+    });
+    return found;
+  }
+  setCastShadowRecursive(enabled) {
+    const val = Boolean(enabled);
+    this.castShadow = val;
+    this.traverse((node) => {
+      if (node.isMesh) node.castShadow = val;
+    });
+    return this;
   }
   copy(source, recursive = true) {
     const startedHere = recursive && !_activeCloneMap;

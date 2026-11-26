@@ -2,6 +2,7 @@ import { EventEmitter } from '../core/EventEmitter.js';
 import { Vec3 } from '../math/Vec3.js';
 import { clamp } from '../math/utils.js';
 import { clientToViewportPoint } from '../core/viewportCoords.js';
+import { computeBounds } from '../core/autoScale.js';
 
 const _v = new Vec3();
 const _r = new Vec3();
@@ -54,6 +55,20 @@ export class OrbitControls extends EventEmitter {
     const dist = Math.max(0.05, distance !== null && distance !== undefined ? distance : (this.radius || 6));
     _v.set(0, 0, -1).applyQuaternion(this.camera.quaternion).normalize();
     this.target.copy(this.camera.position).addScaledVector(_v, dist);
+    return this.syncFromCamera();
+  }
+
+  focusOnObject(obj, { fallbackRadius = 1.4, minRadius = 0.8, distanceFactor = 2.8 } = {}) {
+    if (!obj || !this.camera) return this;
+    obj.updateWorldMatrix(true, true);
+    const bounds = obj.isCamera || obj.isLight ? null : computeBounds(obj);
+    const center = bounds && !bounds.empty ? bounds.center : obj.getWorldPosition(_r);
+    const radius = bounds && !bounds.empty ? Math.max(minRadius, bounds.radius) : fallbackRadius;
+    this.target.copy(center);
+    _v.copy(this.camera.position).sub(center);
+    if (_v.lengthSq() < 1e-4) _v.set(1, 0.7, 1);
+    _v.normalize().multiplyScalar(radius * distanceFactor);
+    this.camera.position.copy(center).add(_v);
     return this.syncFromCamera();
   }
 

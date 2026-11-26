@@ -1,7 +1,9 @@
 import { Clock, HistoryManager } from '../made3d.module.js';
+import { AnimationTimeline } from '../src/modules/animation.js';
 import { Sculptor } from '../src/modules/sculpt.js';
 import { MeshEditor } from '../src/modules/modeling.js';
 import { Rigger } from '../src/modules/rigging.js';
+import { Painter } from '../src/modules/paint.js';
 
 export const clock = new Clock();
 
@@ -19,7 +21,7 @@ export const viewport = {
   orthoHalfH: 5.5,
   ktx2Loader: null,
   dracoLoader: null,
-  appMode: 'pose', // 'pose' | 'modelar' | 'edicion' | 'esqueleto' | 'animacion'
+  appMode: 'pose', // 'pose' | 'modelar' | 'edicion' | 'pintar' | 'esqueleto' | 'animacion'
   gizmoXyzOpen: false,
   openPopover: null,
   scheduler: null,
@@ -71,24 +73,12 @@ export const recorder = {
   recordElapsed: 0,
 };
 
+export const timeline = new AnimationTimeline();
+
 export const animState = {
-  objectClips: new WeakMap(),        // Object3D -> AnimationClip[]
-  activeClipByObject: new WeakMap(), // Object3D -> AnimationClip
-  clipOwners: new WeakMap(),         // AnimationClip -> Object3D
-  allClips: [],                      // lista ordenada de clips creados en el editor
-  currentClip: null,
-  currentTime: 0,
-  defaultDuration: 3.0,
   pxPerSec: 120,
-  playing: false,
-  speed: 1,
-  loopMode: 'repeat', // 'repeat' | 'once' | 'pingpong'
-  autoKeyframe: true,
-  snap: true,
-  snapStep: 0.05,
   timelineHeight: 148,
   mobileTimelineHeight: 90,
-  copiedKeyframe: null,
 };
 
 export const sculpt = {
@@ -105,6 +95,11 @@ export const edit = {
 export const rig = {
   active: false,
   rigger: new Rigger(),
+};
+
+export const paint = {
+  active: false,
+  painter: new Painter(),
 };
 
 export const debug = {

@@ -1,5 +1,5 @@
 import { EditableMesh, edgeKey } from './EditableMesh.js';
-import { decimateMeshQEM } from './MeshUnion.js';
+import { decimateMeshQEM, computeFaceShellIds } from './MeshUnion.js';
 
 export const MAX_SUBSURF_FACES = 80000;
 export const MIN_DENSITY_VERTS = 4;
@@ -813,5 +813,226 @@ export function adjustMeshVertexDensity(editableMesh, {
     afterVerts: editableMesh.verts.length,
     originVerts,
     faceCount: editableMesh.faces.length,
+  };
+}
+
+export function getMeshDensityInfo(
+  mesh,
+  requestedPct = null,
+  { isEditable = false, baseMeshOverride = null } = {}
+) {
+  const mod = mesh ? (mesh._subsurf?.baseMesh ? mesh._subsurf : ensureEditableBase(mesh)) : null;
+  const base = baseMeshOverride || mod?.baseMesh || null;
+  const baseVerts = base ? base.verts.length : 0;
+  const originVerts = base ? (base._densityOrigin ? base._densityOrigin.verts.length : baseVerts) : 0;
+  const currentPct = originVerts > 0 ? Math.max(1, Math.round((baseVerts / originVerts) * 100)) : 100;
+  const maxPct = Math.max(400, currentPct);
+  const rawPct = requestedPct != null && Number.isFinite(Number(requestedPct))
+    ? Number(requestedPct)
+    : currentPct;
+  const targetPct = Math.round(Math.max(1, Math.min(maxPct, rawPct)));
+  const effectiveMaxVerts = Math.max(MAX_DENSITY_VERTS, originVerts);
+  const targetVerts = originVerts
+    ? Math.max(MIN_DENSITY_VERTS, Math.min(effectiveMaxVerts, Math.round(originVerts * (targetPct / 100))))
+    : 0;
+
+  const canDec = Boolean(isEditable && base && canDecreaseMeshDensity(base));
+  const canInc = Boolean(isEditable && base && canIncreaseMeshDensity(base));
+  const canScale = Boolean(
+    isEditable &&
+    base &&
+    targetVerts !== baseVerts &&
+    ((targetVerts < baseVerts && canDecreaseMeshDensity(base)) ||
+      (targetVerts > baseVerts && (targetVerts <= originVerts || canIncreaseMeshDensity(base._densityOrigin || base))))
+  );
+
+  return {
+    base,
+    baseVerts,
+    originVerts,
+    currentPct,
+    maxPct,
+    targetPct,
+    targetVerts,
+    canDec,
+    canInc,
+    canScale,
+  };
+}
+
+export function hasModelingStateChanged(beforeState, afterState, eps = 1e-4) {
+  if (!beforeState || !afterState) return false;
+  return (
+    beforeState.level !== afterState.level ||
+    Math.abs((beforeState.smoothness ?? 1) - (afterState.smoothness ?? 1)) > eps ||
+    beforeState.smoothShading !== afterState.smoothShading ||
+    beforeState.showCage !== afterState.showCage ||
+    Boolean(beforeState.alwaysShowCage) !== Boolean(afterState.alwaysShowCage)
+  );
+}
+
+export function mergeObjectMeshes(
+  candidates = [],
+  {
+    primary = null,
+    threshold = 0.015,
+    removeInteriorFaces = true,
+    stitchTJunctions = true,
+    solidity = 0.8,
+    seamSmooth = 0.5,
+    remeshOrganic = true,
+  } = {}
+) {
+  const valid = [];
+  const seen = new Set();
+  for (const o of candidates || []) {
+    if (!o || seen.has(o)) continue;
+    if (o.isMesh && o.geometry && !o.isFloor && !o.isSkinnedMesh) {
+      seen.add(o);
+      valid.push(o);
+    }
+  }
+  if (valid.length < 2) return { ok: false, reason: 'insufficient-meshes' };
+
+  const target = primary && valid.includes(primary) ? primary : valid[valid.length - 1];
+  const others = valid.filter((c) => c !== target);
+  target.updateWorldMatrix(true, false);
+  const beforeState = snapshotMeshModelingState(target);
+
+  let anyBakedSubsurf = false;
+  let anySmoothShading = false;
+  const items = valid.map((m) => {
+    m.updateWorldMatrix(true, false);
+    if (m._subsurfDirtyFromGeometry || (m.geometry && m.geometry._modifiedBySculpt && !m.geometry._isGeneratedSubsurf)) {
+      ensureEditableBase(m);
+    }
+    let editableMesh = m._subsurf?.baseMesh || null;
+    if (m._subsurf && m._subsurf.level > 0 && editableMesh) {
+      editableMesh = catmullClark(editableMesh, m._subsurf.level, MAX_SUBSURF_FACES, m._subsurf.smoothness ?? 1);
+      anyBakedSubsurf = true;
+      if (m._subsurf.smoothShading !== false) anySmoothShading = true;
+    } else if (m._subsurf?.smoothShading) {
+      anySmoothShading = true;
+    }
+    return {
+      editableMesh,
+      geometry: m.geometry,
+      matrixWorld: m.matrixWorld,
+    };
+  });
+
+  const mergeRes = EditableMesh.mergeMeshes(items, {
+    targetMatrixWorld: target.matrixWorld,
+    threshold,
+    removeInteriorFaces,
+    stitchTJunctions,
+    solidity,
+    seamSmooth,
+    remeshOrganic,
+  });
+  const merged = mergeRes && mergeRes.mesh ? mergeRes.mesh : null;
+  if (!merged || !merged.verts.length) {
+    return { ok: false, reason: 'merge-failed' };
+  }
+
+  const prevMod = target._subsurf;
+  const prevLevel = anyBakedSubsurf ? 0 : (prevMod?.level ?? 0);
+  const prevSmoothness = prevMod?.smoothness ?? 1.0;
+  const prevShading = anyBakedSubsurf
+    ? (anySmoothShading || prevMod?.smoothShading !== false)
+    : (prevMod?.smoothShading ?? Boolean(target.geometry?.attributes?.normal));
+  const prevShowCage = prevMod ? prevMod.showCage !== false : true;
+  const prevAlwaysCage = Boolean(prevMod && prevMod.alwaysShowCage);
+
+  target._subsurf = null;
+  setMeshSubsurf(target, {
+    baseMesh: merged,
+    level: prevLevel,
+    smoothness: prevSmoothness,
+    smoothShading: prevShading,
+    showCage: prevShowCage,
+    alwaysShowCage: prevAlwaysCage,
+  });
+  if (!prevLevel) {
+    const geo = merged.toGeometry({ flatShading: !prevShading });
+    if (typeof target.setGeometry === 'function') target.setGeometry(geo);
+    else target.geometry = geo;
+  }
+
+  const afterState = snapshotMeshModelingState(target);
+  return {
+    ok: true,
+    primary: target,
+    others,
+    mergedCount: valid.length,
+    beforeState,
+    afterState,
+  };
+}
+
+export function weldObjectMesh(
+  target,
+  {
+    threshold = 0.015,
+    removeInteriorFaces = true,
+    stitchTJunctions = true,
+    solidity = 0.8,
+    seamSmooth = 0.5,
+    remeshOrganic = true,
+  } = {}
+) {
+  if (!target || !target.isMesh || !target.geometry || target.isFloor || target.isSkinnedMesh) {
+    return { ok: false, reason: 'invalid-mesh' };
+  }
+
+  const beforeState = snapshotMeshModelingState(target);
+  if (target._subsurfDirtyFromGeometry || (target.geometry && target.geometry._modifiedBySculpt && !target.geometry._isGeneratedSubsurf)) {
+    ensureEditableBase(target);
+  }
+  const prevMod = target._subsurf;
+  let bakedSingleSubsurf = false;
+  let em = target._subsurf?.baseMesh ? target._subsurf.baseMesh.clone() : EditableMesh.fromGeometry(target.geometry);
+  if (!em) return { ok: false, reason: 'invalid-geometry' };
+
+  if (prevMod && prevMod.level > 0 && target._subsurf?.baseMesh && computeFaceShellIds(em).shellCount >= 2) {
+    em = catmullClark(em, prevMod.level, MAX_SUBSURF_FACES, prevMod.smoothness ?? 1);
+    bakedSingleSubsurf = true;
+  }
+  const weldRes = em.weldShells({
+    threshold,
+    removeInteriorFaces,
+    stitchTJunctions,
+    solidity,
+    seamSmooth,
+    remeshOrganic,
+  });
+  if (!weldRes.changed) {
+    return { ok: false, reason: 'no-weld-target' };
+  }
+
+  const nextLevel = bakedSingleSubsurf ? 0 : (prevMod?.level ?? 0);
+  target._subsurf = null;
+  setMeshSubsurf(target, {
+    baseMesh: em,
+    level: nextLevel,
+    smoothness: prevMod?.smoothness ?? 1.0,
+    smoothShading: prevMod?.smoothShading ?? true,
+    showCage: prevMod ? prevMod.showCage !== false : true,
+    alwaysShowCage: Boolean(prevMod && prevMod.alwaysShowCage),
+  });
+  if (!(nextLevel > 0)) {
+    const geo = em.toGeometry({ flatShading: prevMod ? !prevMod.smoothShading : false });
+    if (typeof target.setGeometry === 'function') target.setGeometry(geo);
+    else target.geometry = geo;
+  }
+
+  const afterState = snapshotMeshModelingState(target);
+  return {
+    ok: true,
+    mesh: target,
+    mergedVertices: weldRes.mergedVertices ?? 0,
+    removedInteriorFaces: weldRes.removedInteriorFaces ?? 0,
+    beforeState,
+    afterState,
   };
 }

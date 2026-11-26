@@ -62,7 +62,9 @@ export class OBJExporter {
 
   _build(input, opts = {}) {
     const onlyVisible = opts.onlyVisible !== undefined ? !!opts.onlyVisible : true;
-    const includeMtl = !!opts.includeMtl;
+    const includeRigging = opts.includeRigging !== undefined ? !!opts.includeRigging : true;
+    const includeTextures = opts.includeTextures !== undefined ? !!opts.includeTextures : true;
+    const includeMtl = !!opts.includeMtl && includeTextures;
     const mtlFilename = opts.mtlFilename || 'materials.mtl';
     const roots = Array.isArray(input) ? input : [input];
 
@@ -120,7 +122,7 @@ export class OBJExporter {
       if (!geo || !geo.attributes || !geo.attributes.position) return;
       const pos = geo.attributes.position;
       const nor = geo.attributes.normal || null;
-      const uv = geo.attributes.uv || null;
+      const uv = includeTextures ? (geo.attributes.uv || null) : null;
       const idx = geo.index ? geo.index.array : null;
 
       lines.push(`o ${sanitizeName(name, `mesh_${++objCounter}`)}`);
@@ -188,7 +190,7 @@ export class OBJExporter {
       const geo = obj.geometry;
       if (!geo || !geo.attributes || !geo.attributes.position) return;
       const pos = geo.attributes.position;
-      const uv = geo.attributes.uv || null;
+      const uv = includeTextures ? (geo.attributes.uv || null) : null;
       const nor = geo.attributes.normal || null;
       const idx = geo.index ? geo.index.array : null;
       const pCount = pos.count;
@@ -279,7 +281,7 @@ export class OBJExporter {
           worldMat.multiplyMatrices(obj.matrixWorld, instMat);
           emitGeometry(obj.geometry, worldMat, `${obj.name || 'instancia'}_${i}`, obj.material);
         }
-      } else if (obj.isSkinnedMesh && obj.skeleton && obj.skeleton.bones?.length && obj.geometry && (!obj.drawMode || obj.drawMode === 'triangles')) {
+      } else if (includeRigging && obj.isSkinnedMesh && obj.skeleton && obj.skeleton.bones?.length && obj.geometry && (!obj.drawMode || obj.drawMode === 'triangles')) {
         emitSkinnedPosed(obj);
       } else if (obj.isMesh && obj.geometry && (!obj.drawMode || obj.drawMode === 'triangles')) {
         emitGeometry(obj.geometry, obj.matrixWorld, obj.name, obj.material);

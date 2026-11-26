@@ -1,12 +1,10 @@
 import {
   Texture,
-  Vec3,
-  Quat,
+  HistoryManager,
   loadTextGeometry,
   loadVideoRecorder,
 } from '../../made3d.module.js';
 import { applyMaterialType } from '../../src/modules/stylized.js';
-import { AnimationClip } from '../../src/modules/animation.js';
 import { dom, setStatus } from '../dom.js';
 import {
   viewport,
@@ -370,16 +368,7 @@ export function syncSelectedUI() {
     }
   }
 
-  let castShadow = Boolean(o.castShadow);
-  if (!o.isMesh && o.collectMeshes) {
-    for (const part of o.collectMeshes()) {
-      if (part.castShadow) {
-        castShadow = true;
-        break;
-      }
-    }
-  }
-  if (dom.objCastShadow) dom.objCastShadow.checked = castShadow;
+  if (dom.objCastShadow) dom.objCastShadow.checked = o.hasShadowCaster();
   if (dom.objAutoSpin) dom.objAutoSpin.checked = sceneStore.spinObjects.has(o);
   syncAllRanges(dom.objectEditor || document);
 }
@@ -400,10 +389,7 @@ export function bindObjectInspector() {
     const before = snapshotLocal(o);
     action(o);
     const after = snapshotLocal(o);
-    const moved =
-      before.p.distanceTo(after.p) > 1e-5 ||
-      (before.pv && after.pv && before.pv.distanceTo(after.pv) > 1e-5);
-    if (moved) {
+    if (HistoryManager.hasTransformChanged(before, after, { includePivot: true })) {
       history.push({ type: 'transform', os: [o], before: [before], after: [after] });
     }
     syncGizmoXyzPanel();
@@ -600,17 +586,12 @@ export function bindObjectInspector() {
     if (!cam || !cam.isCamera || cameraView.activeSceneCam === cam) return;
     const beforeState = snapshotLocal(cam);
     const refCam = cameraView.activeSceneCam || viewport.camera;
-    refCam.updateWorldMatrix(true, false);
-    cam.position.copy(refCam.getWorldPosition(new Vec3()));
-    cam.quaternion.copy(refCam.getWorldQuaternion(new Quat()));
-    cam.updateMatrixWorld();
+    cam.copyWorldTransformFrom(refCam);
     const afterState = snapshotLocal(cam);
-    if (beforeState.p.distanceTo(afterState.p) > 1e-5 || Math.abs(beforeState.q.dot(afterState.q)) < 0.999999) {
+    if (HistoryManager.hasTransformChanged(beforeState, afterState, { includePivot: false })) {
       history.runGrouped('Alinear cámara', () => {
         history.push({ type: 'transform', os: [cam], before: [beforeState], after: [afterState] });
-        recordAutoKeyframeIfNeeded([cam], {
-          properties: AnimationClip.detectChangedProperties(beforeState, afterState),
-        });
+        recordAutoKeyframeIfNeeded([cam], { beforeList: [beforeState], afterList: [afterState] });
       });
     }
     syncGizmoXyzPanel();
@@ -812,9 +793,7 @@ export function bindObjectInspector() {
     forEachMat((mat) => { mat.wireframe = e.target.checked; });
   });
   dom.objCastShadow?.addEventListener('change', (e) => {
-    if (!sceneStore.selected) return;
-    sceneStore.selected.castShadow = e.target.checked;
-    sceneStore.selected.traverse((node) => { if (node.isMesh) node.castShadow = e.target.checked; });
+    sceneStore.selected?.setCastShadowRecursive(e.target.checked);
   });
   dom.objAutoSpin?.addEventListener('change', (e) => {
     if (!sceneStore.selected) return;

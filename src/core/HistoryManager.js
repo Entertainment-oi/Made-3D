@@ -5,7 +5,7 @@ export function estimateCommandBytes(cmd) {
   if (!cmd || typeof cmd !== 'object') return 256;
   let bytes = 512;
 
-  if (cmd.type === 'sculpt' && cmd.diff) {
+  if ((cmd.type === 'sculpt' || cmd.type === 'paint') && cmd.diff) {
     const { indices, before, after, beforePos, afterPos, beforeNor, afterNor } = cmd.diff;
     if (indices) bytes += indices.byteLength || indices.length * 4;
     if (before) bytes += before.byteLength || before.length * 4;
@@ -81,6 +81,7 @@ export function estimateCommandBytes(cmd) {
 export class HistoryManager extends EventEmitter {
   static _handlers = {
     Sculptor: null,
+    Painter: null,
     Skeleton: null,
     restoreMeshModelingState: null,
     syncEditableBaseFromGeometry: null,
@@ -128,6 +129,26 @@ export class HistoryManager extends EventEmitter {
       s: o.scale.clone(),
       pv: o.pivot ? o.pivot.clone() : new Vec3(),
     };
+  }
+
+  static hasTransformChanged(before, after, { includePivot = true, eps = 1e-5 } = {}) {
+    if (!before || !after) return false;
+    const bp = before.p || before.position;
+    const ap = after.p || after.position;
+    if (bp && ap && bp.distanceTo(ap) > eps) return true;
+
+    const bs = before.s || before.scale;
+    const as = after.s || after.scale;
+    if (bs && as && bs.distanceTo(as) > eps) return true;
+
+    const bq = before.q || before.quaternion;
+    const aq = after.q || after.quaternion;
+    if (bq && aq && Math.abs(bq.dot(aq)) < 1 - eps * 0.1) return true;
+
+    if (includePivot && before.pv && after.pv && before.pv.distanceTo(after.pv) > eps) {
+      return true;
+    }
+    return false;
   }
 
   static cloneTransform(st) {
@@ -540,6 +561,16 @@ export class HistoryManager extends EventEmitter {
       return;
     }
 
+    if (cmd.type === 'paint') {
+      const PainterCls = this._getHandler('Painter');
+      if (PainterCls && typeof PainterCls.applyDiff === 'function') {
+        PainterCls.applyDiff(cmd, false);
+      }
+      this._selectIfPresent(cmd.mesh);
+      this._emitStatus(cmd.label ? `${cmd.label} deshecho.` : 'Trazo de pintura deshecho.', cmd, 'undo');
+      return;
+    }
+
     if (cmd.type === 'subdivide' || cmd.type === 'geometry') {
       if (cmd.mesh) {
         if (typeof cmd.mesh.setGeometry === 'function') cmd.mesh.setGeometry(cmd.beforeGeo);
@@ -688,6 +719,16 @@ export class HistoryManager extends EventEmitter {
       this._hooks.onGeometryRestored?.(cmd.mesh, cmd, 'redo');
       this._selectIfPresent(cmd.mesh);
       this._emitStatus('Trazo de modelado rehecho.', cmd, 'redo');
+      return;
+    }
+
+    if (cmd.type === 'paint') {
+      const PainterCls = this._getHandler('Painter');
+      if (PainterCls && typeof PainterCls.applyDiff === 'function') {
+        PainterCls.applyDiff(cmd, true);
+      }
+      this._selectIfPresent(cmd.mesh);
+      this._emitStatus(cmd.label ? `${cmd.label} rehecho.` : 'Trazo de pintura rehecho.', cmd, 'redo');
       return;
     }
 

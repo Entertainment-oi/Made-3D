@@ -1,7 +1,7 @@
 import { SCULPT_SYMMETRIES, SCULPT_FALLOFFS } from '../../src/modules/sculpt.js';
 import { snapshotMeshModelingState } from '../../src/modules/modeling.js';
 import { dom, setStatus, bindDoubleTap } from '../dom.js';
-import { viewport, sceneStore, cameraView, sculpt, edit, rig } from '../store.js';
+import { viewport, sceneStore, cameraView, sculpt, edit, rig, paint } from '../store.js';
 import { history } from '../history.js';
 import { focusOnObject, setGizmoMode, setEditPivotMode, syncGizmoSpaceUI } from '../viewport.js';
 import { exitCameraView } from '../cameraView.js';
@@ -139,6 +139,8 @@ export function bindShortcutsAndModes() {
       closeEditFlyouts();
       if (dom.popSculptMore) dom.popSculptMore.hidden = true;
       dom.btnSculptMore?.classList.remove('is-active');
+      if (dom.popPaintMore) dom.popPaintMore.hidden = true;
+      dom.btnPaintMore?.classList.remove('is-active');
     });
   });
 
@@ -147,6 +149,8 @@ export function bindShortcutsAndModes() {
     closeEditFlyouts();
     if (dom.popSculptMore) dom.popSculptMore.hidden = true;
     dom.btnSculptMore?.classList.remove('is-active');
+    if (dom.popPaintMore) dom.popPaintMore.hidden = true;
+    dom.btnPaintMore?.classList.remove('is-active');
   });
 
   const readWeldSolidity = () => {
@@ -340,7 +344,7 @@ export function bindShortcutsAndModes() {
         closeAllPopovers();
         return;
       }
-      if (!sculpt.active && !rig.active && cameraView.activeSceneCam) {
+      if (!sculpt.active && !rig.active && !paint.active && cameraView.activeSceneCam) {
         e.preventDefault();
         exitCameraView();
         return;
@@ -377,7 +381,7 @@ export function bindShortcutsAndModes() {
       return;
     }
 
-    if (e.code === 'Space' && viewport.appMode === 'animacion' && !edit.active && !sculpt.active && !rig.active) {
+    if (e.code === 'Space' && viewport.appMode === 'animacion' && !edit.active && !sculpt.active && !rig.active && !paint.active) {
       e.preventDefault();
       toggleTimelinePlayback();
       return;
@@ -394,7 +398,7 @@ export function bindShortcutsAndModes() {
       setSculptMode(!sculpt.active);
       return;
     }
-    if (sculpt.active && (e.key === '[' || e.key === ']')) return;
+    if ((sculpt.active || paint.active) && (e.key === '[' || e.key === ']')) return;
 
     if (edit.active) {
       if (k === '1') { edit.editor.setSelectionMode('vertex'); syncEditUI(); return; }

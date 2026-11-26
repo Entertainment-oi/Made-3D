@@ -7,10 +7,8 @@ import {
   snapshotMeshModelingState,
   isSubsurfSupported,
   canIncrementSubsurf,
-  canIncreaseMeshDensity,
-  canDecreaseMeshDensity,
-  MIN_DENSITY_VERTS,
-  MAX_DENSITY_VERTS,
+  getMeshDensityInfo,
+  hasModelingStateChanged,
 } from '../src/modules/modeling.js';
 import { drawLightsOverlay, drawCamerasOverlay } from '../src/modules/gizmo.js';
 import { dom, setStatus } from './dom.js';
@@ -21,6 +19,7 @@ import {
   sculpt,
   edit,
   rig,
+  paint,
 } from './store.js';
 import { history } from './history.js';
 import { setSculptMode } from './sculptController.js';
@@ -337,42 +336,38 @@ export function syncEditUI() {
 export function updateEditDensityPreview(meshOverride = null, { syncInputs = false, forceSyncInputs = false } = {}) {
   const active = Boolean(edit.active);
   const targetMesh = meshOverride || (active ? edit.editor.mesh : getEditablePrimaryMesh());
-  const mod = targetMesh ? (targetMesh._subsurf?.baseMesh ? targetMesh._subsurf : ensureEditableBase(targetMesh)) : null;
-  const base = active && edit.editor.mesh === targetMesh ? edit.editor.baseMesh : (mod?.baseMesh || null);
-  const baseVerts = base ? base.verts.length : 0;
-  const originVerts = base ? (base._densityOrigin ? base._densityOrigin.verts.length : baseVerts) : 0;
-  const currentPct = originVerts > 0 ? Math.max(1, Math.round((baseVerts / originVerts) * 100)) : 100;
-  const maxPct = Math.max(400, currentPct);
+  const baseOverride = active && edit.editor.mesh === targetMesh ? edit.editor.baseMesh : null;
+  const requestedPct = syncInputs ? null : (dom.editDensityScaleNum?.value ?? dom.editDensityScale?.value ?? null);
+  const info = getMeshDensityInfo(targetMesh, requestedPct, {
+    isEditable: active,
+    baseMeshOverride: baseOverride,
+  });
 
-  if (dom.editDensityScale) dom.editDensityScale.max = String(maxPct);
-  if (dom.editDensityScaleNum) dom.editDensityScaleNum.max = String(maxPct);
+  if (dom.editDensityScale) dom.editDensityScale.max = String(info.maxPct);
+  if (dom.editDensityScaleNum) dom.editDensityScaleNum.max = String(info.maxPct);
 
   const isEditingScaleInput =
     document.activeElement === dom.editDensityScale ||
     document.activeElement === dom.editDensityScaleNum;
 
+  let effectiveInfo = info;
   if (syncInputs && (forceSyncInputs || !isEditingScaleInput)) {
-    const syncVal = String(currentPct);
+    const syncVal = String(info.currentPct);
     if (dom.editDensityScale) dom.editDensityScale.value = syncVal;
     if (dom.editDensityScaleNum) dom.editDensityScaleNum.value = syncVal;
+    effectiveInfo = getMeshDensityInfo(targetMesh, info.currentPct, {
+      isEditable: active,
+      baseMeshOverride: baseOverride,
+    });
+  } else if (syncInputs) {
+    effectiveInfo = getMeshDensityInfo(
+      targetMesh,
+      dom.editDensityScaleNum?.value ?? dom.editDensityScale?.value ?? info.currentPct,
+      { isEditable: active, baseMeshOverride: baseOverride }
+    );
   }
 
-  const rawPct = Number(dom.editDensityScaleNum?.value ?? dom.editDensityScale?.value ?? currentPct);
-  const pct = Number.isFinite(rawPct) ? Math.round(Math.max(1, Math.min(maxPct, rawPct))) : currentPct;
-  const effectiveMaxVerts = Math.max(MAX_DENSITY_VERTS, originVerts);
-  const estTarget = originVerts
-    ? Math.max(MIN_DENSITY_VERTS, Math.min(effectiveMaxVerts, Math.round(originVerts * (pct / 100))))
-    : 0;
-
-  const canDec = Boolean(active && base && canDecreaseMeshDensity(base));
-  const canInc = Boolean(active && base && canIncreaseMeshDensity(base));
-  const canScale = Boolean(
-    active &&
-    base &&
-    estTarget !== baseVerts &&
-    ((estTarget < baseVerts && canDecreaseMeshDensity(base)) ||
-      (estTarget > baseVerts && (estTarget <= originVerts || canIncreaseMeshDensity(base._densityOrigin || base))))
-  );
+  const { base, baseVerts, originVerts, targetVerts, canDec, canInc, canScale } = effectiveInfo;
 
   if (dom.editDensityBadge) {
     dom.editDensityBadge.textContent =
@@ -381,9 +376,9 @@ export function updateEditDensityPreview(meshOverride = null, { syncInputs = fal
         : `${baseVerts} V`;
   }
   if (dom.editDensityVal) {
-    dom.editDensityVal.textContent = !baseVerts || estTarget === baseVerts
+    dom.editDensityVal.textContent = !baseVerts || targetVerts === baseVerts
       ? `${baseVerts} V`
-      : `${baseVerts} → ${estTarget === originVerts ? originVerts : `~${estTarget}`} V`;
+      : `${baseVerts} → ${targetVerts === originVerts ? originVerts : `~${targetVerts}`} V`;
   }
   if (dom.btnEditDensityDec) dom.btnEditDensityDec.disabled = !canDec;
   if (dom.btnEditDensityInc) dom.btnEditDensityInc.disabled = !canInc;
@@ -416,9 +411,11 @@ export function runEditDensityStep(delta) {
 
 export function runEditDensityScale(rawPct) {
   if (!edit.active && !setEditMode(true)) return;
-  const parsed = Number(rawPct);
-  const maxPct = Math.max(400, Number(dom.editDensityScale?.max) || 400);
-  const pct = Number.isFinite(parsed) ? Math.round(Math.max(1, Math.min(maxPct, parsed))) : 100;
+  const info = getMeshDensityInfo(edit.editor.mesh, rawPct, {
+    isEditable: true,
+    baseMeshOverride: edit.editor.baseMesh,
+  });
+  const pct = info.targetPct;
   const res = edit.editor.adjustVertexDensity({ mode: 'scale', factor: pct / 100, reference: 'origin' });
   if (!res.changed) {
     syncDensityScaleInputsToCurrent();
@@ -438,6 +435,7 @@ export function setEditMode(enabled) {
   if (next) {
     if (cameraView.activeSceneCam) exitCameraView();
     if (sculpt.active) setSculptMode(false);
+    if (paint.active) history._hooks.setPaintMode?.(false);
     if (rig.active) history._hooks.setRigMode?.(false);
     if (viewport.gizmo?.drag) {
       viewport.gizmo.cancel();
@@ -447,7 +445,7 @@ export function setEditMode(enabled) {
     const candidate = getEditablePrimaryMesh();
     if (!candidate) {
       setStatus('Selecciona o crea una malla editable primero.', true);
-      syncAppModeUI(sculpt.active ? 'modelar' : rig.active ? 'esqueleto' : viewport.appMode === 'animacion' ? 'animacion' : 'pose');
+      syncAppModeUI(sculpt.active ? 'modelar' : paint.active ? 'pintar' : rig.active ? 'esqueleto' : viewport.appMode === 'animacion' ? 'animacion' : 'pose');
       return false;
     }
 
@@ -479,8 +477,8 @@ export function setEditMode(enabled) {
   }
   if (viewport.gizmo) {
     const rigHidingGizmo = rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint);
-    viewport.gizmo.enabled = !next && !sculpt.active && !rigHidingGizmo;
-    viewport.gizmo.visible = !next && !sculpt.active && !rigHidingGizmo && !(cameraView.activeSceneCam && sceneStore.selected === cameraView.activeSceneCam);
+    viewport.gizmo.enabled = !next && !sculpt.active && !paint.active && !rigHidingGizmo;
+    viewport.gizmo.visible = !next && !sculpt.active && !paint.active && !rigHidingGizmo && !(cameraView.activeSceneCam && sceneStore.selected === cameraView.activeSceneCam);
     if (!next) {
       document.querySelectorAll('.seg-btn[data-mode]').forEach((btn) => {
         btn.classList.toggle('is-active', btn.dataset.mode === viewport.gizmo.mode);
@@ -492,6 +490,8 @@ export function setEditMode(enabled) {
     ? 'edicion'
     : sculpt.active
     ? 'modelar'
+    : paint.active
+    ? 'pintar'
     : rig.active
     ? 'esqueleto'
     : !wasActive && viewport.appMode === 'animacion'
@@ -541,15 +541,7 @@ export function setSelectedSubsurfOptions(opts, { commitHistory = true, beforeSt
 
   if (commitHistory) {
     const afterState = snapshotMeshModelingState(target);
-    if (
-      beforeState &&
-      afterState &&
-      (beforeState.level !== afterState.level ||
-        Math.abs((beforeState.smoothness ?? 1) - (afterState.smoothness ?? 1)) > 1e-4 ||
-        beforeState.smoothShading !== afterState.smoothShading ||
-        beforeState.showCage !== afterState.showCage ||
-        Boolean(beforeState.alwaysShowCage) !== Boolean(afterState.alwaysShowCage))
-    ) {
+    if (hasModelingStateChanged(beforeState, afterState)) {
       history.push({
         type: 'meshEdit',
         mesh: target,

@@ -7,6 +7,7 @@ import {
   sculpt,
   edit,
   rig,
+  paint,
   isInScene,
   findOwningUserRoot,
 } from './store.js';
@@ -153,7 +154,7 @@ export function syncRigUI() {
 
   if (ed.activeTipBone && !isInScene(ed.activeTipBone)) {
     ed.activeTipBone = null;
-    ed.activeTipAttach = 'tail';
+    ed.activeTipAttach = 'head';
   }
   if (ed.selectedBone && !isInScene(ed.selectedBone)) {
     ed.selectedBone = null;
@@ -198,7 +199,7 @@ export function syncRigUI() {
   }
   if (viewport.gizmo) {
     const showGizmo = !active
-      ? !sculpt.active && !edit.active && !(cameraView.activeSceneCam && sceneStore.selected === cameraView.activeSceneCam)
+      ? !sculpt.active && !edit.active && !paint.active && !(cameraView.activeSceneCam && sceneStore.selected === cameraView.activeSceneCam)
       : !interactiveOverlay;
     viewport.gizmo.enabled = showGizmo;
     viewport.gizmo.visible = showGizmo;
@@ -213,6 +214,7 @@ export function setRigMode(enabled) {
   if (next && cameraView.activeSceneCam) exitCameraView();
   if (next && edit.active) setEditMode(false);
   if (next && sculpt.active) setSculptMode(false);
+  if (next && paint.active) history._hooks.setPaintMode?.(false);
   if (viewport.gizmo?.drag) {
     viewport.gizmo.cancel();
     if (dom.gizmoReadout) dom.gizmoReadout.hidden = true;
@@ -242,6 +244,8 @@ export function setRigMode(enabled) {
     ? 'edicion'
     : sculpt.active
     ? 'modelar'
+    : paint.active
+    ? 'pintar'
     : !wasActive && viewport.appMode === 'animacion'
     ? 'animacion'
     : 'pose';
@@ -282,7 +286,7 @@ export function bindRigControls() {
 
   dom.btnRigBone?.addEventListener('click', () => {
     const next = ed.setBoneTool(!ed.boneTool, viewport.scene);
-    setStatus(next ? 'Hueso activo: toca sobre la malla o una punta para crear huesos.' : 'Hueso desactivado.');
+    setStatus(next ? 'Hueso activo: toca la malla para colocar puntos o toca un hueso para conectar.' : 'Hueso desactivado.');
     syncRigUI();
   });
 

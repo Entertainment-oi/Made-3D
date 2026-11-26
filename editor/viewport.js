@@ -12,9 +12,7 @@ import {
   DirectionalLight,
   PointLight,
   Picker,
-  Vec3,
   Color,
-  computeBounds,
 } from '../made3d.module.js';
 import { GridHelper } from '../src/modules/helpers.js';
 import { GizmoMade3d, GizmoClassic } from '../src/modules/gizmo.js';
@@ -34,6 +32,7 @@ import {
   sculpt,
   edit,
   rig,
+  paint,
   cloneLocalState,
 } from './store.js';
 import { history } from './history.js';
@@ -109,12 +108,13 @@ export function selectObject(obj) {
     const rigHidingGizmo = rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint);
     viewport.gizmo.setMultiSelectMode?.(false);
     viewport.gizmo.attach(obj || null);
-    viewport.gizmo.visible = !sculpt.active && !edit.active && !rigHidingGizmo && !(cameraView.activeSceneCam && obj === cameraView.activeSceneCam);
+    viewport.gizmo.visible = !sculpt.active && !edit.active && !paint.active && !rigHidingGizmo && !(cameraView.activeSceneCam && obj === cameraView.activeSceneCam);
   }
   syncCameraHelperSelection();
   syncSelectedUI();
   syncSculptUI();
   syncEditUI();
+  history._hooks.syncPaintUI?.();
   history._hooks.syncRigUI?.();
   syncGizmoXyzPanel();
   syncViewCameraQuickBtn();
@@ -136,16 +136,7 @@ export function focusOnObject(obj) {
   if (cameraView.activeSceneCam) {
     exitCameraView({ restoreSnapshot: false });
   }
-  obj.updateWorldMatrix(true, true);
-  const bounds = obj.isCamera || obj.isLight ? null : computeBounds(obj);
-  const center = bounds && !bounds.empty ? bounds.center : obj.getWorldPosition(new Vec3());
-  const radius = bounds && !bounds.empty ? Math.max(0.8, bounds.radius) : 1.4;
-  viewport.controls.target.copy(center);
-  const dir = new Vec3().copy(viewport.camera.position).sub(center);
-  if (dir.lengthSq() < 1e-4) dir.set(1, 0.7, 1);
-  dir.normalize().multiplyScalar(radius * 2.8);
-  viewport.camera.position.copy(center).add(dir);
-  viewport.controls.syncFromCamera();
+  viewport.controls?.focusOnObject(obj);
 }
 
 export function syncEditPivotUI() {
@@ -212,7 +203,7 @@ export function buildGizmo(style) {
     sceneStore.selectedList = list;
     sceneStore.selected = e.object || (list.length ? list[list.length - 1] : null);
     const rigHidingGizmo = rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint);
-    if (rigHidingGizmo || sculpt.active || edit.active) {
+    if (rigHidingGizmo || sculpt.active || edit.active || paint.active) {
       gizmo.visible = false;
     } else if (cameraView.activeSceneCam) {
       gizmo.visible = sceneStore.selected !== cameraView.activeSceneCam;
@@ -222,6 +213,7 @@ export function buildGizmo(style) {
     syncCameraHelperSelection();
     syncSelectedUI();
     syncEditUI();
+    history._hooks.syncPaintUI?.();
     history._hooks.syncRigUI?.();
     syncGizmoXyzPanel();
     syncViewCameraQuickBtn();
@@ -290,7 +282,7 @@ export function buildGizmo(style) {
     gizmo.visible = sceneStore.selected !== cameraView.activeSceneCam;
     gizmo.deselectOnEscape = false;
   }
-  if (sculpt.active || edit.active || (rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint))) {
+  if (sculpt.active || edit.active || paint.active || (rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint))) {
     gizmo.enabled = false;
     gizmo.visible = false;
   }
@@ -311,6 +303,7 @@ export function setGizmoStyle(style) {
 
 export function setGizmoMode(mode) {
   if (sculpt.active) setSculptMode(false);
+  if (paint.active) history._hooks.setPaintMode?.(false);
   if (rig.active && (rig.rigger.boneTool || rig.rigger.weightPaint)) {
     rig.rigger.boneTool = false;
     rig.rigger.weightPaint = false;
@@ -341,6 +334,7 @@ export function setGizmoMode(mode) {
 
 export function setEditPivotMode(on) {
   if (sculpt.active && on) setSculptMode(false);
+  if (paint.active && on) history._hooks.setPaintMode?.(false);
   if (edit.active && on) setEditMode(false);
   if (rig.active && on) history._hooks.setRigMode?.(false);
   const next = Boolean(on);

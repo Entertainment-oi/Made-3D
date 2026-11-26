@@ -109,6 +109,7 @@
           <canvas id="viewport" tabindex="0"></canvas>
           <canvas id="edit-overlay" class="edit-overlay"></canvas>
           <canvas id="sculpt-overlay" class="sculpt-overlay" hidden></canvas>
+          <canvas id="paint-overlay" class="paint-overlay" hidden></canvas>
           <canvas id="rig-overlay" class="rig-overlay" hidden></canvas>
 
           <!-- Indicador discreto de estado / grabación -->
@@ -187,6 +188,19 @@
           <!-- Botón de texto plano "ver cámara" (Pose y Animación) -->
           <button type="button" id="btn-view-camera-quick" class="view-camera-text-btn" hidden>
             ver cámara
+          </button>
+
+          <!-- ========================== MODO PINTAR: VISTA PREVIA UV SUPERIOR IZQUIERDA ========================== -->
+          <button
+            type="button"
+            id="paint-uv-card"
+            class="paint-uv-card"
+            title="Abrir textura y mapeado UV en grande"
+            aria-label="Ver textura y mapeado UV"
+            hidden
+          >
+            <canvas id="paint-uv-mini-canvas" class="paint-uv-mini-canvas" width="128" height="128"></canvas>
+            <span class="paint-uv-card-badge">UV</span>
           </button>
 
           <!-- ========================== MODO EDICIÓN: BARRA SUPERIOR IZQUIERDA (3 CUBOS) ========================== -->
@@ -515,6 +529,136 @@
                   <button type="button" id="btn-sculpt-new-clay" class="mini-btn">+ Esfera</button>
                 </div>
                 <div id="sculpt-mesh-info" class="flyout-info"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ========================== MODO PINTAR: BARRA DE PINCELES IZQUIERDA ========================== -->
+          <div id="paint-brush-bar" class="float-bar float-bar-left" role="toolbar" aria-label="Herramientas de pintura" hidden>
+            <button type="button" class="brush-btn is-active" data-paint-tool="brush" title="Pincel de pintura suave">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18.37 2.63L14 7l-1.59-1.59a2 2 0 0 0-2.82 0L8 7l9 9 1.59-1.59a2 2 0 0 0 0-2.82L17 10l4.37-4.37a2.12 2.12 0 1 0-3-3Z" />
+                <path d="M9 8c-2 3-4 3.5-7 4l8 10c2-1 6-5 6-7" />
+              </svg>
+              <span>Pincel</span>
+            </button>
+            <button type="button" class="brush-btn" data-paint-tool="airbrush" title="Aerógrafo difuso">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 12h7l4-3v6l-4-3" />
+                <circle cx="17" cy="8" r="1" fill="currentColor" stroke="none" />
+                <circle cx="20" cy="10" r="1.1" fill="currentColor" stroke="none" />
+                <circle cx="18" cy="12" r="1.2" fill="currentColor" stroke="none" />
+                <circle cx="20.5" cy="14.5" r="1" fill="currentColor" stroke="none" />
+                <circle cx="17" cy="16" r="1" fill="currentColor" stroke="none" />
+              </svg>
+              <span>Spray</span>
+            </button>
+            <button type="button" class="brush-btn" data-paint-tool="blur" title="Difuminar colores existentes">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 2.5C12 2.5 6 9.5 6 14a6 6 0 0 0 12 0c0-4.5-6-11.5-6-11.5Z" />
+                <path d="M9.5 14.5a2.5 2.5 0 0 0 2.5 2.5" />
+              </svg>
+              <span>Difuminar</span>
+            </button>
+            <button type="button" class="brush-btn" data-paint-tool="smudge" title="Arrastrar y mezclar color">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 17c3.5-5 6.5-5 8.5-2.5S17 17 20 9" />
+                <path d="M16 9h4v4" />
+              </svg>
+              <span>Mezclar</span>
+            </button>
+            <button type="button" class="brush-btn" data-paint-tool="fill" title="Rellenar isla o zona de color">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m19 11-8-8-8.6 8.6a2 2 0 0 0 0 2.8l5.2 5.2c.8.8 2 .8 2.8 0L19 11Z" />
+                <path d="m5 2 5 5" />
+                <path d="M2 13h15" />
+                <path d="M21 17.5a2 2 0 1 1-4 0c0-1.2 2-3.5 2-3.5s2 2.3 2 3.5Z" />
+              </svg>
+              <span>Relleno</span>
+            </button>
+            <button type="button" class="brush-btn" data-paint-tool="eraser" title="Borrar pintura al color base">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" />
+                <path d="M22 21H7" />
+                <path d="m5 11 9 9" />
+              </svg>
+              <span>Borrador</span>
+            </button>
+            <button type="button" class="brush-btn" data-paint-tool="picker" title="Capturar color del modelo">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="m2 22 1-1h3l9-9" />
+                <path d="M3 21v-3l9-9" />
+                <path d="m15 6 3.4-3.4a2.1 2.1 0 1 1 3 3L18 9l.4.4a2.1 2.1 0 1 1-3 3l-3.8-3.8a2.1 2.1 0 1 1 3-3L15 6Z" />
+              </svg>
+              <span>Gotero</span>
+            </button>
+          </div>
+
+          <!-- ========================== MODO PINTAR: BARRA VERTICAL DERECHA (COLOR / RADIO / OPACIDAD + ⋯) ========================== -->
+          <div id="paint-params-bar" class="float-bar float-bar-right" aria-label="Ajustes de pintura" hidden>
+            <label class="paint-color-trigger" title="Elegir color de pintura">
+              <span id="paint-color-preview" class="paint-color-preview"></span>
+              <input type="color" id="paint-color" class="paint-color-native" value="#ef4444" aria-label="Color de pintura" />
+            </label>
+
+            <div class="vslider-group">
+              <span class="vslider-title">Radio</span>
+              <span id="paint-radius-val" class="vslider-num">0.32</span>
+              <div class="vslider-wrap">
+                <input type="range" id="paint-radius" class="v-range" min="0.05" max="2.5" step="0.01" value="0.32" aria-label="Radio del pincel de pintura" />
+              </div>
+            </div>
+
+            <div class="vslider-group">
+              <span class="vslider-title">Opacidad</span>
+              <span id="paint-strength-val" class="vslider-num">0.85</span>
+              <div class="vslider-wrap">
+                <input type="range" id="paint-strength" class="v-range" min="0.05" max="1" step="0.01" value="0.85" aria-label="Opacidad del pincel" />
+              </div>
+            </div>
+
+            <div class="tool-slot tool-slot-right">
+              <button type="button" id="btn-paint-more" class="tool-cube-btn" title="Opciones de pintura">
+                <svg viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="5" cy="12" r="2" />
+                  <circle cx="12" cy="12" r="2" />
+                  <circle cx="19" cy="12" r="2" />
+                </svg>
+              </button>
+              <div id="pop-paint-more" class="side-flyout flyout-right flyout-wide" hidden>
+                <div class="flyout-header">
+                  <span class="flyout-title">Opciones de pintura</span>
+                  <button type="button" class="flyout-close-btn" data-close-flyout aria-label="Cerrar">×</button>
+                </div>
+                <div id="paint-palette-grid" class="paint-palette-grid" role="group" aria-label="Paleta rápida"></div>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label">Hex</span>
+                  <input type="text" id="paint-hex-input" class="paint-hex-input" value="#EF4444" maxlength="7" spellcheck="false" aria-label="Código hexadecimal de color" />
+                </div>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label">Dureza</span>
+                  <input type="range" id="paint-hardness" min="0" max="0.98" step="0.02" value="0.45" aria-label="Dureza del pincel" />
+                  <span id="paint-hardness-val" class="paint-num-badge">0.45</span>
+                </div>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label">Simetría</span>
+                  <select id="paint-symmetry" class="input-select-compact"></select>
+                </div>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label">Modo</span>
+                  <select id="paint-mode" class="input-select-compact"></select>
+                </div>
+                <div class="flyout-slider-row">
+                  <span class="flyout-label">Resolución</span>
+                  <select id="paint-resolution" class="input-select-compact"></select>
+                </div>
+                <label class="check-row-compact"><input type="checkbox" id="paint-front-only" checked /> Solo caras frontales</label>
+                <div class="flyout-divider"></div>
+                <div class="flyout-grid2">
+                  <button type="button" id="btn-paint-fill-all" class="mini-accent-btn">Rellenar</button>
+                  <button type="button" id="btn-paint-clear" class="mini-btn is-danger">Limpiar</button>
+                </div>
+                <div id="paint-mesh-info" class="flyout-info"></div>
               </div>
             </div>
           </div>
@@ -1191,6 +1335,10 @@
                 <span>Edición</span>
                 <small>Topología</small>
               </button>
+              <button type="button" class="menu-item-btn mode-option-btn" data-app-mode="pintar">
+                <span>Pintar</span>
+                <small>Textura y color 3D</small>
+              </button>
               <button type="button" class="menu-item-btn mode-option-btn" data-app-mode="esqueleto">
                 <span>Esqueleto</span>
                 <small>Rigging y pesos</small>
@@ -1337,22 +1485,79 @@
             </div>
           </div>
 
-          <!-- Modal de Selección de Animaciones al Exportar -->
-          <div id="export-anim-modal" class="studio-modal" hidden>
-            <div class="studio-modal-card export-anim-card">
+          <!-- Modal de Textura y Mapeado UV en Grande -->
+          <div id="paint-uv-modal" class="studio-modal" role="dialog" aria-modal="true" aria-labelledby="paint-uv-modal-title" hidden>
+            <div class="studio-modal-card paint-uv-modal-card">
               <div class="studio-modal-head">
-                <h2 class="group-title">Animaciones detectadas</h2>
-                <button type="button" id="btn-export-anim-x" class="xyz-panel-close" aria-label="Cancelar exportación">×</button>
+                <h2 id="paint-uv-modal-title" class="group-title">Textura y mapeado UV</h2>
+                <button type="button" id="btn-paint-uv-x" class="xyz-panel-close" aria-label="Cerrar vista UV">×</button>
               </div>
-              <p id="export-anim-desc" class="export-anim-desc">Selecciona las animaciones que quieres incluir al exportar:</p>
-              <div class="export-anim-quick">
-                <button type="button" id="btn-export-anim-all" class="mini-btn">Todas</button>
-                <button type="button" id="btn-export-anim-none" class="mini-btn">Ninguna</button>
+              <div class="paint-uv-large-wrap">
+                <canvas id="paint-uv-large-canvas" class="paint-uv-large-canvas" width="512" height="512"></canvas>
               </div>
-              <div id="export-anim-list" class="export-anim-list"></div>
+              <div class="paint-uv-modal-toolbar">
+                <label class="check-row-compact"><input type="checkbox" id="paint-uv-wireframe" checked /> Mostrar malla UV</label>
+                <span id="paint-uv-meta" class="preview-meta"></span>
+              </div>
               <div class="studio-modal-foot">
-                <button type="button" id="btn-export-anim-cancel" class="action-btn">Cancelar</button>
-                <button type="button" id="btn-export-anim-confirm" class="action-btn is-accent">Exportar</button>
+                <button type="button" id="btn-paint-uv-close" class="action-btn">Cerrar</button>
+                <button type="button" id="btn-paint-uv-download" class="action-btn is-accent">Descargar PNG</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Modal de Opciones de Exportación -->
+          <div id="export-options-modal" class="studio-modal" role="dialog" aria-modal="true" aria-labelledby="export-opt-title" hidden>
+            <div class="studio-modal-card export-options-card">
+              <div class="studio-modal-head">
+                <h2 id="export-opt-title" class="group-title">Opciones de exportación</h2>
+                <button type="button" id="btn-export-opt-x" class="xyz-panel-close" aria-label="Cancelar exportación">×</button>
+              </div>
+
+              <div class="export-opt-section">
+                <div class="field-row">
+                  <label class="field-label" for="export-opt-scope">Alcance</label>
+                  <select id="export-opt-scope" class="input-select">
+                    <option value="scene">Toda la escena</option>
+                    <option value="selected">Solo un objeto específico</option>
+                  </select>
+                </div>
+                <div id="export-opt-target-row" class="field-row" hidden>
+                  <label class="field-label" for="export-opt-target">Objeto a exportar</label>
+                  <select id="export-opt-target" class="input-select"></select>
+                </div>
+              </div>
+
+              <div class="export-opt-section">
+                <div class="export-opt-subtitle">Contenido a incluir</div>
+                <label id="row-export-opt-rigging" class="check-row">
+                  <input type="checkbox" id="export-opt-rigging" checked />
+                  <span>Rigging y esqueleto</span>
+                </label>
+                <label id="row-export-opt-textures" class="check-row">
+                  <input type="checkbox" id="export-opt-textures" checked />
+                  <span>Texturas, pintura y UVs</span>
+                </label>
+                <label id="row-export-opt-animations" class="check-row">
+                  <input type="checkbox" id="export-opt-animations" checked />
+                  <span>Animaciones</span>
+                </label>
+              </div>
+
+              <div id="export-opt-anim-wrap" class="export-opt-anim-wrap" hidden>
+                <div class="export-opt-anim-head">
+                  <span id="export-anim-desc" class="export-anim-desc">Clips detectados</span>
+                  <div class="export-anim-quick">
+                    <button type="button" id="btn-export-opt-anim-all" class="mini-btn">Todas</button>
+                    <button type="button" id="btn-export-opt-anim-none" class="mini-btn">Ninguna</button>
+                  </div>
+                </div>
+                <div id="export-opt-anim-list" class="export-anim-list"></div>
+              </div>
+
+              <div class="studio-modal-foot">
+                <button type="button" id="btn-export-opt-cancel" class="action-btn">Cancelar</button>
+                <button type="button" id="btn-export-opt-confirm" class="action-btn is-accent">Exportar</button>
               </div>
             </div>
           </div>

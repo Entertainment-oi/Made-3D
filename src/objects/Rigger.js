@@ -5,6 +5,7 @@ import { Raycaster } from '../core/Raycaster.js';
 import { pointSegment2D } from '../core/raycast.js';
 import { clientToLocalPoint } from '../core/viewportCoords.js';
 import { BufferAttribute } from '../geometry/BufferAttribute.js';
+import { SphereGeometry } from '../geometry/primitives.js';
 import { StandardMaterial } from '../materials/BuiltinMaterials.js';
 import { prepareSculptGeometry } from '../sculpt/Sculptor.js';
 import { Bone } from './Bone.js';
@@ -19,6 +20,8 @@ const _vC = new Vec3();
 const _vD = new Vec3();
 const _upY = new Vec3(0, 1, 0);
 const _invMat = new Mat4();
+const _qA = new Quat();
+const _qB = new Quat();
 
 function clamp(v, a, b) {
   return v < a ? a : v > b ? b : v;
@@ -144,23 +147,37 @@ export function computeAutoSkinWeights(geo, meshWorldMatrix, bones, options = {}
     const e = b.matrixWorld.elements;
     const ax = e[12], ay = e[13], az = e[14];
     const hasChild = Rigger.hasChildBone(b);
-    let bx = ax, by = ay, bz = az;
+    const subSegs = [];
+    let maxLen = 0;
 
     if (b.length > 1e-5) {
       const tail = Rigger.getBoneTipWorld(b, 'tail', _vA);
-      bx = tail.x; by = tail.y; bz = tail.z;
+      const len = Math.hypot(tail.x - ax, tail.y - ay, tail.z - az);
+      subSegs.push({ ax, ay, az, bx: tail.x, by: tail.y, bz: tail.z, len });
+      if (len > maxLen) maxLen = len;
     } else if (hasChild) {
-      const firstChild = b.children.find((c) => c.isBone);
-      if (firstChild) {
-        firstChild.updateWorldMatrix(true, false);
-        const ce = firstChild.matrixWorld.elements;
-        bx = ce[12]; by = ce[13]; bz = ce[14];
+      for (const c of b.children) {
+        if (!c || !c.isBone || c.visible === false) continue;
+        c.updateWorldMatrix(true, false);
+        const ce = c.matrixWorld.elements;
+        const cIsLeaf = !Rigger.hasChildBone(c) && c.length <= 1e-5;
+        const tEnd = cIsLeaf ? 0.58 : 0.9;
+        const bx = ax + (ce[12] - ax) * tEnd;
+        const by = ay + (ce[13] - ay) * tEnd;
+        const bz = az + (ce[14] - az) * tEnd;
+        const len = Math.hypot(bx - ax, by - ay, bz - az);
+        subSegs.push({ ax, ay, az, bx, by, bz, len });
+        if (len > maxLen) maxLen = len;
       }
+      if (!subSegs.length) {
+        subSegs.push({ ax, ay, az, bx: ax, by: ay, bz: az, len: 0 });
+      }
+    } else {
+      subSegs.push({ ax, ay, az, bx: ax, by: ay, bz: az, len: 0 });
     }
 
-    const len = Math.hypot(bx - ax, by - ay, bz - az);
-    const skip = len <= 1e-5 && hasChild && bones.length > 1;
-    segs.push({ ax, ay, az, bx, by, bz, len, skip });
+    const skip = maxLen <= 1e-5 && hasChild && bones.length > 1;
+    segs.push({ subSegs, len: maxLen, skip });
   }
 
   const activeSegs = [];
@@ -171,6 +188,7 @@ export function computeAutoSkinWeights(geo, meshWorldMatrix, bones, options = {}
 
   const we = meshWorldMatrix.elements;
   const d2Arr = new Float64Array(segs.length);
+  const segLens = new Float64Array(segs.length);
   const topIdx = new Int32Array(4);
   const topScore = new Float32Array(4);
 
@@ -185,16 +203,26 @@ export function computeAutoSkinWeights(geo, meshWorldMatrix, bones, options = {}
     let minD2 = Infinity;
     for (let k = 0; k < activeSegs.length; k++) {
       const bi = activeSegs[k];
-      const s = segs[bi];
-      const d2 = pointSegmentDistanceSq3D(wx, wy, wz, s.ax, s.ay, s.az, s.bx, s.by, s.bz);
-      d2Arr[bi] = d2;
-      if (d2 < minD2) {
-        minD2 = d2;
+      const subSegs = segs[bi].subSegs;
+      let bestSubD2 = Infinity;
+      let bestSubLen = segs[bi].len;
+      for (let si = 0; si < subSegs.length; si++) {
+        const s = subSegs[si];
+        const d2 = pointSegmentDistanceSq3D(wx, wy, wz, s.ax, s.ay, s.az, s.bx, s.by, s.bz);
+        if (d2 < bestSubD2) {
+          bestSubD2 = d2;
+          bestSubLen = s.len;
+        }
+      }
+      d2Arr[bi] = bestSubD2;
+      segLens[bi] = bestSubLen;
+      if (bestSubD2 < minD2) {
+        minD2 = bestSubD2;
         minIdx = bi;
       }
     }
 
-    const minLen = segs[minIdx].len;
+    const minLen = segLens[minIdx];
     topIdx.fill(0);
     topScore.fill(0);
 
@@ -203,7 +231,7 @@ export function computeAutoSkinWeights(geo, meshWorldMatrix, bones, options = {}
       const diff = Math.max(0, d2Arr[bi] - minD2);
       let score = 1;
       if (bi !== minIdx) {
-        const sLen = segs[bi].len;
+        const sLen = segLens[bi];
         const baseLen = minLen > 1e-4 && sLen > 1e-4
           ? Math.min(minLen, sLen)
           : Math.max(minLen, sLen, 0.12);
@@ -664,7 +692,7 @@ export class Rigger {
     this.brushStrength = opts.brushStrength ?? 0.42;
 
     this.activeTipBone = null;
-    this.activeTipAttach = 'tail';
+    this.activeTipAttach = 'head';
     this.selectedBone = null;
     this.hover = null;
     this.isPainting = false;
@@ -846,6 +874,29 @@ export class Rigger {
     return bone;
   }
 
+  static setBoneWorldPosition(bone, worldPt, keepWorldRotation = false) {
+    if (!bone || !worldPt) return bone;
+    const parent = bone.parent;
+    if (parent) parent.updateWorldMatrix(true, false);
+    if (keepWorldRotation) {
+      bone.updateWorldMatrix(true, false);
+      bone.getWorldQuaternion(_qB);
+    }
+    const invParent = parent ? _invMat.copyInverse(parent.matrixWorld) : _invMat.identity();
+    bone.position.copy(worldPt).applyMatrix4(invParent);
+    if (keepWorldRotation) {
+      if (parent) {
+        parent.getWorldQuaternion(_qA);
+        _qA.invert();
+        bone.quaternion.copy(_qB).premultiply(_qA);
+      } else {
+        bone.quaternion.copy(_qB);
+      }
+    }
+    bone.updateMatrixWorld(true, true);
+    return bone;
+  }
+
   static getBoneTipWorld(bone, attach = 'tail', out = new Vec3()) {
     if (!bone) return out.set(0, 0, 0);
     bone.updateWorldMatrix(true, false);
@@ -939,16 +990,16 @@ export class Rigger {
       projectPoint(headPos, camera, W, H, p);
       const parentIsBone = Boolean(b.parent && b.parent.isBone);
       const isLeaf = !Rigger.hasChildBone(b);
-      const isZeroLeaf = isLeaf && b.length <= 1e-5;
       if (p.w > 0.01) {
         endpoints.push({
-          bone: parentIsBone ? b.parent : b,
-          attach: parentIsBone || isZeroLeaf ? 'tail' : 'head',
+          bone: b,
+          attach: 'head',
           displayBone: b,
           x: p.x,
           y: p.y,
-          isTip: parentIsBone || isZeroLeaf,
+          isTip: isLeaf,
           isRootHead: !parentIsBone,
+          isTail: false,
         });
       }
       if (isLeaf && b.length > 1e-5) {
@@ -963,6 +1014,7 @@ export class Rigger {
             y: p.y,
             isTip: true,
             isRootHead: false,
+            isTail: true,
           });
         }
       }
@@ -1256,16 +1308,128 @@ export class Rigger {
       return { action: 'noMesh', isWarn: true, message: 'Agrega o selecciona una malla primero para crear huesos.' };
     }
 
+    const activeTip = this.activeTipBone && this._isNodeAlive(this.activeTipBone) ? this.activeTipBone : null;
+
     const ep = Rigger.pickEndpoint2D(localX, localY, W, H, camera, context.allBones, { touch });
     if (ep) {
+      if (activeTip && ep.bone === activeTip && (!ep.isTail || this.activeTipAttach === 'tail')) {
+        this.activeTipBone = null;
+        this.activeTipAttach = 'head';
+        return {
+          action: 'deselectTip',
+          message: 'Hueso deseleccionado. Toca la malla para crear un hueso independiente o toca otro hueso.',
+        };
+      }
+
+      // Conectar dos huesos si hay un hueso activo y el tocado es un hueso raíz independiente sin ciclo
+      if (
+        activeTip &&
+        ep.bone !== activeTip &&
+        !(ep.bone.parent && ep.bone.parent.isBone) &&
+        !(activeTip._isAncestor && activeTip._isAncestor(ep.bone))
+      ) {
+        const connectSingle = (parentBone, targetBone) => {
+          targetBone.updateWorldMatrix(true, false);
+          const worldPos = targetBone.getWorldPosition(new Vec3());
+          const beforeParent = targetBone.parent;
+          const beforeIndex = beforeParent ? beforeParent.children.indexOf(targetBone) : -1;
+          const beforePos = targetBone.position.clone();
+          const beforeQuat = targetBone.quaternion.clone();
+          const beforeScale = targetBone.scale.clone();
+
+          parentBone.add(targetBone);
+          Rigger.setBoneWorldPosition(targetBone, worldPos, true);
+
+          return {
+            bone: targetBone,
+            beforeParent,
+            beforeIndex,
+            beforePos,
+            beforeQuat,
+            beforeScale,
+            afterParent: parentBone,
+            afterIndex: parentBone.children.indexOf(targetBone),
+            afterPos: targetBone.position.clone(),
+            afterQuat: targetBone.quaternion.clone(),
+            afterScale: targetBone.scale.clone(),
+          };
+        };
+
+        const recs = [connectSingle(activeTip, ep.bone)];
+
+        if (this.mirror) {
+          activeTip.updateWorldMatrix(true, false);
+          const activeW = activeTip.getWorldPosition(new Vec3());
+          let mParent = this._mirrorPairs.get(activeTip);
+          if (!mParent && Rigger.isPointOnMirrorCenter(context.root, activeW, context.mesh)) {
+            mParent = activeTip;
+          }
+          const mTarget = this._mirrorPairs.get(ep.bone);
+          if (
+            mParent &&
+            mTarget &&
+            this._isNodeAlive(mParent) &&
+            this._isNodeAlive(mTarget) &&
+            mParent !== mTarget &&
+            mTarget !== ep.bone &&
+            !(mTarget.parent && mTarget.parent.isBone) &&
+            !(mParent._isAncestor && mParent._isAncestor(mTarget))
+          ) {
+            recs.push(connectSingle(mParent, mTarget));
+          }
+        }
+
+        this.activeTipBone = ep.bone;
+        this.activeTipAttach = 'head';
+        this.selectedBone = ep.bone;
+        this._invalidateScene(opts);
+
+        const applyRec = (r, useAfter) => {
+          const p = useAfter ? r.afterParent : r.beforeParent;
+          const idx = useAfter ? r.afterIndex : r.beforeIndex;
+          r.bone.removeFromParent();
+          if (p) {
+            const at = idx >= 0 ? Math.min(idx, p.children.length) : p.children.length;
+            p.children.splice(at, 0, r.bone);
+            r.bone.parent = p;
+          }
+          r.bone.position.copy(useAfter ? r.afterPos : r.beforePos);
+          r.bone.quaternion.copy(useAfter ? r.afterQuat : r.beforeQuat);
+          r.bone.scale.copy(useAfter ? r.afterScale : r.beforeScale);
+          r.bone.updateMatrixWorld(true, true);
+        };
+
+        const command = {
+          type: 'rigBoneConnect',
+          label: 'Conectar huesos',
+          undo: () => {
+            for (let i = recs.length - 1; i >= 0; i--) applyRec(recs[i], false);
+            this._invalidateScene(opts);
+          },
+          redo: () => {
+            for (let i = 0; i < recs.length; i++) applyRec(recs[i], true);
+            this._invalidateScene(opts);
+          },
+        };
+
+        return {
+          action: 'connectBones',
+          bone: ep.bone,
+          parentBone: activeTip,
+          mirrorBone: recs[1]?.bone || null,
+          command,
+          message: `${activeTip.name} conectado con ${ep.bone.name}.`,
+        };
+      }
+
       this.activeTipBone = ep.bone;
-      this.activeTipAttach = ep.attach;
+      this.activeTipAttach = ep.attach || 'head';
       this.selectedBone = ep.bone;
       return {
         action: 'selectTip',
         bone: ep.bone,
-        attach: ep.attach,
-        message: `Punta seleccionada (${ep.bone.name || 'Hueso'}). Toca otro punto de la malla para conectar.`,
+        attach: this.activeTipAttach,
+        message: `Hueso seleccionado (${ep.bone.name || 'Hueso'}). Toca la malla o un hueso libre para conectar.`,
       };
     }
 
@@ -1275,10 +1439,10 @@ export class Rigger {
     if (!hit) {
       if (this.activeTipBone) {
         this.activeTipBone = null;
-        this.activeTipAttach = 'tail';
+        this.activeTipAttach = 'head';
         return {
           action: 'deselectTip',
-          message: 'Punta deseleccionada. Toca la malla o una punta para crear huesos.',
+          message: 'Hueso deseleccionado. Toca la malla o un hueso para seguir editando.',
         };
       }
       return {
@@ -1291,85 +1455,13 @@ export class Rigger {
     const parentContainer = context.meshes.length === 1 && context.mesh ? context.mesh : context.root;
     if (!parentContainer) return { action: 'noContainer' };
 
-    const activeTip = this.activeTipBone && this._isNodeAlive(this.activeTipBone) ? this.activeTipBone : null;
-
-    // Caso A: Extender hueso raíz recién creado de longitud 0
-    if (activeTip && activeTip.length <= 1e-5 && !Rigger.hasChildBone(activeTip) && this.activeTipAttach === 'tail') {
-      activeTip.updateWorldMatrix(true, false);
-      const headW = _vB.setFromMatrixPosition(activeTip.matrixWorld).clone();
-      const beforePos = activeTip.position.clone();
-      const beforeQuat = activeTip.quaternion.clone();
-      const beforeLen = activeTip.length;
-
-      Rigger.orientBoneWorld(activeTip, headW, worldPt);
-      const afterPos = activeTip.position.clone();
-      const afterQuat = activeTip.quaternion.clone();
-      const afterLen = activeTip.length;
-
-      const mirrorTwin = this.mirror ? this._mirrorPairs.get(activeTip) : null;
-      let mBefore = null;
-      let mAfter = null;
-      if (mirrorTwin && this._isNodeAlive(mirrorTwin)) {
-        mirrorTwin.updateWorldMatrix(true, false);
-        const mHeadW = _vB.setFromMatrixPosition(mirrorTwin.matrixWorld).clone();
-        const mTargetW = Rigger.mirrorWorldPoint(context.root, worldPt, new Vec3());
-        mBefore = { p: mirrorTwin.position.clone(), q: mirrorTwin.quaternion.clone(), l: mirrorTwin.length };
-        Rigger.orientBoneWorld(mirrorTwin, mHeadW, mTargetW);
-        mAfter = { p: mirrorTwin.position.clone(), q: mirrorTwin.quaternion.clone(), l: mirrorTwin.length };
-      }
-
-      this.activeTipBone = activeTip;
-      this.activeTipAttach = 'tail';
-      this.selectedBone = activeTip;
-      this._invalidateScene(opts);
-
-      const command = {
-        type: 'rigBoneAdjust',
-        label: 'Definir hueso',
-        undo: () => {
-          activeTip.position.copy(beforePos);
-          activeTip.quaternion.copy(beforeQuat);
-          activeTip.length = beforeLen;
-          activeTip.updateMatrixWorld(true, true);
-          if (mirrorTwin && mBefore) {
-            mirrorTwin.position.copy(mBefore.p);
-            mirrorTwin.quaternion.copy(mBefore.q);
-            mirrorTwin.length = mBefore.l;
-            mirrorTwin.updateMatrixWorld(true, true);
-          }
-          this._invalidateScene(opts);
-        },
-        redo: () => {
-          activeTip.position.copy(afterPos);
-          activeTip.quaternion.copy(afterQuat);
-          activeTip.length = afterLen;
-          activeTip.updateMatrixWorld(true, true);
-          if (mirrorTwin && mAfter) {
-            mirrorTwin.position.copy(mAfter.p);
-            mirrorTwin.quaternion.copy(mAfter.q);
-            mirrorTwin.length = mAfter.l;
-            mirrorTwin.updateMatrixWorld(true, true);
-          }
-          this._invalidateScene(opts);
-        },
-      };
-
-      return {
-        action: 'extendRoot',
-        bone: activeTip,
-        mirrorBone: mirrorTwin || null,
-        command,
-        message: `${activeTip.name} creado. Toca otro punto de la malla para conectar el siguiente.`,
-      };
-    }
-
-    // Caso B: Iniciar un hueso raíz nuevo en worldPt
+    // Caso A: Iniciar un hueso raíz independiente en worldPt (solo un punto)
     if (!activeTip) {
       const useMirror = this.mirror && !Rigger.isPointOnMirrorCenter(context.root, worldPt, context.mesh);
       const b0 = new Bone();
       b0.name = this._nextBoneName(context.allBones, useMirror ? '_L' : '');
       parentContainer.add(b0);
-      Rigger.orientBoneWorld(b0, worldPt, worldPt);
+      Rigger.setBoneWorldPosition(b0, worldPt);
 
       const added = [{ obj: b0, parent: parentContainer, index: parentContainer.children.indexOf(b0) }];
       let bm = null;
@@ -1379,14 +1471,14 @@ export class Rigger {
         bm = new Bone();
         bm.name = b0.name.replace(/_L$/, '_R');
         parentContainer.add(bm);
-        Rigger.orientBoneWorld(bm, mPt, mPt);
+        Rigger.setBoneWorldPosition(bm, mPt);
         this._mirrorPairs.set(b0, bm);
         this._mirrorPairs.set(bm, b0);
         added.push({ obj: bm, parent: parentContainer, index: parentContainer.children.indexOf(bm) });
       }
 
       this.activeTipBone = b0;
-      this.activeTipAttach = 'tail';
+      this.activeTipAttach = 'head';
       this.selectedBone = b0;
       this._invalidateScene(opts);
 
@@ -1420,12 +1512,13 @@ export class Rigger {
         mirrorBone: bm,
         added,
         command,
-        message: 'Inicio del hueso colocado. Toca otro punto de la malla para trazar su punta.',
+        message: `${b0.name} colocado. Toca otro punto de la malla para crear y conectar el siguiente hueso.`,
       };
     }
 
-    // Caso C: Encadenar nuevo hueso conectado a la punta seleccionada (activeTip)
-    const headW = Rigger.getBoneTipWorld(activeTip, this.activeTipAttach, new Vec3());
+    // Caso B: Crear nuevo hueso en worldPt y conectarlo al hueso activo (activeTip -> bChild)
+    activeTip.updateWorldMatrix(true, false);
+    const activeW = activeTip.getWorldPosition(new Vec3());
     const isSymmetricTarget = this.mirror && !Rigger.isPointOnMirrorCenter(context.root, worldPt, context.mesh);
 
     let mirrorParent = null;
@@ -1433,7 +1526,7 @@ export class Rigger {
       const twin = this._mirrorPairs.get(activeTip);
       if (twin && this._isNodeAlive(twin)) {
         mirrorParent = twin;
-      } else if (Rigger.isPointOnMirrorCenter(context.root, headW, context.mesh)) {
+      } else if (Rigger.isPointOnMirrorCenter(context.root, activeW, context.mesh)) {
         mirrorParent = activeTip;
       }
     }
@@ -1441,27 +1534,24 @@ export class Rigger {
     const bChild = new Bone();
     bChild.name = this._nextBoneName(context.allBones, mirrorParent ? '_L' : '');
     activeTip.add(bChild);
-    Rigger.orientBoneWorld(bChild, headW, worldPt);
+    Rigger.setBoneWorldPosition(bChild, worldPt);
 
     const added = [{ obj: bChild, parent: activeTip, index: activeTip.children.indexOf(bChild) }];
     let bMirror = null;
 
     if (mirrorParent) {
-      const mHeadW = mirrorParent === activeTip
-        ? headW
-        : Rigger.getBoneTipWorld(mirrorParent, this.activeTipAttach, new Vec3());
-      const mTailW = Rigger.mirrorWorldPoint(context.root, worldPt, new Vec3());
+      const mPt = Rigger.mirrorWorldPoint(context.root, worldPt, new Vec3());
       bMirror = new Bone();
       bMirror.name = bChild.name.replace(/_L$/, '_R');
       mirrorParent.add(bMirror);
-      Rigger.orientBoneWorld(bMirror, mHeadW, mTailW);
+      Rigger.setBoneWorldPosition(bMirror, mPt);
       this._mirrorPairs.set(bChild, bMirror);
       this._mirrorPairs.set(bMirror, bChild);
       added.push({ obj: bMirror, parent: mirrorParent, index: mirrorParent.children.indexOf(bMirror) });
     }
 
     this.activeTipBone = bChild;
-    this.activeTipAttach = 'tail';
+    this.activeTipAttach = 'head';
     this.selectedBone = bChild;
     this._invalidateScene(opts);
 
@@ -1494,7 +1584,7 @@ export class Rigger {
       mirrorBone: bMirror,
       added,
       command,
-      message: `${bChild.name} conectado (punta lista para el siguiente hueso).`,
+      message: `${bChild.name} conectado a ${activeTip.name}.`,
     };
   }
 
@@ -1673,7 +1763,7 @@ export class Rigger {
         const isSelectedTip =
           this.boneTool &&
           this.activeTipBone === ep.bone &&
-          this.activeTipAttach === ep.attach;
+          (!ep.isTail || this.activeTipAttach === 'tail');
         const isSelectedWeight =
           this.weightPaint &&
           this.selectedBone === ep.displayBone;
@@ -2005,5 +2095,90 @@ export class Rigger {
     this._pointerState = null;
     this._attached = null;
     return this;
+  }
+
+  /**
+   * Construye un personaje de prueba articulado con piel deformada, pesos de skinning
+   * y una jerarquía de huesos-punto listos para animar y probar en escena.
+   */
+  static createSampleRig({ color = 0x38bdf8, shininess = 42, position = null } = {}) {
+    const geo = new SphereGeometry(0.85, 24, 18);
+    const posAttr = geo.attributes.position;
+    const arr = posAttr.array;
+    const count = posAttr.count;
+    const skinIndex = new Float32Array(count * 4);
+    const skinWeight = new Float32Array(count * 4);
+
+    const yCenterOffset = 1.2325;
+    for (let i = 0; i < count; i++) {
+      const x = arr[i * 3] * 0.72;
+      const yRaw = (arr[i * 3 + 1] + 0.85) * 1.45;
+      const y = yRaw - yCenterOffset;
+      const z = arr[i * 3 + 2] * 0.72;
+      arr[i * 3] = x;
+      arr[i * 3 + 1] = y;
+      arr[i * 3 + 2] = z;
+
+      if (yRaw < 0.95) {
+        skinIndex[i * 4] = 2;
+        skinWeight[i * 4] = 1;
+      } else if (yRaw < 1.75) {
+        const t = (yRaw - 0.95) / 0.8;
+        skinIndex[i * 4] = 2;
+        skinIndex[i * 4 + 1] = 3;
+        skinWeight[i * 4] = 1 - t;
+        skinWeight[i * 4 + 1] = t;
+      } else {
+        const t = Math.min(1, (yRaw - 1.75) / 0.7);
+        skinIndex[i * 4] = 3;
+        skinIndex[i * 4 + 1] = 4;
+        skinWeight[i * 4] = 1 - t;
+        skinWeight[i * 4 + 1] = t;
+      }
+    }
+    posAttr.needsUpdate = true;
+    geo.setAttribute('skinIndex', skinIndex, 4);
+    geo.setAttribute('skinWeight', skinWeight, 4);
+
+    const mat = new StandardMaterial({ color, shininess });
+    const skinned = new SkinnedMesh(geo, mat);
+    skinned.castShadow = true;
+    skinned.receiveShadow = true;
+
+    const boneRaiz = new Bone();
+    boneRaiz.name = 'Raiz';
+    boneRaiz.position.set(0, 0.4 - yCenterOffset, 0);
+
+    const boneCadera = new Bone();
+    boneCadera.name = 'Cadera';
+    boneCadera.position.set(0, 0, 0);
+
+    const boneBaseFK = new Bone();
+    boneBaseFK.name = 'Base_FK';
+    boneBaseFK.position.set(0, 0, 0);
+
+    const boneTorso = new Bone();
+    boneTorso.name = 'Torso';
+    boneTorso.position.set(0, 0.95, 0);
+
+    const boneCabeza = new Bone();
+    boneCabeza.name = 'Cabeza';
+    boneCabeza.position.set(0, 0.8, 0);
+
+    boneRaiz.add(boneCadera);
+    boneCadera.add(boneBaseFK);
+    boneBaseFK.add(boneTorso);
+    boneTorso.add(boneCabeza);
+
+    skinned.add(boneRaiz);
+    if (Array.isArray(position)) {
+      skinned.position.set(position[0] || 0, position[1] || 0, position[2] || 0);
+    } else if (position && position.x !== undefined) {
+      skinned.position.copy(position);
+    } else {
+      skinned.position.set(0, 0, 0);
+    }
+    skinned.bind(new Skeleton([boneRaiz, boneCadera, boneBaseFK, boneTorso, boneCabeza]));
+    return skinned;
   }
 }

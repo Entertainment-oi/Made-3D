@@ -23,10 +23,8 @@ import {
   loadTextGeometry,
 } from '../made3d.module.js';
 import {
-  Bone,
-  Skeleton,
+  Rigger,
   SkeletonHelper,
-  SkinnedMesh,
   cloneObject,
 } from '../src/modules/rigging.js';
 import {
@@ -469,83 +467,11 @@ export async function addText3D(opts = {}) {
 }
 
 export function addTestRig(opts = {}) {
-  const geo = new SphereGeometry(0.85, 24, 18);
-  const posAttr = geo.attributes.position;
-  const arr = posAttr.array;
-  const count = posAttr.count;
-  const skinIndex = new Float32Array(count * 4);
-  const skinWeight = new Float32Array(count * 4);
-
-  const yCenterOffset = 1.2325;
-  for (let i = 0; i < count; i++) {
-    const x = arr[i * 3] * 0.72;
-    const yRaw = (arr[i * 3 + 1] + 0.85) * 1.45;
-    const y = yRaw - yCenterOffset;
-    const z = arr[i * 3 + 2] * 0.72;
-    arr[i * 3] = x;
-    arr[i * 3 + 1] = y;
-    arr[i * 3 + 2] = z;
-
-    if (yRaw < 0.95) {
-      skinIndex[i * 4] = 2;
-      skinWeight[i * 4] = 1;
-    } else if (yRaw < 1.75) {
-      const t = (yRaw - 0.95) / 0.8;
-      skinIndex[i * 4] = 2;
-      skinIndex[i * 4 + 1] = 3;
-      skinWeight[i * 4] = 1 - t;
-      skinWeight[i * 4 + 1] = t;
-    } else {
-      const t = Math.min(1, (yRaw - 1.75) / 0.7);
-      skinIndex[i * 4] = 3;
-      skinIndex[i * 4 + 1] = 4;
-      skinWeight[i * 4] = 1 - t;
-      skinWeight[i * 4 + 1] = t;
-    }
-  }
-  posAttr.needsUpdate = true;
-  geo.setAttribute('skinIndex', skinIndex, 4);
-  geo.setAttribute('skinWeight', skinWeight, 4);
-
-  const mat = new StandardMaterial({ color: 0x38bdf8, shininess: 42 });
-  const skinned = new SkinnedMesh(geo, mat);
-  skinned.castShadow = true;
-  skinned.receiveShadow = true;
-
-  const boneRaiz = new Bone();
-  boneRaiz.name = 'Raiz';
-  boneRaiz.position.set(0, 0.4 - yCenterOffset, 0);
-
-  const boneCadera = new Bone();
-  boneCadera.name = 'Cadera';
-  boneCadera.position.set(0, 0, 0);
-
-  const boneBaseFK = new Bone();
-  boneBaseFK.name = 'Base_FK';
-  boneBaseFK.position.set(0, 0, 0);
-
-  const boneTorso = new Bone();
-  boneTorso.name = 'Torso';
-  boneTorso.position.set(0, 0.95, 0);
-
-  const boneCabeza = new Bone();
-  boneCabeza.name = 'Cabeza';
-  boneCabeza.position.set(0, 0.8, 0);
-  boneCabeza.length = 0.45;
-
-  boneRaiz.add(boneCadera);
-  boneCadera.add(boneBaseFK);
-  boneBaseFK.add(boneTorso);
-  boneTorso.add(boneCabeza);
-
-  skinned.add(boneRaiz);
-  if (opts.position) {
-    skinned.position.set(opts.position[0], opts.position[1], opts.position[2]);
-  } else {
-    skinned.position.set(0, 0, 0);
-  }
-  skinned.bind(new Skeleton([boneRaiz, boneCadera, boneBaseFK, boneTorso, boneCabeza]));
-
+  const skinned = Rigger.createSampleRig({
+    color: opts.color ?? 0x38bdf8,
+    shininess: opts.shininess ?? 42,
+    position: opts.position ?? null,
+  });
   registerUserObject(skinned, 'Rig prueba', Boolean(opts.recordHistory));
   selectObject(skinned);
   setGizmoMode('rotate');

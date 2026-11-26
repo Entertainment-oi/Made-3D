@@ -1,4 +1,4 @@
-import { RAD2DEG, DEG2RAD } from '../../made3d.module.js';
+import { RAD2DEG, DEG2RAD, HistoryManager } from '../../made3d.module.js';
 import { snapshotMeshModelingState } from '../../src/modules/modeling.js';
 import { dom, bindDoubleTap } from '../dom.js';
 import { viewport, sceneStore, cameraView, sculpt, edit, snapshotLocal } from '../store.js';
@@ -174,11 +174,7 @@ export function bindGizmoControls() {
       const cur = sceneStore.selected;
       if (cur && xyzBeforeObj && xyzTarget === cur) {
         const afterState = snapshotLocal(cur);
-        const moved =
-          xyzBeforeObj.p.distanceTo(afterState.p) > 1e-5 ||
-          xyzBeforeObj.s.distanceTo(afterState.s) > 1e-5 ||
-          Math.abs(xyzBeforeObj.q.dot(afterState.q)) < 0.999999;
-        if (moved) {
+        if (HistoryManager.hasTransformChanged(xyzBeforeObj, afterState, { includePivot: false })) {
           history.runGrouped('Transformar', () => {
             history.push({
               type: 'transform',

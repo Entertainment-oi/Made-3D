@@ -11,6 +11,7 @@ export * from './src/modules/loaders.js';
 export * from './src/modules/exporters.js';
 export * from './src/modules/gizmo.js';
 export * from './src/modules/sculpt.js';
+export * from './src/modules/paint.js';
 export * from './src/modules/modeling.js';
 export * from './src/modules/text.js';
 export * from './src/modules/video.js';

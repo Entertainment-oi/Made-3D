@@ -11,6 +11,8 @@ import {
   Mesh,
   Raycaster,
   Picker,
+  OrbitControls,
+  HistoryManager,
   Vec3,
   Quat,
   AVAILABLE_MODULES,
@@ -905,7 +907,38 @@ test('Librería rigging: Rigger, pesos automáticos, pincel/borrador, espejo, im
   }
   assert.ok(checkedBottom > 0 && checkedTopCorner > 0 && checkedJoint > 0);
 
-  // SkeletonHelper.pickScreen permite tocar la punta (tail) del último hueso
+  // Point-bones (length = 0): los vértices de la punta deben quedar asignados al hueso hoja sin empate 50/50 con el padre
+  const pRoot = new Bone();
+  pRoot.position.set(0, -0.5, 0);
+  const pTop = new Bone();
+  pTop.position.set(0, 1.0, 0);
+  pRoot.add(pTop);
+  const ptCubeMesh = new SkinnedMesh(cubeGeo, new StandardMaterial());
+  ptCubeMesh.add(pRoot);
+  ptCubeMesh.updateWorldMatrix(true, true);
+
+  const { skinIndex: pIdx, skinWeight: pWt } = computeAutoSkinWeights(cubeGeo, ptCubeMesh.matrixWorld, [pRoot, pTop]);
+  const weightPointOf = (vi, boneIdx) => {
+    let w = 0;
+    for (let j = 0; j < 4; j++) {
+      if (pWt[vi * 4 + j] > 0 && Math.round(pIdx[vi * 4 + j]) === boneIdx) w += pWt[vi * 4 + j];
+    }
+    return w;
+  };
+  let checkedPtBottom = 0, checkedPtTip = 0;
+  for (let vi = 0; vi < cubeGeo.attributes.position.count; vi++) {
+    const y = cPos[vi * 3 + 1];
+    if (y <= -0.35) {
+      assert.ok(weightPointOf(vi, 0) > 0.99, `base y=${y} debe pertenecer al hueso raíz punto`);
+      checkedPtBottom++;
+    } else if (y >= 0.55) {
+      assert.ok(weightPointOf(vi, 1) > 0.99, `punta y=${y} debe pertenecer al hueso hoja punto sin empate con padre`);
+      checkedPtTip++;
+    }
+  }
+  assert.ok(checkedPtBottom > 0 && checkedPtTip > 0);
+
+  // SkeletonHelper.pickScreen permite tocar la punta (tail) del último hueso cuando tiene longitud explícita
   const helper = new SkeletonHelper(cubeMesh);
   const testCam = new PerspectiveCamera(50, 1, 0.1, 100);
   testCam.position.set(0, 0, 5);
@@ -925,7 +958,14 @@ test('Librería rigging: Rigger, pesos automáticos, pincel/borrador, espejo, im
   assert.ok(pickedTip && pickedTip.bone === cTop, 'tocar la punta del último hueso debe seleccionarlo');
   assert.equal(pickedTip.hitKind, 'tail');
 
-  // Flujo completo de Rigger desde la librería (imán + espejo + cadena + fijado + undo/redo)
+  // Con huesos-punto (length = 0): solo puntos cuando están sueltos, y líneas únicamente al conectar 2 huesos
+  const pointHelper = new SkeletonHelper(ptCubeMesh);
+  pointHelper.draw2D(fakeCtx, testCam, 400, 400, { sceneRoot: ptCubeMesh });
+  assert.equal(pointHelper._rigScreens?.joints?.length, 2, 'cada hueso debe proyectar exactamente un punto');
+  assert.equal(pointHelper._rigScreens?.segs?.length, 1, 'debe dibujarse una sola conexión entre ambos huesos');
+  assert.equal(pointHelper._rigScreens?.tails?.length, 0, 'no debe haber colas fantasma sin hueso');
+
+  // Flujo completo de Rigger desde la librería (huesos como puntos + imán + espejo + cadena + conexión + fijado + undo/redo)
   const scene = new Scene();
   const rawMesh = new Mesh(new BoxGeometry(1.4, 2.0, 1.0, 2, 4, 2), new StandardMaterial());
   scene.add(rawMesh);
@@ -937,15 +977,74 @@ test('Librería rigging: Rigger, pesos automáticos, pincel/borrador, espejo, im
   const r1 = rigEditor.tapBoneTool(165, 260, 400, 400, testCam, Rigger.collectContext(rawMesh), { scene });
   assert.equal(r1.action, 'startRoot');
   assert.ok(r1.bone && r1.mirrorBone, 'espejo debe crear hueso izquierdo y derecho');
+  assert.equal(r1.bone.length, 0, 'el hueso raíz debe ser solo un punto (length = 0)');
+  assert.equal(r1.mirrorBone.length, 0);
   assert.ok(Math.abs(r1.bone.position.z) < 1e-3, 'imán debe centrar el hueso en Z=0');
 
+  const r1Helper = new SkeletonHelper(rawMesh);
+  r1Helper.draw2D(fakeCtx, testCam, 400, 400, { sceneRoot: rawMesh });
+  assert.equal(r1Helper._rigScreens?.joints?.length, 2);
+  assert.equal(r1Helper._rigScreens?.segs?.length, 0, 'un hueso independiente no debe dibujar línea alguna');
+
   const r2 = rigEditor.tapBoneTool(165, 200, 400, 400, testCam, Rigger.collectContext(rawMesh), { scene });
-  assert.equal(r2.action, 'extendRoot');
-  assert.ok(r2.bone.length > 0.2);
+  assert.equal(r2.action, 'chainChild');
+  assert.equal(r2.bone.length, 0, 'el segundo toque debe crear un segundo hueso punto');
+  assert.ok(r2.bone.parent === r1.bone && r2.mirrorBone.parent === r1.mirrorBone, 'el segundo hueso se conecta al primero');
+
+  r1Helper.invalidateRig();
+  r1Helper.draw2D(fakeCtx, testCam, 400, 400, { sceneRoot: rawMesh });
+  assert.equal(r1Helper._rigScreens?.joints?.length, 4);
+  assert.equal(r1Helper._rigScreens?.segs?.length, 2, 'al conectar 2 huesos (L y R) aparecen sus 2 líneas de conexión');
 
   const r3 = rigEditor.tapBoneTool(165, 140, 400, 400, testCam, Rigger.collectContext(rawMesh), { scene });
   assert.equal(r3.action, 'chainChild');
-  assert.ok(r3.bone.parent === r1.bone && r3.mirrorBone.parent === r1.mirrorBone);
+  assert.equal(r3.bone.length, 0);
+  assert.ok(r3.bone.parent === r2.bone && r3.mirrorBone.parent === r2.mirrorBone);
+
+  // Tocar en vacío deselecciona el hueso activo; crear un hueso independiente y conectarlo tocando otro hueso raíz
+  const deselectRes = rigEditor.tapBoneTool(10, 10, 400, 400, testCam, Rigger.collectContext(rawMesh), { scene });
+  assert.equal(deselectRes.action, 'deselectTip');
+  const soloEditor = new Rigger({ boneTool: true, mirror: false, magnet: true });
+  soloEditor.setEnabled(true);
+  const soloMesh = new Mesh(new BoxGeometry(1.4, 2.0, 1.0, 2, 4, 2), new StandardMaterial());
+  scene.add(soloMesh);
+  scene.updateMatrixWorld(true, true);
+
+  const sA = soloEditor.tapBoneTool(200, 250, 400, 400, testCam, Rigger.collectContext(soloMesh), { scene });
+  assert.equal(sA.action, 'startRoot');
+  assert.equal(sA.bone.length, 0);
+  // Tocar de nuevo el mismo hueso activo lo deselecciona
+  const sAEp = Rigger.getScreenEndpoints([sA.bone], testCam, 400, 400)[0];
+  const toggleOff = soloEditor.tapBoneTool(sAEp.x, sAEp.y, 400, 400, testCam, Rigger.collectContext(soloMesh), { scene });
+  assert.equal(toggleOff.action, 'deselectTip');
+
+  const sB = soloEditor.tapBoneTool(200, 160, 400, 400, testCam, Rigger.collectContext(soloMesh), { scene });
+  assert.equal(sB.action, 'startRoot');
+  assert.equal(sB.bone.parent, soloMesh);
+  sA.bone.updateWorldMatrix(true, false);
+  const sAWorldBefore = sA.bone.getWorldPosition(new Vec3()).clone();
+  sB.bone.updateWorldMatrix(true, false);
+  const sBWorldBefore = sB.bone.getWorldPosition(new Vec3()).clone();
+  const sAEp2 = Rigger.getScreenEndpoints([sA.bone], testCam, 400, 400)[0];
+  const sBEp = Rigger.getScreenEndpoints([sB.bone], testCam, 400, 400)[0];
+
+  // Deseleccionar sB tocándolo de nuevo, seleccionar sA y luego tocar sB para conectar sA -> sB
+  const deselB = soloEditor.tapBoneTool(sBEp.x, sBEp.y, 400, 400, testCam, Rigger.collectContext(soloMesh), { scene });
+  assert.equal(deselB.action, 'deselectTip');
+  const selA = soloEditor.tapBoneTool(sAEp2.x, sAEp2.y, 400, 400, testCam, Rigger.collectContext(soloMesh), { scene });
+  assert.equal(selA.action, 'selectTip');
+  const conn = soloEditor.tapBoneTool(sBEp.x, sBEp.y, 400, 400, testCam, Rigger.collectContext(soloMesh), { scene });
+  assert.equal(conn.action, 'connectBones');
+  assert.equal(sB.bone.parent, sA.bone, 'tocar un hueso libre con otro activo debe conectarlos');
+  sB.bone.updateWorldMatrix(true, false);
+  assert.ok(sB.bone.getWorldPosition(new Vec3()).distanceTo(sBWorldBefore) < 1e-4, 'conectar huesos debe preservar la posición mundial');
+  assert.ok(sA.bone.getWorldPosition(new Vec3()).distanceTo(sAWorldBefore) < 1e-4);
+
+  conn.command.undo();
+  assert.equal(sB.bone.parent, soloMesh, 'undo debe desconectar los huesos');
+  conn.command.redo();
+  assert.equal(sB.bone.parent, sA.bone, 'redo debe reconectar los huesos');
+  scene.remove(soloMesh);
 
   const bindRes = rigEditor.bindRig(Rigger.collectContext(rawMesh), { scene });
   assert.equal(bindRes.ok, true);
@@ -958,7 +1057,7 @@ test('Librería rigging: Rigger, pesos automáticos, pincel/borrador, espejo, im
   bindRes.redo();
   assert.equal(scene.children.includes(bindRes.primarySkinned), true);
 
-  // bindMeshesToSkeleton standalone
+  // bindMeshesToSkeleton standalone (con longitud explícita para probar boneTail en GizmoBase)
   const plain = new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial());
   const soloBone = new Bone();
   soloBone.length = 0.8;
@@ -987,11 +1086,11 @@ test('Librería rigging: Rigger, pesos automáticos, pincel/borrador, espejo, im
   };
   const gizmoOverlay = { width: 400, height: 400, style: {}, getContext: () => gizmoCtx };
   const rigGizmo = new GizmoBase(testCam, gizmoDom, { overlay: gizmoOverlay, mode: 'rotate' });
-  rigGizmo.attach(bindRes.primarySkinned);
+  rigGizmo.attach(directBind.primarySkinned);
   rigGizmo._draw2D(true);
   const rigHelper = rigGizmo._getRigHelper();
   const lastTipScreen = rigHelper._rigScreens?.tails?.[0];
-  assert.ok(lastTipScreen, 'el último hueso debe proyectar su punta en GizmoBase');
+  assert.ok(lastTipScreen, 'un hueso con longitud explícita debe proyectar su punta en GizmoBase');
   const tipBone = lastTipScreen.bone;
   const beforeTailWorld = tipBone.getWorldTail().clone();
 
@@ -1023,8 +1122,166 @@ test('Librería rigging: Rigger, pesos automáticos, pincel/borrador, espejo, im
   });
   const afterTailWorld = tipBone.getWorldTail();
   assert.ok(afterTailWorld.distanceTo(beforeTailWorld) > 0.1, 'arrastrar la punta debe rotar/mover el último hueso');
+
+  // GizmoBase en esqueleto de huesos-punto (bindRes.primarySkinned): cada punto corresponde a un hueso seleccionable
+  rigGizmo.attach(bindRes.primarySkinned);
+  rigGizmo._draw2D(true);
+  const ptRigScreens = rigGizmo._getRigHelper()._rigScreens;
+  assert.equal(ptRigScreens?.tails?.length, 0, 'el esqueleto de huesos-punto no debe dibujar puntas extra');
+  assert.equal(ptRigScreens?.joints?.length, 6, 'debe haber 6 puntos para 6 huesos (3 L + 3 R)');
+  assert.equal(ptRigScreens?.segs?.length, 4, 'debe haber 4 líneas de conexión (2 L + 2 R)');
   rigGizmo.dispose();
 });
+
+test('AnimationTimeline y AnimationClip aíslan keyframes por hueso y por objeto sin contaminar otros nodos', async () => {
+  const { AnimationClip, AnimationTimeline, VectorKeyframeTrack, QuaternionKeyframeTrack } = await loadAnimation();
+  const { Rigger } = await loadRigging();
+
+  // 1. Sample rig de Rigger: keyframear Torso no debe crear ni mostrar keyframes en Cabeza, Cadera u otro objeto
+  const rig = Rigger.createSampleRig();
+  const box = new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial());
+  const scene = new Scene();
+  scene.add(rig);
+  scene.add(box);
+  scene.updateMatrixWorld(true, true);
+
+  const torso = rig.getObjectByName('Torso');
+  const cabeza = rig.getObjectByName('Cabeza');
+  const cadera = rig.getObjectByName('Cadera');
+  assert.ok(torso && cabeza && cadera);
+
+  const tl = new AnimationTimeline();
+  tl.syncForSelection(torso);
+  assert.equal(tl.currentClip, null);
+  assert.deepEqual(tl.getKeyframeTimesForSelection(torso), []);
+
+  // Simular rotación solo de Torso en t = 1.0s
+  const beforeTorso = HistoryManager.snapshotTransform(torso);
+  const beforeCabeza = HistoryManager.snapshotTransform(cabeza);
+  const beforeBox = HistoryManager.snapshotTransform(box);
+  torso.rotation.z = 0.6;
+  torso.updateMatrixWorld();
+  const afterTorso = HistoryManager.snapshotTransform(torso);
+
+  // Pasar también otros nodos sin cambios en recordAutoKeyframe no debe crear keyframes fantasma en ellos
+  const rec = tl.recordAutoKeyframe([torso, cabeza, box], {
+    beforeList: [beforeTorso, beforeCabeza, beforeBox],
+    afterList: [afterTorso, HistoryManager.snapshotTransform(cabeza), HistoryManager.snapshotTransform(box)],
+    toolProperties: ['quaternion'],
+    time: 1.0,
+  });
+  assert.equal(rec.length, 1);
+  assert.equal(rec[0].target, torso);
+  assert.deepEqual(tl.getKeyframeTimesForSelection(torso), [1.0]);
+  assert.equal(tl.hasKeyframeAtSelection(torso, 1.0, ['quaternion']), true);
+
+  // Seleccionar hueso hijo (Cabeza), hueso padre (Cadera) o cubo: ninguno debe heredar o mostrar el keyframe de Torso
+  tl.syncForSelection(cabeza);
+  assert.equal(tl.currentClip, null, 'Hueso hijo sin pistas propias no debe heredar el clip del hueso padre');
+  assert.deepEqual(tl.getKeyframeTimesForSelection(cabeza), []);
+  assert.equal(tl.hasKeyframeAtSelection(cabeza, 1.0), false);
+
+  tl.syncForSelection(cadera);
+  assert.equal(tl.currentClip, null);
+  assert.deepEqual(tl.getKeyframeTimesForSelection(cadera), []);
+
+  tl.syncForSelection(box);
+  assert.equal(tl.currentClip, null);
+  assert.deepEqual(tl.getKeyframeTimesForSelection(box), []);
+
+  // Keyframe independiente en Cabeza a t = 0.5s
+  tl.insertKeyframe(cabeza, 0.5, { properties: ['quaternion'] });
+  assert.deepEqual(tl.getKeyframeTimesForSelection(cabeza), [0.5]);
+  assert.deepEqual(tl.getKeyframeTimesForSelection(torso), [1.0], 'Agregar keyframe en Cabeza no altera los de Torso');
+
+  // Reproducción simultánea de ambos huesos
+  tl.insertKeyframe(torso, 0.0, { properties: ['quaternion'] });
+  torso.rotation.z = 0;
+  torso.updateMatrixWorld();
+  tl.setCurrentTime(1.0, [rig, box], scene);
+  assert.ok(Math.abs(torso.rotation.z - 0.6) < 0.05);
+
+  // 2. Clip multi-pista compartido (estilo GLB importado en raíz): cada hueso ve/edita únicamente sus propias pistas
+  const glbClip = new AnimationClip('Walk', 2.0);
+  glbClip.addTrack(new QuaternionKeyframeTrack('Torso.quaternion', [0, 1.0], [0, 0, 0, 1, 0, 0, 0.5, 0.8660254]));
+  glbClip.addTrack(new VectorKeyframeTrack('Cabeza.position', [0, 1.5], [0, 0.8, 0, 0, 1.1, 0]));
+  const glbTl = new AnimationTimeline();
+  glbTl.registerImportedClips(rig, [glbClip]);
+
+  glbTl.syncForSelection(torso);
+  assert.equal(glbTl.currentClip, glbClip);
+  assert.deepEqual(glbTl.getKeyframeTimesForSelection(torso), [0, 1.0]);
+  assert.equal(glbTl.hasKeyframeAtSelection(torso, 1.5), false);
+
+  glbTl.syncForSelection(cabeza);
+  assert.equal(glbTl.currentClip, glbClip);
+  assert.deepEqual(glbTl.getKeyframeTimesForSelection(cabeza), [0, 1.5]);
+  assert.equal(glbTl.hasKeyframeAtSelection(cabeza, 1.0), false);
+
+  glbTl.syncForSelection(cadera);
+  assert.equal(glbTl.currentClip, null, 'Hueso sin pistas en clip compartido no debe mostrar keyframes ajenos');
+  assert.deepEqual(glbTl.getKeyframeTimesForSelection(cadera), []);
+
+  // Borrar keyframe de Cabeza en t=1.5s dentro del clip compartido no toca Torso en t=1.0s ni t=0s
+  const rmRes = glbTl.removeKeyframe(cabeza, 1.5, { roots: [rig], fallbackRoot: scene });
+  assert.equal(rmRes.ok, true);
+  assert.deepEqual(glbTl.getKeyframeTimesForSelection(cabeza), [0]);
+  assert.deepEqual(glbTl.getKeyframeTimesForSelection(torso), [0, 1.0]);
+
+  // Mover keyframe de Torso en clip compartido respeta los de Cabeza
+  const snapBeforeMove = glbClip.captureSnapshot();
+  glbClip.commitMoveKeyframe(snapBeforeMove, 1.0, 0.75, { target: torso, owner: rig });
+  assert.deepEqual(glbTl.getKeyframeTimesForSelection(torso), [0, 0.75]);
+  assert.deepEqual(glbTl.getKeyframeTimesForSelection(cabeza), [0]);
+});
+
+test('Helpers de Object3D, HistoryManager y OrbitControls encapsulan matemáticas de escena fuera de la capa web', () => {
+  const parent = new Object3D();
+  parent.position.set(2, 0, -1);
+  parent.rotation.y = Math.PI / 2;
+  parent.updateMatrixWorld(true, true);
+
+  const src = new Object3D();
+  src.position.set(1, 3, 2);
+  src.rotation.x = 0.4;
+  src.updateMatrixWorld(true, true);
+
+  const childCam = new PerspectiveCamera(50, 16 / 9, 0.1, 100);
+  parent.add(childCam);
+  const before = HistoryManager.snapshotTransform(childCam);
+  childCam.copyWorldTransformFrom(src);
+  const after = HistoryManager.snapshotTransform(childCam);
+
+  assert.equal(HistoryManager.hasTransformChanged(before, after, { includePivot: false }), true);
+  assert.equal(HistoryManager.hasTransformChanged(after, HistoryManager.cloneTransform(after)), false);
+  const camWorld = childCam.getWorldPosition(new Vec3());
+  assert.ok(camWorld.distanceTo(src.getWorldPosition(new Vec3())) < 1e-4);
+  const camQuat = childCam.getWorldQuaternion(new Quat());
+  assert.ok(Math.abs(camQuat.dot(src.getWorldQuaternion(new Quat()))) > 0.9999);
+
+  // Shadows recursivos
+  const group = new Object3D();
+  const childMesh = new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial());
+  childMesh.castShadow = false;
+  group.castShadow = false;
+  group.add(childMesh);
+  assert.equal(group.hasShadowCaster(), false);
+  group.setCastShadowRecursive(true);
+  assert.equal(group.hasShadowCaster(), true);
+  assert.equal(childMesh.castShadow, true);
+
+  // OrbitControls.focusOnObject
+  const fakeDom = { style: {}, addEventListener: () => {}, removeEventListener: () => {} };
+  const cam = new PerspectiveCamera(50, 1, 0.1, 100);
+  cam.position.set(0, 0, 5);
+  const controls = new OrbitControls(cam, fakeDom);
+  const targetBox = new Mesh(new BoxGeometry(2, 2, 2), new StandardMaterial());
+  targetBox.position.set(4, 2, -3);
+  controls.focusOnObject(targetBox);
+  assert.ok(controls.target.distanceTo(new Vec3(4, 2, -3)) < 1e-4);
+  assert.ok(controls.radius >= 0.8 * 2.8 - 1e-3);
+});
+
 
 
 

@@ -163,6 +163,9 @@ export class GLTFExporter {
   async parse(input, opts = {}) {
     const binary = opts.binary !== undefined ? !!opts.binary : true;
     const onlyVisible = opts.onlyVisible !== undefined ? !!opts.onlyVisible : true;
+    const includeRigging = opts.includeRigging !== undefined ? !!opts.includeRigging : true;
+    const includeTextures = opts.includeTextures !== undefined ? !!opts.includeTextures : true;
+    const includeVertexColors = opts.includeVertexColors !== undefined ? !!opts.includeVertexColors : true;
     const useDraco = Boolean(opts.draco);
     const dracoOpts = typeof opts.draco === 'object' && opts.draco ? opts.draco : {};
     const useOptimize = Boolean(opts.optimize);
@@ -366,21 +369,21 @@ export class GLTFExporter {
         return info;
       };
 
-      if (mat.map) {
+      if (includeTextures && mat.map) {
         const info = await makeTexInfo(mat.map);
         if (info) out.pbrMetallicRoughness.baseColorTexture = info;
       }
-      const mrTex = mat.metallicRoughnessMap || mat.roughnessMap || mat.metalnessMap;
+      const mrTex = includeTextures ? (mat.metallicRoughnessMap || mat.roughnessMap || mat.metalnessMap) : null;
       if (mrTex) {
         const info = await makeTexInfo(mrTex);
         if (info) out.pbrMetallicRoughness.metallicRoughnessTexture = info;
       }
-      if (mat.normalMap) {
+      if (includeTextures && mat.normalMap) {
         const extra = mat.normalScale && mat.normalScale.x !== 1 ? { scale: mat.normalScale.x } : null;
         const info = await makeTexInfo(mat.normalMap, extra);
         if (info) out.normalTexture = info;
       }
-      if (mat.aoMap) {
+      if (includeTextures && mat.aoMap) {
         const extra = mat.aoMapIntensity !== undefined && mat.aoMapIntensity !== 1 ? { strength: mat.aoMapIntensity } : null;
         const info = await makeTexInfo(mat.aoMap, extra);
         if (info) out.occlusionTexture = info;
@@ -391,7 +394,7 @@ export class GLTFExporter {
         out.extensions = { ...(out.extensions || {}), KHR_materials_unlit: {} };
       }
       if (mat.type !== 'basic') {
-        if (mat.emissiveMap) {
+        if (includeTextures && mat.emissiveMap) {
           const info = await makeTexInfo(mat.emissiveMap);
           if (info) out.emissiveTexture = info;
         }
@@ -473,7 +476,8 @@ export class GLTFExporter {
 
       let cArr = null;
       let cItemSize = 3;
-      if (geo.attributes.color) {
+      const exportColors = includeVertexColors && (includeTextures || !geo._paintBaseColors);
+      if (exportColors && geo.attributes.color) {
         const col = geo.attributes.color;
         cItemSize = col.itemSize === 4 ? 4 : 3;
         cArr = Float32Array.from(col.array);
@@ -718,6 +722,7 @@ export class GLTFExporter {
 
     const visitNode = async (obj) => {
       if (!isExportableNode(obj, onlyVisible)) return null;
+      if (!includeRigging && obj.isBone && !rootSet.has(obj)) return null;
 
       const node = {};
       if (obj.name) node.name = obj.name;
@@ -763,6 +768,7 @@ export class GLTFExporter {
         }
       } else if (obj.isMesh && obj.geometry) {
         const hasSkinBones = Boolean(
+          includeRigging &&
           obj.isSkinnedMesh &&
           obj.skeleton &&
           obj.skeleton.bones?.length &&

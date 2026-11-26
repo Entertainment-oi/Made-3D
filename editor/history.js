@@ -1,6 +1,7 @@
 import { HistoryManager, estimateCommandBytes } from '../made3d.module.js';
 import { Skeleton } from '../src/modules/rigging.js';
 import { Sculptor } from '../src/modules/sculpt.js';
+import { Painter } from '../src/modules/paint.js';
 import { restoreMeshModelingState, syncEditableBaseFromGeometry } from '../src/modules/modeling.js';
 import { dom, setStatus } from './dom.js';
 import {
@@ -12,6 +13,7 @@ import {
   sculpt,
   edit,
   rig,
+  paint,
   isInScene,
   isDescendantOrSelf,
 } from './store.js';
@@ -21,6 +23,7 @@ export { HistoryManager, estimateCommandBytes };
 // Asegurar manejadores nativos registrados para sculpt, modeling y rigging en el editor
 HistoryManager.registerHandlers({
   Sculptor,
+  Painter,
   Skeleton,
   restoreMeshModelingState,
   syncEditableBaseFromGeometry,
@@ -56,9 +59,15 @@ function detachEditorToolsIfInside(target) {
   if (sculpt.sculptor?.hover?.mesh && isDescendantOrSelf(sculpt.sculptor.hover.mesh, target)) {
     sculpt.sculptor.hover = null;
   }
+  if (paint.painter?._stroke?.mesh && isDescendantOrSelf(paint.painter._stroke.mesh, target)) {
+    paint.painter.cancelStroke();
+  }
+  if (paint.painter?.hover?.mesh && isDescendantOrSelf(paint.painter.hover.mesh, target)) {
+    paint.painter.hover = null;
+  }
   if (rig.rigger.activeTipBone && isDescendantOrSelf(rig.rigger.activeTipBone, target)) {
     rig.rigger.activeTipBone = null;
-    rig.rigger.activeTipAttach = 'tail';
+    rig.rigger.activeTipAttach = 'head';
   }
   if (rig.rigger.selectedBone && isDescendantOrSelf(rig.rigger.selectedBone, target)) {
     rig.rigger.selectedBone = null;
@@ -202,6 +211,7 @@ export const history = new HistoryManager({
       history._hooks.syncCameraHelperSelection?.();
       history._hooks.syncSelectedUI?.();
       history._hooks.syncSculptUI?.();
+      history._hooks.syncPaintUI?.();
       history._hooks.syncEditUI?.();
       history._hooks.syncRigUI?.();
       history._hooks.syncAnimationUI?.();

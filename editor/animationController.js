@@ -1,4 +1,4 @@
-import { AnimationClip, AnimationMixer } from '../src/modules/animation.js';
+import { AnimationMixer } from '../src/modules/animation.js';
 import {
   isCssLandscape90,
   clientToLocalPoint,
@@ -6,11 +6,10 @@ import {
   getLogicalViewportSize,
 } from '../src/core/viewportCoords.js';
 import { dom, setStatus } from './dom.js';
-import { viewport, sceneStore, cameraView, animState, edit } from './store.js';
+import { viewport, sceneStore, cameraView, timeline, animState, edit } from './store.js';
 import { history } from './history.js';
 import { syncRangeVisual } from './ui/rangeControls.js';
 
-const KEYFRAME_HIT_EPS = 0.035;
 const MIN_PX_PER_SEC = 4;
 const MAX_PX_PER_SEC = 480;
 const LONG_PRESS_MS = 460;
@@ -39,23 +38,20 @@ let _tlWidth = 0;
 let _tlHeight = 0;
 let _tlDpr = 1;
 let _tlHoverZone = null; // 'duration' | 'keyframe' | null
-let _pingPongDir = 1;
 let _bound = false;
 let _ro = null;
+let _lastSyncedSelection = undefined;
 
 export function setAnimationHooks(hooks = {}) {
   Object.assign(_animHooks, hooks);
 }
 
 // ============================================================
-// UTILIDADES DE CLIP Y PROPIEDADES POR HERRAMIENTA
+// UTILIDADES DE PROPIEDADES POR HERRAMIENTA (UI <-> LIBRERÍA)
 // ============================================================
 
 export function snapTimelineTime(t) {
-  const clamped = Math.max(0, t);
-  if (!animState.snap) return Math.round(clamped * 1000) / 1000;
-  const step = animState.snapStep || 0.05;
-  return Math.round(Math.round(clamped / step) * step * 1000) / 1000;
+  return timeline.snapTime(t);
 }
 
 export function getActiveToolKeyframeProperties() {
@@ -67,54 +63,36 @@ export function getActiveToolKeyframeProperties() {
   return null;
 }
 
-function getClipListForObject(obj) {
-  if (!obj) return [];
-  let list = animState.objectClips.get(obj);
-  if (!list) {
-    list = [];
-    animState.objectClips.set(obj, list);
-  }
-  return list;
-}
-
 export function getObjectClips(obj) {
-  return obj ? getClipListForObject(obj).slice() : [];
+  return timeline.getObjectClips(obj);
 }
 
 export function getActiveClipForObject(obj) {
-  if (!obj) return null;
-  const active = animState.activeClipByObject.get(obj);
-  if (active && animState.allClips.includes(active)) return active;
-  const list = getClipListForObject(obj);
-  return list[0] || null;
+  return timeline.getActiveClipForObject(obj);
 }
 
 export function getClipOwner(clip) {
-  return clip ? animState.clipOwners.get(clip) || null : null;
+  return timeline.getClipOwner(clip);
 }
 
 export function getAllSceneClips() {
-  const out = [];
-  const seen = new Set();
-  for (const clip of animState.allClips) {
-    if (clip && !seen.has(clip)) {
-      seen.add(clip);
-      out.push(clip);
-    }
+  return timeline.getAllClips(sceneStore.animations);
+}
+
+function getEffectiveClipContext() {
+  if (sceneStore.selected) {
+    const resolved = timeline.resolveClipContext(sceneStore.selected);
+    if (resolved.clip === timeline.currentClip) return resolved;
   }
-  if (Array.isArray(sceneStore.animations)) {
-    for (const clip of sceneStore.animations) {
-      if (clip && !seen.has(clip)) {
-        seen.add(clip);
-        out.push(clip);
-      }
-    }
-  }
-  return out;
+  return {
+    clip: timeline.currentClip,
+    owner: timeline.getClipOwner(timeline.currentClip),
+    filterTarget: null,
+  };
 }
 
 export function syncSceneClipListToStore() {
-  sceneStore.animations = getAllSceneClips();
+  sceneStore.animations = timeline.getAllClips();
   if (dom.animSelect) {
     dom.animSelect.innerHTML = '';
     sceneStore.animations.forEach((clip, idx) => {
@@ -133,206 +111,75 @@ export function snapshotClipState(clip) {
 export function restoreClipState(clip, snap) {
   if (!clip || !snap) return;
   clip.restoreSnapshot(snap);
-  evaluateActiveAnimationsAt(animState.currentTime);
+  evaluateActiveAnimationsAt(timeline.currentTime);
 }
 
-export function createClipForObject(obj, name = '', { duration = animState.defaultDuration || 3.0, select = true } = {}) {
+export function createClipForObject(obj, name = '', { duration = timeline.defaultDuration || 3.0, select = true } = {}) {
   const owner = obj || sceneStore.selected || null;
-  const list = owner ? getClipListForObject(owner) : [];
-  const nextIndex = (owner ? list.length : animState.allClips.length) + 1;
-  const clipName = String(name || '').trim() || `Animación ${nextIndex}`;
-  const clip = new AnimationClip(clipName, Math.max(0.2, Number(duration) || 3.0));
-
-  if (owner) {
-    list.push(clip);
-    animState.activeClipByObject.set(owner, clip);
-    animState.clipOwners.set(clip, owner);
-  }
-  animState.allClips.push(clip);
+  const clip = timeline.createClip(owner, name, { duration, select });
   syncSceneClipListToStore();
-  if (select) {
-    animState.currentClip = clip;
-    animState.currentTime = Math.min(animState.currentTime, clip.duration);
-  }
   syncAnimationUI();
   return clip;
 }
 
 export function selectClip(clip) {
-  if (!clip) {
-    animState.currentClip = null;
-    syncAnimationUI();
-    return;
-  }
-  animState.currentClip = clip;
-  const owner = animState.clipOwners.get(clip);
-  if (owner) {
-    animState.activeClipByObject.set(owner, clip);
-  }
-  const dur = Math.max(0.2, clip.duration > 0 ? clip.duration : (animState.defaultDuration || 3.0));
-  if (animState.currentTime > dur) animState.currentTime = dur;
-  evaluateActiveAnimationsAt(animState.currentTime);
+  timeline.selectClip(clip, { roots: sceneStore.userObjects, fallbackRoot: viewport.scene });
+  _animHooks.syncTransformInputs?.();
+  _animHooks.syncCameraHelperSelection?.();
   syncAnimationUI();
 }
 
 export function renameClip(clip, newName) {
-  if (!clip) return;
-  const trimmed = String(newName || '').trim();
-  if (!trimmed) return;
-  clip.name = trimmed;
+  if (!timeline.renameClip(clip, newName)) return;
   syncSceneClipListToStore();
   syncAnimationUI();
 }
 
 export function deleteClip(clip) {
-  if (!clip) return;
-  const owner = animState.clipOwners.get(clip);
-  if (owner) {
-    const list = getClipListForObject(owner).filter((c) => c !== clip);
-    animState.objectClips.set(owner, list);
-    if (animState.activeClipByObject.get(owner) === clip) {
-      if (list.length) animState.activeClipByObject.set(owner, list[0]);
-      else animState.activeClipByObject.delete(owner);
-    }
-  }
-  animState.allClips = animState.allClips.filter((c) => c !== clip);
-  animState.clipOwners.delete(clip);
-
+  if (!timeline.deleteClip(clip, sceneStore.selected)) return;
   if (Array.isArray(sceneStore.animations)) {
     sceneStore.animations = sceneStore.animations.filter((c) => c !== clip);
-  }
-  if (animState.currentClip === clip) {
-    animState.currentClip =
-      (sceneStore.selected && getActiveClipForObject(sceneStore.selected)) ||
-      animState.allClips[0] ||
-      sceneStore.animations[0] ||
-      null;
   }
   syncSceneClipListToStore();
   syncAnimationUI();
 }
 
 export function cleanupClipsForObject(obj) {
-  if (!obj) return;
-  const toDelete = [];
-  for (const clip of animState.allClips) {
-    const owner = animState.clipOwners.get(clip);
-    if (owner && (owner === obj || _isDescendant(owner, obj))) {
-      toDelete.push(clip);
-    }
-  }
-  for (const clip of toDelete) {
-    deleteClip(clip);
-  }
+  timeline.cleanupClipsForObject(obj, sceneStore.selected);
+  syncSceneClipListToStore();
+  syncAnimationUI();
 }
 
 export function clearAllCustomClips() {
-  animState.objectClips = new WeakMap();
-  animState.activeClipByObject = new WeakMap();
-  animState.clipOwners = new WeakMap();
-  animState.allClips = [];
-  animState.currentClip = null;
-  animState.currentTime = 0;
-  animState.playing = false;
+  timeline.clearAllClips();
+  _lastSyncedSelection = undefined;
+  syncSceneClipListToStore();
   syncAnimationUI();
 }
 
 export function captureAnimStateSnapshot() {
-  return {
-    allClips: animState.allClips.slice(),
-    owners: animState.allClips.map((c) => [c, animState.clipOwners.get(c) || null]),
-    currentClip: animState.currentClip,
-  };
+  return timeline.captureStateSnapshot();
 }
 
 export function restoreAnimStateSnapshot(snap) {
-  if (!snap) return;
-  animState.objectClips = new WeakMap();
-  animState.activeClipByObject = new WeakMap();
-  animState.clipOwners = new WeakMap();
-  animState.allClips = (snap.allClips || []).slice();
-  for (const [clip, owner] of snap.owners || []) {
-    if (!clip) continue;
-    if (owner) {
-      animState.clipOwners.set(clip, owner);
-      const list = getClipListForObject(owner);
-      if (!list.includes(clip)) list.push(clip);
-      if (!animState.activeClipByObject.get(owner)) {
-        animState.activeClipByObject.set(owner, clip);
-      }
-    }
-  }
-  animState.currentClip = snap.currentClip || animState.allClips[0] || null;
+  timeline.restoreStateSnapshot(snap, sceneStore.selected);
+  _lastSyncedSelection = sceneStore.selected;
   syncSceneClipListToStore();
   syncAnimationUI();
 }
 
 export function registerImportedClips(root, clips = []) {
-  if (!root || !Array.isArray(clips) || !clips.length) return;
-  const list = getClipListForObject(root);
-  for (const clip of clips) {
-    if (!clip) continue;
-    if (!(clip.duration > 0)) clip.duration = 3.0;
-    if (!list.includes(clip)) list.push(clip);
-    if (!animState.allClips.includes(clip)) animState.allClips.push(clip);
-    animState.clipOwners.set(clip, root);
-  }
-  if (!animState.activeClipByObject.get(root) && list[0]) {
-    animState.activeClipByObject.set(root, list[0]);
-  }
-  if (!animState.currentClip && list[0]) {
-    animState.currentClip = list[0];
-  }
+  timeline.registerImportedClips(root, clips);
+  syncSceneClipListToStore();
   syncAnimationUI();
-}
-
-function _isDescendant(node, ancestor) {
-  let cur = node;
-  while (cur) {
-    if (cur === ancestor) return true;
-    cur = cur.parent;
-  }
-  return false;
 }
 
 // ============================================================
 // EVALUACIÓN DE CLIPS CONSUMIENDO LA LIBRERÍA
 // ============================================================
 
-function collectEvaluableClips() {
-  const activeClips = [];
-  const seen = new Set();
-
-  for (const root of sceneStore.userObjects) {
-    const clip = getActiveClipForObject(root);
-    if (clip && !seen.has(clip)) {
-      seen.add(clip);
-      activeClips.push(clip);
-    }
-    if (typeof root.traverse === 'function') {
-      root.traverse((child) => {
-        if (child === root) return;
-        const c = getActiveClipForObject(child);
-        if (c && !seen.has(c)) {
-          seen.add(c);
-          activeClips.push(c);
-        }
-      });
-    }
-  }
-
-  if (animState.currentClip && !seen.has(animState.currentClip)) {
-    seen.add(animState.currentClip);
-    activeClips.push(animState.currentClip);
-  }
-
-  return activeClips;
-}
-
 export function evaluateClipAt(clip, time) {
-  if (!clip || !clip.tracks.length) return;
-  const owner = animState.clipOwners.get(clip) || viewport.scene;
-  const updatedObjects = clip.evaluateAt(time, owner);
+  const updatedObjects = timeline.evaluateClipAt(clip, time, viewport.scene);
   if (
     cameraView.activeSceneCam &&
     viewport.controls &&
@@ -344,37 +191,51 @@ export function evaluateClipAt(clip, time) {
 }
 
 export function evaluateActiveAnimationsAt(time) {
-  const clips = collectEvaluableClips();
-  for (const clip of clips) {
-    evaluateClipAt(clip, time);
+  const updatedObjects = timeline.evaluateAt(time, sceneStore.userObjects, viewport.scene);
+  if (
+    cameraView.activeSceneCam &&
+    viewport.controls &&
+    updatedObjects.includes(cameraView.activeSceneCam)
+  ) {
+    viewport.controls.syncFromCamera();
+    _animHooks.updateViewfinderOverlay?.();
   }
   _animHooks.syncTransformInputs?.();
   _animHooks.syncCameraHelperSelection?.();
 }
 
 // ============================================================
-// KEYFRAMES (CONSUMO DE API DE AnimationClip)
+// KEYFRAMES (DELEGADO EN AnimationTimeline / AnimationClip)
 // ============================================================
 
-export function getClipKeyframeTimes(clip, property = null) {
-  return clip ? clip.getKeyframeTimes(property) : [];
+export function getClipKeyframeTimes(clip, property = null, target = null, owner = null) {
+  return clip ? clip.getKeyframeTimes({ property, target, owner }) : [];
 }
 
 export function isPlayheadOnKeyframe(
-  clip = animState.currentClip,
-  time = animState.currentTime,
+  clip = timeline.currentClip,
+  time = timeline.currentTime,
   properties = null
 ) {
   if (!clip) return false;
-  return clip.hasKeyframeAt(time, { properties, eps: KEYFRAME_HIT_EPS });
+  const ctx = getEffectiveClipContext();
+  if (clip === ctx.clip && ctx.filterTarget) {
+    return clip.hasKeyframeAt(time, {
+      properties,
+      target: ctx.filterTarget,
+      owner: ctx.owner,
+      eps: timeline.keyframeHitEps,
+    });
+  }
+  return clip.hasKeyframeAt(time, { properties, eps: timeline.keyframeHitEps });
 }
 
-export function getClipInterpolation(clip = animState.currentClip) {
+export function getClipInterpolation(clip = timeline.currentClip) {
   return clip ? clip.getInterpolation() : 'linear';
 }
 
 export function applyInterpolation(interp) {
-  const clip = animState.currentClip;
+  const clip = timeline.currentClip;
   if (!clip) return;
   const before = clip.captureSnapshot();
   clip.setInterpolation(interp);
@@ -387,68 +248,49 @@ export function applyInterpolation(interp) {
     after,
     label: `Curva: ${INTERP_LABELS[interp] || interp}`,
   });
-  evaluateActiveAnimationsAt(animState.currentTime);
+  evaluateActiveAnimationsAt(timeline.currentTime);
   syncAnimationUI();
 }
 
 export function insertKeyframeAt(
   obj,
-  time = animState.currentTime,
+  time = timeline.currentTime,
   { properties = null, recordHistory = true } = {}
 ) {
   if (!obj) {
     setStatus('Selecciona un objeto para agregar un keyframe.', true);
     return false;
   }
-  let clip =
-    animState.currentClip && getClipOwner(animState.currentClip) === obj
-      ? animState.currentClip
-      : getActiveClipForObject(obj);
-  const createdNewClip = !clip;
-  const beforeAnimState = createdNewClip && recordHistory ? captureAnimStateSnapshot() : null;
-  if (!clip) {
-    const baseDur = animState.defaultDuration || 3.0;
-    clip = createClipForObject(obj, '', { duration: Math.max(baseDur, Math.ceil(time + 0.5)), select: true });
-  }
-  animState.currentClip = clip;
-
   const props =
     Array.isArray(properties) && properties.length
       ? properties
       : getActiveToolKeyframeProperties() || ['position', 'quaternion', 'scale'];
 
-  const t = snapTimelineTime(time);
-  const before = clip.captureSnapshot();
-  const updated = clip.setObjectKeyframe(obj, t, props, { mergeEps: KEYFRAME_HIT_EPS, autoExpand: true });
-  if (!updated) {
-    if (createdNewClip && beforeAnimState) restoreAnimStateSnapshot(beforeAnimState);
-    return false;
-  }
+  const res = timeline.insertKeyframe(obj, time, { properties: props });
+  if (!res.ok) return false;
 
-  const after = clip.captureSnapshot();
   if (recordHistory) {
     const propLabel = props.length === 1 ? (PROP_LABELS[props[0]] || props[0]) : 'Transformación';
-    const afterAnimState = createdNewClip ? captureAnimStateSnapshot() : null;
     const pushEntries = () => {
-      if (createdNewClip && beforeAnimState && afterAnimState) {
+      if (res.createdNewClip && res.beforeState && res.afterState) {
         history.push({
           type: 'animState',
-          before: beforeAnimState,
-          after: afterAnimState,
+          before: res.beforeState,
+          after: res.afterState,
           label: 'Crear clip',
         });
       }
       history.push({
         type: 'animClip',
-        clip,
-        owner: obj,
-        before,
-        after,
-        label: `Keyframe ${propLabel} en ${t.toFixed(2)}s`,
+        clip: res.clip,
+        owner: res.target,
+        before: res.beforeClip,
+        after: res.afterClip,
+        label: `Keyframe ${propLabel} en ${res.time.toFixed(2)}s`,
       });
     };
-    if (createdNewClip) {
-      history.runGrouped(`Keyframe ${propLabel} en ${t.toFixed(2)}s`, pushEntries);
+    if (res.createdNewClip) {
+      history.runGrouped(`Keyframe ${propLabel} en ${res.time.toFixed(2)}s`, pushEntries);
     } else {
       pushEntries();
     }
@@ -459,13 +301,22 @@ export function insertKeyframeAt(
 }
 
 export function removeKeyframeAt(
-  clip = animState.currentClip,
-  time = animState.currentTime,
+  clip = timeline.currentClip,
+  time = timeline.currentTime,
   { properties = null } = {}
 ) {
   if (!clip) return false;
+  const ctx = getEffectiveClipContext();
+  const target = clip === ctx.clip ? ctx.filterTarget : null;
+  const owner = clip === ctx.clip ? ctx.owner : getClipOwner(clip);
+
   const before = clip.captureSnapshot();
-  const anyRemoved = clip.removeKeyframeAt(time, { properties, eps: KEYFRAME_HIT_EPS });
+  const anyRemoved = clip.removeKeyframeAt(time, {
+    properties,
+    target,
+    owner,
+    eps: timeline.keyframeHitEps,
+  });
   if (!anyRemoved) return false;
 
   const after = clip.captureSnapshot();
@@ -477,54 +328,76 @@ export function removeKeyframeAt(
     after,
     label: 'Quitar keyframe',
   });
-  evaluateActiveAnimationsAt(animState.currentTime);
+  evaluateActiveAnimationsAt(timeline.currentTime);
   syncAnimationUI();
   return true;
 }
 
 export function toggleKeyframeAtCurrentTime() {
-  const clip = animState.currentClip;
+  const ctx = getEffectiveClipContext();
   const activeProps = getActiveToolKeyframeProperties();
-  if (clip && isPlayheadOnKeyframe(clip, animState.currentTime, activeProps)) {
-    removeKeyframeAt(clip, animState.currentTime, { properties: activeProps });
+  if (ctx.clip && timeline.hasKeyframeAtSelection(sceneStore.selected, timeline.currentTime, activeProps)) {
+    removeKeyframeAt(ctx.clip, timeline.currentTime, { properties: activeProps });
     const tag = activeProps?.length === 1 ? ` (${PROP_LABELS[activeProps[0]] || activeProps[0]})` : '';
-    setStatus(`Keyframe${tag} eliminado en ${animState.currentTime.toFixed(2)}s`);
+    setStatus(`Keyframe${tag} eliminado en ${timeline.currentTime.toFixed(2)}s`);
     return;
   }
-  const target = sceneStore.selected || getClipOwner(clip);
+  const target = sceneStore.selected || getClipOwner(ctx.clip);
   if (!target) {
     setStatus('Selecciona un objeto para insertar un keyframe.', true);
     return;
   }
   const insertProps = activeProps || ['position', 'quaternion', 'scale'];
-  if (insertKeyframeAt(target, animState.currentTime, { properties: insertProps, recordHistory: true })) {
+  if (insertKeyframeAt(target, timeline.currentTime, { properties: insertProps, recordHistory: true })) {
     const tag = insertProps.length === 1 ? ` (${PROP_LABELS[insertProps[0]] || insertProps[0]})` : '';
-    setStatus(`Keyframe${tag} guardado en ${animState.currentTime.toFixed(2)}s`);
+    setStatus(`Keyframe${tag} guardado en ${timeline.currentTime.toFixed(2)}s`);
   }
 }
 
 export function recordAutoKeyframeIfNeeded(targets = [], opts = {}) {
-  if (viewport.appMode !== 'animacion' || !animState.autoKeyframe || animState.playing) return;
+  if (viewport.appMode !== 'animacion' || !timeline.autoKeyframe || timeline.playing) return;
   const list = Array.isArray(targets) && targets.length ? targets : sceneStore.selected ? [sceneStore.selected] : [];
-  const { beforeList = null, afterList = null, properties = null } = opts;
+  const toolProps = viewport.gizmo?.editPivot ? null : getActiveToolKeyframeProperties();
 
-  list.forEach((obj, idx) => {
-    if (!obj) return;
-    let props = properties;
-    if (!props && Array.isArray(beforeList) && Array.isArray(afterList) && beforeList[idx] && afterList[idx]) {
-      const changed = AnimationClip.detectChangedProperties(beforeList[idx], afterList[idx]);
-      const toolProps = getActiveToolKeyframeProperties();
-      if (toolProps && toolProps.length === 1 && !viewport.gizmo?.editPivot) {
-        props = changed.includes(toolProps[0]) ? toolProps : changed;
-      } else {
-        props = changed;
-      }
-    } else if (!props) {
-      props = getActiveToolKeyframeProperties() || ['position', 'quaternion', 'scale'];
-    }
-    if (!props || !props.length) return;
-    insertKeyframeAt(obj, animState.currentTime, { properties: props, recordHistory: true });
+  const recorded = timeline.recordAutoKeyframe(list, {
+    beforeList: opts.beforeList || null,
+    afterList: opts.afterList || null,
+    properties: opts.properties || null,
+    toolProperties: toolProps,
+    time: timeline.currentTime,
   });
+  if (!recorded.length) return;
+
+  for (const res of recorded) {
+    const propLabel = res.properties.length === 1
+      ? (PROP_LABELS[res.properties[0]] || res.properties[0])
+      : 'Transformación';
+    const pushEntries = () => {
+      if (res.createdNewClip && res.beforeState && res.afterState) {
+        history.push({
+          type: 'animState',
+          before: res.beforeState,
+          after: res.afterState,
+          label: 'Crear clip',
+        });
+      }
+      history.push({
+        type: 'animClip',
+        clip: res.clip,
+        owner: res.target,
+        before: res.beforeClip,
+        after: res.afterClip,
+        label: `Keyframe ${propLabel} en ${res.time.toFixed(2)}s`,
+      });
+    };
+    if (res.createdNewClip) {
+      history.runGrouped(`Keyframe ${propLabel} en ${res.time.toFixed(2)}s`, pushEntries);
+    } else {
+      pushEntries();
+    }
+  }
+  syncSceneClipListToStore();
+  syncAnimationUI();
 }
 
 // ============================================================
@@ -533,57 +406,68 @@ export function recordAutoKeyframeIfNeeded(targets = [], opts = {}) {
 
 export function copyKeyframeFromTimeline(clip, time, properties = null) {
   if (!clip) return false;
-  const data = clip.extractKeyframeData(time, { properties, eps: KEYFRAME_HIT_EPS });
+  const ctx = getEffectiveClipContext();
+  const data = clip.extractKeyframeData(time, {
+    properties,
+    target: clip === ctx.clip ? ctx.filterTarget : null,
+    owner: clip === ctx.clip ? ctx.owner : getClipOwner(clip),
+    eps: timeline.keyframeHitEps,
+  });
   if (!data) {
     setStatus('No hay keyframe en ese punto para copiar.', true);
     return false;
   }
-  animState.copiedKeyframe = data;
+  timeline.copiedKeyframe = data;
   const names = Object.keys(data.properties).map((p) => PROP_LABELS[p] || p).join(', ');
   setStatus(`Keyframe copiado (${names}) de ${data.sourceTime.toFixed(2)}s.`);
   return true;
 }
 
-export function pasteKeyframeAtCurrentTime(targetObj = null, time = animState.currentTime) {
-  const data = animState.copiedKeyframe;
-  if (!data) {
-    setStatus('No has copiado ningún keyframe todavía. Mantén presionado un keyframe para copiarlo.', true);
-    return false;
-  }
-  const obj = targetObj || sceneStore.selected || getClipOwner(animState.currentClip);
-  if (!obj) {
-    setStatus('Selecciona un objeto para pegar el keyframe.', true);
-    return false;
-  }
-  let clip =
-    animState.currentClip && getClipOwner(animState.currentClip) === obj
-      ? animState.currentClip
-      : getActiveClipForObject(obj);
-  if (!clip) {
-    clip = createClipForObject(obj, '', { duration: Math.max(3.0, Math.ceil(time + 0.5)), select: true });
-  }
-  animState.currentClip = clip;
-
-  const t = snapTimelineTime(time);
-  const before = clip.captureSnapshot();
-  const pasted = clip.applyKeyframeData(obj, data, t, { mergeEps: KEYFRAME_HIT_EPS, autoExpand: true });
-  if (!pasted.length) return false;
-
-  const after = clip.captureSnapshot();
-  history.push({
-    type: 'animClip',
-    clip,
-    owner: obj,
-    before,
-    after,
-    label: `Pegar keyframe en ${t.toFixed(2)}s`,
+export function pasteKeyframeAtCurrentTime(targetObj = null, time = timeline.currentTime) {
+  const obj = targetObj || sceneStore.selected || getClipOwner(timeline.currentClip);
+  const res = timeline.pasteKeyframe(obj, time, {
+    roots: sceneStore.userObjects,
+    fallbackRoot: viewport.scene,
   });
+  if (!res.ok) {
+    if (res.reason === 'empty-clipboard') {
+      setStatus('No has copiado ningún keyframe todavía. Mantén presionado un keyframe para copiarlo.', true);
+    } else if (res.reason === 'no-target') {
+      setStatus('Selecciona un objeto para pegar el keyframe.', true);
+    }
+    return false;
+  }
 
-  evaluateActiveAnimationsAt(animState.currentTime);
+  const pushEntries = () => {
+    if (res.createdNewClip && res.beforeState && res.afterState) {
+      history.push({
+        type: 'animState',
+        before: res.beforeState,
+        after: res.afterState,
+        label: 'Crear clip',
+      });
+    }
+    history.push({
+      type: 'animClip',
+      clip: res.clip,
+      owner: res.owner,
+      before: res.beforeClip,
+      after: res.afterClip,
+      label: `Pegar keyframe en ${res.time.toFixed(2)}s`,
+    });
+  };
+  if (res.createdNewClip) {
+    history.runGrouped(`Pegar keyframe en ${res.time.toFixed(2)}s`, pushEntries);
+  } else {
+    pushEntries();
+  }
+
+  _animHooks.syncTransformInputs?.();
+  _animHooks.syncCameraHelperSelection?.();
   syncSceneClipListToStore();
   syncAnimationUI();
-  const names = pasted.map((p) => PROP_LABELS[p] || p).join(', ');
-  setStatus(`Keyframe pegado (${names}) en ${t.toFixed(2)}s.`);
+  const names = res.pasted.map((p) => PROP_LABELS[p] || p).join(', ');
+  setStatus(`Keyframe pegado (${names}) en ${res.time.toFixed(2)}s.`);
   return true;
 }
 
@@ -592,28 +476,34 @@ export function pasteKeyframeAtCurrentTime(targetObj = null, time = animState.cu
 // ============================================================
 
 export function setTimelineTime(t) {
-  animState.currentTime = Math.max(0, Number(t) || 0);
-  evaluateActiveAnimationsAt(animState.currentTime);
+  const updatedObjects = timeline.setCurrentTime(t, sceneStore.userObjects, viewport.scene);
+  if (
+    cameraView.activeSceneCam &&
+    viewport.controls &&
+    updatedObjects.includes(cameraView.activeSceneCam)
+  ) {
+    viewport.controls.syncFromCamera();
+    _animHooks.updateViewfinderOverlay?.();
+  }
+  _animHooks.syncTransformInputs?.();
+  _animHooks.syncCameraHelperSelection?.();
   syncAnimationHeader();
   drawTimelineCanvas();
 }
 
 export function getActiveClipDuration() {
-  if (animState.currentClip && animState.currentClip.duration > 0) {
-    return animState.currentClip.duration;
-  }
-  return animState.defaultDuration || 3.0;
+  return timeline.getActiveDuration();
 }
 
 export function jumpToZeroTime() {
-  if (animState.playing) setTimelinePlaying(false);
+  if (timeline.playing) setTimelinePlaying(false);
   setTimelineTime(0);
 }
 
 export function jumpPrevKeyframe() {
-  const kfs = getClipKeyframeTimes(animState.currentClip);
+  const kfs = timeline.getKeyframeTimesForSelection(sceneStore.selected);
   if (!kfs.length) return;
-  const cur = animState.currentTime;
+  const cur = timeline.currentTime;
   for (let i = kfs.length - 1; i >= 0; i--) {
     if (kfs[i] < cur - 0.015) {
       setTimelineTime(kfs[i]);
@@ -624,9 +514,9 @@ export function jumpPrevKeyframe() {
 }
 
 export function jumpNextKeyframe() {
-  const kfs = getClipKeyframeTimes(animState.currentClip);
+  const kfs = timeline.getKeyframeTimesForSelection(sceneStore.selected);
   if (!kfs.length) return;
-  const cur = animState.currentTime;
+  const cur = timeline.currentTime;
   for (let i = 0; i < kfs.length; i++) {
     if (kfs[i] > cur + 0.015) {
       setTimelineTime(kfs[i]);
@@ -637,64 +527,33 @@ export function jumpNextKeyframe() {
 }
 
 export function setTimelinePlaying(play) {
-  const next = Boolean(play);
-  if (next) {
-    const clips = collectEvaluableClips();
-    const hasAnyKey = clips.some((c) => c.tracks.some((tr) => tr.times.length > 0));
-    if (!hasAnyKey) {
-      setStatus('Agrega al menos 2 keyframes para reproducir la animación.');
-      animState.playing = false;
-      syncAnimationHeader();
-      return;
-    }
-    const dur = Math.max(0.2, getTimelinePlaybackDuration());
-    if (animState.loopMode === 'once' && animState.currentTime >= dur - 0.005) {
-      animState.currentTime = 0;
-    }
-    _pingPongDir = 1;
+  const res = timeline.setPlaying(play, sceneStore.userObjects, sceneStore.animations);
+  if (play && res.empty) {
+    setStatus('Agrega al menos 2 keyframes para reproducir la animación.');
   }
-  animState.playing = next;
   syncAnimationHeader();
 }
 
 export function toggleTimelinePlayback() {
-  setTimelinePlaying(!animState.playing);
+  setTimelinePlaying(!timeline.playing);
 }
 
 export function getTimelinePlaybackDuration() {
-  if (animState.currentClip && animState.currentClip.duration > 0) {
-    return animState.currentClip.duration;
-  }
-  return getMaxSceneAnimationDuration() || 3.0;
+  return timeline.getPlaybackDuration(sceneStore.userObjects, sceneStore.animations);
 }
 
 export function stepAnimationTimeline(dt) {
-  if (!animState.playing) return;
-  const dur = Math.max(0.2, getTimelinePlaybackDuration());
-  const step = dt * (animState.speed || 1);
-  let t = animState.currentTime;
-
-  if (animState.loopMode === 'pingpong') {
-    t += step * _pingPongDir;
-    if (t >= dur) {
-      t = dur - Math.max(0, t - dur);
-      _pingPongDir = -1;
-    } else if (t <= 0) {
-      t = Math.abs(t);
-      _pingPongDir = 1;
-    }
-  } else if (animState.loopMode === 'once') {
-    t += step;
-    if (t >= dur) {
-      t = dur;
-      animState.playing = false;
-    }
-  } else {
-    t = (t + step) % dur;
+  const stepRes = timeline.step(dt, sceneStore.userObjects, sceneStore.animations, viewport.scene);
+  if (
+    cameraView.activeSceneCam &&
+    viewport.controls &&
+    stepRes.updatedObjects.includes(cameraView.activeSceneCam)
+  ) {
+    viewport.controls.syncFromCamera();
+    _animHooks.updateViewfinderOverlay?.();
   }
-
-  animState.currentTime = Math.max(0, Math.min(dur, t));
-  evaluateActiveAnimationsAt(animState.currentTime);
+  _animHooks.syncTransformInputs?.();
+  _animHooks.syncCameraHelperSelection?.();
   if (viewport.appMode === 'animacion') {
     syncAnimationHeader();
     drawTimelineCanvas();
@@ -706,16 +565,12 @@ export function stepAnimationTimeline(dt) {
 // ============================================================
 
 export function getMaxSceneAnimationDuration() {
-  const clips = collectEvaluableClips();
-  const extra = Array.isArray(sceneStore.animations) ? sceneStore.animations : [];
-  const maxDur = AnimationClip.getMaxDuration([...clips, ...extra]);
-  const speed = animState.speed > 0 ? animState.speed : 1;
-  return maxDur > 0 ? maxDur / speed : 0;
+  return timeline.getMaxDuration(sceneStore.userObjects, sceneStore.animations);
 }
 
 export function beginCameraTimelinePlayback() {
-  animState.playing = false;
-  animState.currentTime = 0;
+  timeline.playing = false;
+  timeline.currentTime = 0;
   evaluateActiveAnimationsAt(0);
 
   if (sceneStore.mixer && sceneStore.animations.length) {
@@ -736,9 +591,9 @@ export function beginCameraTimelinePlayback() {
 }
 
 export function stepCameraTimelinePlayback(dt) {
-  const speed = animState.speed > 0 ? animState.speed : 1;
-  animState.currentTime += dt * speed;
-  evaluateActiveAnimationsAt(animState.currentTime);
+  const speed = timeline.speed > 0 ? timeline.speed : 1;
+  timeline.currentTime += dt * speed;
+  evaluateActiveAnimationsAt(timeline.currentTime);
   if (sceneStore.mixer && sceneStore.animPlaying) {
     sceneStore.mixer.update(dt * speed);
   }
@@ -783,19 +638,22 @@ function chooseTickStep(pxPerSec) {
 }
 
 function timeToX(t) {
-  return _tlWidth * 0.5 + (t - animState.currentTime) * animState.pxPerSec;
+  return _tlWidth * 0.5 + (t - timeline.currentTime) * animState.pxPerSec;
 }
 
 function xToTime(x) {
-  return animState.currentTime + (x - _tlWidth * 0.5) / animState.pxPerSec;
+  return timeline.currentTime + (x - _tlWidth * 0.5) / animState.pxPerSec;
 }
 
 function hitTestTimelineKeyframe(clip, x, y, hitTol = 13) {
   if (!clip || y <= RULER_H) return null;
+  const ctx = getEffectiveClipContext();
+  const target = clip === ctx.clip ? ctx.filterTarget : null;
+  const owner = clip === ctx.clip ? ctx.owner : getClipOwner(clip);
   const { rows, rowH } = getTimelineRows(_tlHeight);
   const rowIndex = Math.max(0, Math.min(rows.length - 1, Math.floor((y - RULER_H) / rowH)));
   const row = rows[rowIndex];
-  const times = clip.getKeyframeTimes(row.filter);
+  const times = clip.getKeyframeTimes({ property: row.filter, target, owner });
   let bestT = null;
   let bestDist = hitTol;
   for (const kt of times) {
@@ -897,9 +755,10 @@ export function drawTimelineCanvas() {
     }
   }
 
-  // Filas de pistas
+  // Filas de pistas aisladas al objeto/hueso seleccionado
   const { rows, rowH } = getTimelineRows(h);
-  const clip = animState.currentClip;
+  const clipCtx = getEffectiveClipContext();
+  const clip = clipCtx.clip;
 
   rows.forEach((row, rIdx) => {
     const yTop = RULER_H + rIdx * rowH;
@@ -919,12 +778,16 @@ export function drawTimelineCanvas() {
     ctx.fillText(row.label, 8, yMid);
 
     if (!clip) return;
-    const times = clip.getKeyframeTimes(row.filter);
+    const times = clip.getKeyframeTimes({
+      property: row.filter,
+      target: clipCtx.filterTarget,
+      owner: clipCtx.owner,
+    });
 
     for (const kt of times) {
       const kx = timeToX(kt);
       if (kx < -14 || kx > w + 14) continue;
-      const isAtHead = Math.abs(kt - animState.currentTime) <= KEYFRAME_HIT_EPS;
+      const isAtHead = Math.abs(kt - timeline.currentTime) <= timeline.keyframeHitEps;
       const r = rIdx === 0 ? 5.5 : 4.2;
 
       ctx.save();
@@ -939,7 +802,7 @@ export function drawTimelineCanvas() {
     }
   });
 
-  // Línea amarilla de duración (siempre visible y arrastrable, con o sin clip activo)
+  // Línea amarilla de duración
   if (xDur >= -24 && xDur <= w + 24) {
     ctx.strokeStyle = '#facc15';
     ctx.lineWidth = _tlHoverZone === 'duration' ? 2.5 : 2;
@@ -1000,13 +863,14 @@ export function drawTimelineCanvas() {
 // ============================================================
 
 export function syncAnimationHeader() {
-  const clip = animState.currentClip;
+  const ctx = getEffectiveClipContext();
+  const clip = ctx.clip;
   const dur = getActiveClipDuration();
 
   if (dom.animTlClipLabel) {
     if (clip) {
-      const owner = getClipOwner(clip);
-      const ownerPrefix = owner?.name ? `${owner.name} · ` : '';
+      const displayNode = ctx.filterTarget || ctx.owner;
+      const ownerPrefix = displayNode?.name ? `${displayNode.name} · ` : '';
       dom.animTlClipLabel.textContent = `${ownerPrefix}${clip.name || 'Animación'}`;
     } else if (sceneStore.selected) {
       dom.animTlClipLabel.textContent = `${sceneStore.selected.name || 'Objeto'} · Sin clip`;
@@ -1015,9 +879,8 @@ export function syncAnimationHeader() {
     }
   }
 
-  // Keyframe bajo línea azul (según herramienta activa o cualquier pista en modo selección)
   const activeProps = getActiveToolKeyframeProperties();
-  const onKf = isPlayheadOnKeyframe(clip, animState.currentTime, activeProps);
+  const onKf = isPlayheadOnKeyframe(clip, timeline.currentTime, activeProps);
   if (dom.btnTlKeyframe) {
     dom.btnTlKeyframe.classList.toggle('has-keyframe', onKf);
     const propTag = activeProps?.length === 1 ? ` (${PROP_LABELS[activeProps[0]] || activeProps[0]})` : '';
@@ -1026,45 +889,42 @@ export function syncAnimationHeader() {
       : `Insertar keyframe${propTag} en el tiempo actual`;
   }
 
-  // Botón Play / Pause (2 rectángulos verticales al reproducir)
   if (dom.btnTlPlay) {
-    dom.btnTlPlay.classList.toggle('is-playing', animState.playing);
-    dom.btnTlPlay.setAttribute('aria-pressed', String(animState.playing));
-    dom.btnTlPlay.title = animState.playing ? 'Pausar animación (Espacio)' : 'Reproducir animación (Espacio)';
+    dom.btnTlPlay.classList.toggle('is-playing', timeline.playing);
+    dom.btnTlPlay.setAttribute('aria-pressed', String(timeline.playing));
+    dom.btnTlPlay.title = timeline.playing ? 'Pausar animación (Espacio)' : 'Reproducir animación (Espacio)';
     const playIcon = dom.btnTlPlay.querySelector('.icon-play');
     const pauseIcon = dom.btnTlPlay.querySelector('.icon-pause') || dom.btnTlPlay.querySelector('.icon-stop');
     if (playIcon) {
       playIcon.removeAttribute('hidden');
-      playIcon.style.display = animState.playing ? 'none' : 'block';
+      playIcon.style.display = timeline.playing ? 'none' : 'block';
     }
     if (pauseIcon) {
       pauseIcon.removeAttribute('hidden');
-      pauseIcon.style.display = animState.playing ? 'block' : 'none';
+      pauseIcon.style.display = timeline.playing ? 'block' : 'none';
     }
   }
 
-  // Curva activa en popover
   const activeInterp = getClipInterpolation(clip);
   document.querySelectorAll('#anim-curve-popover [data-anim-interp]').forEach((btn) => {
     btn.classList.toggle('is-active', btn.dataset.animInterp === activeInterp);
   });
 
-  // Ajustes •••
   if (dom.animSetSpeed) {
     if (document.activeElement !== dom.animSetSpeed) {
-      dom.animSetSpeed.value = String(animState.speed);
+      dom.animSetSpeed.value = String(timeline.speed);
     }
     syncRangeVisual(dom.animSetSpeed);
   }
   if (dom.animSetSpeedVal) {
-    dom.animSetSpeedVal.textContent = `${animState.speed.toFixed(2)}×`;
+    dom.animSetSpeedVal.textContent = `${timeline.speed.toFixed(2)}×`;
   }
   if (dom.animSetDuration && document.activeElement !== dom.animSetDuration) {
     dom.animSetDuration.value = dur.toFixed(1);
   }
-  if (dom.animSetLoop) dom.animSetLoop.value = animState.loopMode;
-  if (dom.animSetAutokey) dom.animSetAutokey.checked = animState.autoKeyframe;
-  if (dom.animSetSnap) dom.animSetSnap.checked = animState.snap;
+  if (dom.animSetLoop) dom.animSetLoop.value = timeline.loopMode;
+  if (dom.animSetAutokey) dom.animSetAutokey.checked = timeline.autoKeyframe;
+  if (dom.animSetSnap) dom.animSetSnap.checked = timeline.snap;
 }
 
 const PENCIL_SVG = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
@@ -1129,7 +989,7 @@ export function renderAnimationManagerList() {
 
     for (const clip of clips) {
       const owner = getClipOwner(clip);
-      const isActive = animState.currentClip === clip;
+      const isActive = timeline.currentClip === clip;
       const item = document.createElement('div');
       item.className = 'anim-mgr-item' + (isActive ? ' is-active' : '');
 
@@ -1148,7 +1008,7 @@ export function renderAnimationManagerList() {
       main.append(nameSpan, metaSpan);
       main.addEventListener('click', () => {
         if (owner && owner !== sceneStore.selected) {
-          animState.activeClipByObject.set(owner, clip);
+          timeline.activeClipByObject.set(owner, clip);
         }
         selectClip(clip);
       });
@@ -1191,19 +1051,19 @@ export function renderAnimationManagerList() {
 }
 
 export function syncAnimationUI() {
-  if (viewport.appMode === 'animacion') {
-    const sel = sceneStore.selected;
-    if (sel) {
-      const objActive = getActiveClipForObject(sel);
-      if (objActive && animState.currentClip !== objActive && getClipOwner(animState.currentClip) !== sel) {
-        animState.currentClip = objActive;
-      }
-    }
-    if (!animState.currentClip) {
-      animState.currentClip =
-        (sel && getActiveClipForObject(sel)) || getAllSceneClips()[0] || null;
+  if (sceneStore.selected !== _lastSyncedSelection) {
+    _lastSyncedSelection = sceneStore.selected;
+    timeline.syncForSelection(sceneStore.selected);
+  } else if (viewport.appMode === 'animacion' && sceneStore.selected) {
+    const resolved = timeline.resolveClipContext(sceneStore.selected);
+    const curOwner = getClipOwner(timeline.currentClip);
+    if (resolved.clip && curOwner !== sceneStore.selected && resolved.owner !== curOwner) {
+      timeline.currentClip = resolved.clip;
+    } else if (!resolved.clip && timeline.currentClip && curOwner !== sceneStore.selected) {
+      timeline.currentClip = null;
     }
   }
+
   if (dom.animTimeline) {
     const isMob90 = isCssLandscape90();
     const { height: vpH } = getLogicalViewportSize();
@@ -1251,7 +1111,7 @@ function openKeyframeContextMenu({ x, y, hit, clip }) {
     });
     menu.appendChild(copyBtn);
 
-    if (animState.copiedKeyframe) {
+    if (timeline.copiedKeyframe) {
       const pasteBtn = document.createElement('button');
       pasteBtn.type = 'button';
       pasteBtn.className = 'anim-kf-menu-btn';
@@ -1276,12 +1136,12 @@ function openKeyframeContextMenu({ x, y, hit, clip }) {
     });
     menu.appendChild(delBtn);
   } else {
-    if (!animState.copiedKeyframe) {
+    if (!timeline.copiedKeyframe) {
       closeKeyframeContextMenu();
       setStatus('No hay ningún keyframe copiado para pegar. Mantén presionado un keyframe para copiarlo.', true);
       return;
     }
-    const targetT = snapTimelineTime(animState.currentTime);
+    const targetT = snapTimelineTime(timeline.currentTime);
     const title = document.createElement('div');
     title.className = 'anim-kf-menu-title';
     title.textContent = `Línea azul · ${targetT.toFixed(2)}s`;
@@ -1332,7 +1192,6 @@ export function bindAnimationUI() {
   if (_bound) return;
   _bound = true;
 
-  // Menú hamburguesa superior izquierdo
   dom.btnAnimMenu?.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!dom.animManagerPopover) return;
@@ -1356,7 +1215,6 @@ export function bindAnimationUI() {
     setStatus(`Animación "${clip.name}" creada para ${owner.name || 'objeto'}.`);
   });
 
-  // Botonera derecha del timeline: Keyframe, Zoom+, Zoom-, 0s, <, Play/Stop, >, Curva, •••
   dom.btnTlKeyframe?.addEventListener('click', toggleKeyframeAtCurrentTime);
   dom.btnTlZoomIn?.addEventListener('click', () => {
     animState.pxPerSec = Math.min(MAX_PX_PER_SEC, Math.round(animState.pxPerSec * 1.35));
@@ -1371,7 +1229,6 @@ export function bindAnimationUI() {
   dom.btnTlPlay?.addEventListener('click', toggleTimelinePlayback);
   dom.btnTlNextKf?.addEventListener('click', jumpNextKeyframe);
 
-  // Botón de curva
   dom.btnTlCurve?.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!dom.animCurvePopover) return;
@@ -1388,7 +1245,6 @@ export function bindAnimationUI() {
     });
   });
 
-  // Botón ••• de ajustes
   dom.btnTlMore?.addEventListener('click', (e) => {
     e.stopPropagation();
     if (!dom.animSettingsPopover) return;
@@ -1399,23 +1255,23 @@ export function bindAnimationUI() {
   });
 
   dom.animSetSpeed?.addEventListener('input', (e) => {
-    animState.speed = Math.max(0.1, Math.min(3, Number(e.target.value) || 1));
-    if (dom.animSetSpeedVal) dom.animSetSpeedVal.textContent = `${animState.speed.toFixed(2)}×`;
+    timeline.speed = Math.max(0.1, Math.min(3, Number(e.target.value) || 1));
+    if (dom.animSetSpeedVal) dom.animSetSpeedVal.textContent = `${timeline.speed.toFixed(2)}×`;
   });
 
   dom.animSetDuration?.addEventListener('change', (e) => {
     const nextDur = Math.max(0.2, Number(e.target.value) || 3);
-    const clip = animState.currentClip;
+    const clip = timeline.currentClip;
     if (!clip) {
-      animState.defaultDuration = nextDur;
-      if (animState.currentTime > nextDur) animState.currentTime = nextDur;
+      timeline.defaultDuration = nextDur;
+      if (timeline.currentTime > nextDur) timeline.currentTime = nextDur;
       syncAnimationHeader();
       drawTimelineCanvas();
       return;
     }
     const before = clip.captureSnapshot();
     clip.duration = nextDur;
-    if (animState.currentTime > nextDur) animState.currentTime = nextDur;
+    if (timeline.currentTime > nextDur) timeline.currentTime = nextDur;
     const after = clip.captureSnapshot();
     history.push({ type: 'animClip', clip, owner: getClipOwner(clip), before, after, label: 'Duración' });
     syncAnimationHeader();
@@ -1423,16 +1279,15 @@ export function bindAnimationUI() {
   });
 
   dom.animSetLoop?.addEventListener('change', (e) => {
-    animState.loopMode = e.target.value || 'repeat';
+    timeline.loopMode = e.target.value || 'repeat';
   });
   dom.animSetAutokey?.addEventListener('change', (e) => {
-    animState.autoKeyframe = e.target.checked;
+    timeline.autoKeyframe = e.target.checked;
   });
   dom.animSetSnap?.addEventListener('change', (e) => {
-    animState.snap = e.target.checked;
+    timeline.snap = e.target.checked;
   });
 
-  // Cerrar subpopovers y menú contextual al hacer clic fuera
   document.addEventListener('pointerdown', (e) => {
     if (viewport.appMode !== 'animacion') return;
     if (!e.target.closest('#anim-kf-menu')) {
@@ -1451,7 +1306,6 @@ export function bindAnimationUI() {
 
   dom.animKfMenu?.addEventListener('contextmenu', (e) => e.preventDefault());
 
-  // Barra superior de redimensionamiento vertical del timeline
   if (dom.animTlResize && dom.animTimeline) {
     let resizeDrag = null;
     dom.animTlResize.addEventListener('pointerdown', (e) => {
@@ -1486,7 +1340,6 @@ export function bindAnimationUI() {
     dom.animTlResize.addEventListener('pointercancel', endResize);
   }
 
-  // Interacción sobre el canvas de la línea de tiempo (drag + mantener presionado copiar/pegar + pinch zoom)
   if (dom.animTlCanvas) {
     let tlDrag = null;
     let holdTimer = 0;
@@ -1509,8 +1362,9 @@ export function bindAnimationUI() {
       }
       const [x, y] = clientToLocalPoint(dom.animTlCanvas, e);
       const isTouchCtx = Boolean(e.pointerType && e.pointerType !== 'mouse') || Boolean(e.sourceCapabilities?.firesTouchEvents);
-      const hit = hitTestTimelineKeyframe(animState.currentClip, x, y, isTouchCtx ? 22 : 16);
-      openKeyframeContextMenu({ x, y, hit, clip: animState.currentClip });
+      const clip = getEffectiveClipContext().clip;
+      const hit = hitTestTimelineKeyframe(clip, x, y, isTouchCtx ? 22 : 16);
+      openKeyframeContextMenu({ x, y, hit, clip });
     });
 
     dom.animTlCanvas.addEventListener('pointerdown', (e) => {
@@ -1539,16 +1393,16 @@ export function bindAnimationUI() {
       const kfHitTol = isTouch ? 22 : 13;
       const dur = getActiveClipDuration();
       const xDur = timeToX(dur);
+      const clipCtx = getEffectiveClipContext();
+      const clip = clipCtx.clip;
 
-      if (animState.playing) setTimelinePlaying(false);
+      if (timeline.playing) setTimelinePlaying(false);
 
-      // 0. Pill lateral "-> Xs" cuando la línea amarilla está fuera de pantalla
       if (xDur > _tlWidth + 24 && x >= _tlWidth - 62 && y <= RULER_H + 6) {
         setTimelineTime(dur);
         return;
       }
 
-      // 1. Arrastrar línea amarilla de duración (funciona con o sin clip activo)
       const inDurBadge = y <= RULER_H + 4 && Math.abs(x - xDur) <= Math.max(durHitTol, 28);
       if (Math.abs(x - xDur) <= durHitTol || inDurBadge) {
         tlDrag = {
@@ -1557,15 +1411,14 @@ export function bindAnimationUI() {
           startX: x,
           startY: y,
           startDur: dur,
-          before: animState.currentClip ? animState.currentClip.captureSnapshot() : null,
+          before: clip ? clip.captureSnapshot() : null,
           holdTriggered: false,
         };
         return;
       }
 
-      // 2. Keyframe en fila (Resumen / Posición / Rotación / Escala)
-      const hit = hitTestTimelineKeyframe(animState.currentClip, x, y, kfHitTol);
-      if (hit) {
+      const hit = hitTestTimelineKeyframe(clip, x, y, kfHitTol);
+      if (hit && clip) {
         tlDrag = {
           mode: 'keyframe',
           pointerId: e.pointerId,
@@ -1575,28 +1428,30 @@ export function bindAnimationUI() {
           origTime: hit.time,
           curTime: hit.time,
           properties: hit.filter ? [hit.filter] : null,
+          target: clipCtx.filterTarget,
+          owner: clipCtx.owner,
+          clip,
           hit,
           moved: false,
           holdTriggered: false,
-          before: animState.currentClip.captureSnapshot(),
+          before: clip.captureSnapshot(),
         };
         holdTimer = setTimeout(() => {
           if (!tlDrag || tlDrag.pointerId !== e.pointerId || tlDrag.moved) return;
           tlDrag.holdTriggered = true;
           lastHoldOpenedAt = performance.now();
-          openKeyframeContextMenu({ x, y, hit: tlDrag.hit, clip: animState.currentClip });
+          openKeyframeContextMenu({ x, y, hit: tlDrag.hit, clip: tlDrag.clip });
         }, LONG_PRESS_MS);
         return;
       }
 
-      // 3. Arrastrar tiempo o mantener presionado en lugar vacío (para pegar en la línea azul)
       tlDrag = {
         mode: 'scrub',
         pointerId: e.pointerId,
         pointerType: e.pointerType,
         startX: x,
         startY: y,
-        startTime: animState.currentTime,
+        startTime: timeline.currentTime,
         moved: false,
         holdTriggered: false,
       };
@@ -1604,7 +1459,7 @@ export function bindAnimationUI() {
         if (!tlDrag || tlDrag.pointerId !== e.pointerId || tlDrag.moved) return;
         tlDrag.holdTriggered = true;
         lastHoldOpenedAt = performance.now();
-        openKeyframeContextMenu({ x, y, hit: null, clip: animState.currentClip });
+        openKeyframeContextMenu({ x, y, hit: null, clip });
       }, LONG_PRESS_MS);
     });
 
@@ -1628,7 +1483,8 @@ export function bindAnimationUI() {
         const xDur = timeToX(dur);
         const overDurBadge = y <= RULER_H + 4 && Math.abs(x - xDur) <= 24;
         const overDur = Math.abs(x - xDur) <= 14 || overDurBadge;
-        const overKf = !overDur && Boolean(hitTestTimelineKeyframe(animState.currentClip, x, y, 14));
+        const clip = getEffectiveClipContext().clip;
+        const overKf = !overDur && Boolean(hitTestTimelineKeyframe(clip, x, y, 14));
         const nextZone = overDur ? 'duration' : overKf ? 'keyframe' : null;
         if (nextZone !== _tlHoverZone) {
           _tlHoverZone = nextZone;
@@ -1650,25 +1506,26 @@ export function bindAnimationUI() {
       if (tlDrag.mode === 'duration') {
         const rawDur = tlDrag.startDur + dx / animState.pxPerSec;
         const snapped = Math.max(0.2, Math.round(rawDur * 20) / 20);
-        if (animState.currentClip) {
-          animState.currentClip.duration = snapped;
+        if (timeline.currentClip) {
+          timeline.currentClip.duration = snapped;
         } else {
-          animState.defaultDuration = snapped;
+          timeline.defaultDuration = snapped;
         }
         syncAnimationHeader();
         drawTimelineCanvas();
-      } else if (tlDrag.mode === 'keyframe' && animState.currentClip) {
+      } else if (tlDrag.mode === 'keyframe' && tlDrag.clip) {
         if (!tlDrag.moved) return;
         const rawT = tlDrag.origTime + dx / animState.pxPerSec;
         const nextT = Math.min(Math.max(0, getActiveClipDuration()), snapTimelineTime(rawT));
         if (Math.abs(nextT - tlDrag.curTime) > 1e-4) {
-          // Vista previa desde el snapshot original: jamás arrastra ni se come keyframes intermedios
-          animState.currentClip.previewMoveKeyframe(tlDrag.before, tlDrag.origTime, nextT, {
+          tlDrag.clip.previewMoveKeyframe(tlDrag.before, tlDrag.origTime, nextT, {
             properties: tlDrag.properties,
-            eps: KEYFRAME_HIT_EPS,
+            target: tlDrag.target,
+            owner: tlDrag.owner,
+            eps: timeline.keyframeHitEps,
           });
           tlDrag.curTime = nextT;
-          evaluateActiveAnimationsAt(animState.currentTime);
+          evaluateActiveAnimationsAt(timeline.currentTime);
           syncAnimationHeader();
           drawTimelineCanvas();
         }
@@ -1692,51 +1549,52 @@ export function bindAnimationUI() {
 
       if (finished.mode === 'duration') {
         const finalDur = getActiveClipDuration();
-        if (animState.currentTime > finalDur) {
-          animState.currentTime = finalDur;
-          evaluateActiveAnimationsAt(animState.currentTime);
+        if (timeline.currentTime > finalDur) {
+          timeline.currentTime = finalDur;
+          evaluateActiveAnimationsAt(timeline.currentTime);
         }
-        if (animState.currentClip && finished.before && Math.abs(finalDur - finished.startDur) > 1e-3) {
+        if (timeline.currentClip && finished.before && Math.abs(finalDur - finished.startDur) > 1e-3) {
           history.push({
             type: 'animClip',
-            clip: animState.currentClip,
-            owner: getClipOwner(animState.currentClip),
+            clip: timeline.currentClip,
+            owner: getClipOwner(timeline.currentClip),
             before: finished.before,
-            after: animState.currentClip.captureSnapshot(),
+            after: timeline.currentClip.captureSnapshot(),
             label: 'Duración animación',
           });
         }
         syncAnimationHeader();
         drawTimelineCanvas();
-      } else if (finished.mode === 'keyframe' && animState.currentClip && finished.before) {
+      } else if (finished.mode === 'keyframe' && finished.clip && finished.before) {
         if (!finished.moved) {
           setTimelineTime(finished.origTime);
         } else if (Math.abs(finished.curTime - finished.origTime) > 1e-3) {
-          // Confirmar movimiento con fusión únicamente si se soltó intencionalmente sobre otro keyframe
-          animState.currentClip.commitMoveKeyframe(
+          finished.clip.commitMoveKeyframe(
             finished.before,
             finished.origTime,
             finished.curTime,
             {
               properties: finished.properties,
-              eps: KEYFRAME_HIT_EPS,
+              target: finished.target,
+              owner: finished.owner,
+              eps: timeline.keyframeHitEps,
               mergeEps: 0.025,
             }
           );
-          evaluateActiveAnimationsAt(animState.currentTime);
+          evaluateActiveAnimationsAt(timeline.currentTime);
           syncAnimationHeader();
           drawTimelineCanvas();
           history.push({
             type: 'animClip',
-            clip: animState.currentClip,
-            owner: getClipOwner(animState.currentClip),
+            clip: finished.clip,
+            owner: getClipOwner(finished.clip),
             before: finished.before,
-            after: animState.currentClip.captureSnapshot(),
+            after: finished.clip.captureSnapshot(),
             label: 'Mover keyframe',
           });
         } else {
-          animState.currentClip.restoreSnapshot(finished.before);
-          evaluateActiveAnimationsAt(animState.currentTime);
+          finished.clip.restoreSnapshot(finished.before);
+          evaluateActiveAnimationsAt(timeline.currentTime);
           drawTimelineCanvas();
         }
       }
@@ -1757,7 +1615,7 @@ export function bindAnimationUI() {
           drawTimelineCanvas();
         } else {
           const deltaSec = (e.deltaX || e.deltaY) / animState.pxPerSec;
-          setTimelineTime(animState.currentTime + deltaSec);
+          setTimelineTime(timeline.currentTime + deltaSec);
         }
       },
       { passive: false }

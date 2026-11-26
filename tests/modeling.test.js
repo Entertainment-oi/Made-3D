@@ -33,6 +33,10 @@ import {
   adjustMeshVertexDensity,
   canIncreaseMeshDensity,
   canDecreaseMeshDensity,
+  getMeshDensityInfo,
+  hasModelingStateChanged,
+  mergeObjectMeshes,
+  weldObjectMesh,
 } from '../src/modules/modeling.js';
 import { Sculptor, SCULPT_TOOLS } from '../src/modules/sculpt.js';
 import { drawLightsOverlay, SelectionOutline, GizmoRenderer2D, beginDrag } from '../src/modules/gizmo.js';
@@ -1338,6 +1342,46 @@ test('mergeMeshes no orgánico (remeshOrganic=false) produce topología limpia, 
   assert.ok(stTorSph.minDihedralDot > -0.1);
   assert.ok(stTorSph.maxAspect < 40);
 });
+
+test('getMeshDensityInfo, hasModelingStateChanged, mergeObjectMeshes y weldObjectMesh funcionan desde la librería', () => {
+  const boxA = new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial({ color: 0xffffff }));
+  const boxB = new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial({ color: 0xffffff }));
+  boxB.position.set(0.5, 0, 0);
+  boxA.updateMatrixWorld(true, true);
+  boxB.updateMatrixWorld(true, true);
+
+  const dInfo = getMeshDensityInfo(boxA, 150, { isEditable: true });
+  assert.equal(dInfo.baseVerts, 8);
+  assert.equal(dInfo.targetPct, 150);
+  assert.equal(dInfo.canScale, true);
+
+  const sBefore = { level: 0, smoothness: 1, smoothShading: false, showCage: true, alwaysShowCage: false };
+  const sSame = { ...sBefore };
+  const sDiff = { ...sBefore, level: 2 };
+  assert.equal(hasModelingStateChanged(sBefore, sSame), false);
+  assert.equal(hasModelingStateChanged(sBefore, sDiff), true);
+
+  const mergeRes = mergeObjectMeshes([boxA, boxB], { primary: boxA, threshold: 0.015, seamSmooth: 0, remeshOrganic: false });
+  assert.equal(mergeRes.ok, true);
+  assert.equal(mergeRes.primary, boxA);
+  assert.deepEqual(mergeRes.others, [boxB]);
+  assert.equal(boxA._subsurf.baseMesh.faces.length, 6);
+
+  // Malla con shell desconectado soluble mediante weldObjectMesh
+  const twoShells = new EditableMesh(
+    [
+      { x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, { x: 1, y: 1, z: 0 }, { x: 0, y: 1, z: 0 },
+      { x: 0.002, y: 0, z: 0 }, { x: 0, y: 0, z: 1 }, { x: 0, y: 1, z: 0.001 },
+    ],
+    [[0, 1, 2, 3], [4, 5, 6]]
+  );
+  const shellMesh = new Mesh(twoShells.toGeometry({ flatShading: true }), new StandardMaterial({ color: 0xffffff }));
+  setMeshSubsurf(shellMesh, { baseMesh: twoShells, level: 0, smoothShading: false });
+  const weldRes = weldObjectMesh(shellMesh, { threshold: 0.01 });
+  assert.equal(weldRes.ok, true);
+  assert.ok(weldRes.mergedVertices >= 2);
+});
+
 
 
 

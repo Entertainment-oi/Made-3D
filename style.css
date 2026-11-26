@@ -283,7 +283,8 @@ html.is-mobile-landscape-90 .app-shell {
   overflow: hidden;
 }
 
-.viewport-wrap.is-sculpt-cursor {
+.viewport-wrap.is-sculpt-cursor,
+.viewport-wrap.is-paint-cursor {
   cursor: crosshair;
 }
 
@@ -296,6 +297,7 @@ html.is-mobile-landscape-90 .app-shell {
 
 .edit-overlay,
 .sculpt-overlay,
+.paint-overlay,
 .rig-overlay {
   position: absolute;
   inset: 0;
@@ -307,6 +309,7 @@ html.is-mobile-landscape-90 .app-shell {
 
 .edit-overlay { z-index: 4; }
 .sculpt-overlay,
+.paint-overlay,
 .rig-overlay { z-index: 5; }
 
 /* ============================================================
@@ -381,6 +384,8 @@ html.is-mobile-landscape-90 .app-shell {
 .viewport-wrap.is-camera-view .edit-tool-bar,
 .viewport-wrap.is-camera-view .sculpt-brush-bar,
 .viewport-wrap.is-camera-view .sculpt-params-bar,
+.viewport-wrap.is-camera-view #paint-brush-bar,
+.viewport-wrap.is-camera-view #paint-params-bar,
 .viewport-wrap.is-camera-view #rig-tool-bar,
 .viewport-wrap.is-camera-view #rig-weights-bar {
   display: none !important;
@@ -584,18 +589,21 @@ html.is-mobile-landscape-90 .app-shell {
   left: 12px;
 }
 
-#sculpt-brush-bar {
+#sculpt-brush-bar,
+#paint-brush-bar {
   max-height: calc(var(--app-vh) - 140px);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: none;
 }
 
-#sculpt-brush-bar::-webkit-scrollbar {
+#sculpt-brush-bar::-webkit-scrollbar,
+#paint-brush-bar::-webkit-scrollbar {
   display: none;
 }
 
-#sculpt-brush-bar .brush-btn {
+#sculpt-brush-bar .brush-btn,
+#paint-brush-bar .brush-btn {
   min-height: 41px;
   padding: 4px 3px;
   flex-shrink: 0;
@@ -627,15 +635,115 @@ html.is-mobile-landscape-90 .app-shell {
   justify-content: center;
 }
 
-#btn-sculpt-more {
+#btn-sculpt-more,
+#btn-paint-more {
   width: 34px;
   min-height: 30px;
   padding: 2px;
 }
 
-#btn-sculpt-more svg {
+#btn-sculpt-more svg,
+#btn-paint-more svg {
   width: 18px;
   height: 18px;
+}
+
+.paint-color-trigger {
+  position: relative;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  padding: 2px;
+  border: 1px solid var(--border-strong);
+  background: rgba(255, 255, 255, 0.08);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: border-color 140ms ease, transform 140ms ease;
+}
+
+.paint-color-trigger:hover {
+  border-color: var(--accent);
+}
+
+.paint-color-trigger:focus-within {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.paint-color-preview {
+  width: 100%;
+  height: 100%;
+  border-radius: 6px;
+  background: #ef4444;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+}
+
+.paint-color-native {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.paint-palette-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.paint-palette-swatch {
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  cursor: pointer;
+  transition: transform 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.paint-palette-swatch:hover {
+  transform: scale(1.06);
+  border-color: rgba(255, 255, 255, 0.65);
+}
+
+.paint-palette-swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.paint-palette-swatch.is-active {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.paint-hex-input {
+  width: 96px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: var(--panel-solid);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  text-transform: uppercase;
+  text-align: center;
+}
+
+.paint-hex-input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.paint-num-badge {
+  min-width: 34px;
+  text-align: right;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: #fde68a;
 }
 
 .tool-cube-btn,
@@ -3220,6 +3328,7 @@ html.is-mobile-landscape-90 .tool-cube-btn svg {
 }
 
 html.is-mobile-landscape-90 #sculpt-brush-bar,
+html.is-mobile-landscape-90 #paint-brush-bar,
 html.is-mobile-landscape-90 #rig-tool-bar {
   max-height: calc(var(--app-vh) - 104px);
   overflow-y: auto;
@@ -3251,7 +3360,8 @@ html.is-mobile-landscape-90 .side-flyout.flyout-wide {
   max-height: calc(var(--app-vh) - 114px);
 }
 
-html.is-mobile-landscape-90 #pop-sculpt-more {
+html.is-mobile-landscape-90 #pop-sculpt-more,
+html.is-mobile-landscape-90 #pop-paint-more {
   top: auto;
   bottom: 0;
   transform: none;

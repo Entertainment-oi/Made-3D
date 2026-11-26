@@ -33,6 +33,10 @@ export {
   snapshotMeshModelingState,
   restoreMeshModelingState,
   cloneSubsurfState,
+  getMeshDensityInfo,
+  hasModelingStateChanged,
+  mergeObjectMeshes,
+  weldObjectMesh,
 } from '../modeling/SubdivisionSurface.js';
 export {
   MeshEditor,

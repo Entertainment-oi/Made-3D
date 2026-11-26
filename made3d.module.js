@@ -79,6 +79,7 @@ const _moduleRegistry = {
   objExporter: () => import('./src/exporters/OBJExporter.js'),
   modeling: () => import('./src/modules/modeling.js'),
   sculpt: () => import('./src/modules/sculpt.js'),
+  paint: () => import('./src/modules/paint.js'),
   gizmo: () => import('./src/modules/gizmo.js'),
   animation: () => import('./src/modules/animation.js'),
   rigging: () => import('./src/modules/rigging.js'),
@@ -150,6 +151,7 @@ export const loadOBJExporter = () => loadModule('objExporter');
 
 export const loadModeling = () => loadModule('modeling');
 export const loadSculpt = () => loadModule('sculpt');
+export const loadPaint = () => loadModule('paint');
 export const loadGizmo = () => loadModule('gizmo');
 export const loadAnimation = () => loadModule('animation');
 export const loadRigging = () => loadModule('rigging');

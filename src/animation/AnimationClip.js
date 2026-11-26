@@ -340,6 +340,14 @@ export class AnimationClip {
     this.duration = duration;
   }
 
+  static trackMatchesTarget(track, target, fallbackRoot = null) {
+    if (!target) return true;
+    if (!track) return false;
+    if (track.target) return track.target === target;
+    const resolved = AnimationClip.resolveTrackTarget(track, fallbackRoot);
+    return Boolean(resolved && resolved.object === target);
+  }
+
   static resolveTrackTarget(track, fallbackRoot = null) {
     if (!track) return null;
     if (track.target) {
@@ -465,10 +473,26 @@ export class AnimationClip {
     return track;
   }
 
-  getKeyframeTimes(property = null) {
+  hasTracksForTarget(target, owner = null) {
+    if (!target || !this.tracks.length) return false;
+    return this.tracks.some(
+      (tr) => tr.times && tr.times.length > 0 && AnimationClip.trackMatchesTarget(tr, target, owner)
+    );
+  }
+
+  getKeyframeTimes(propertyOrOpts = null) {
+    let property = propertyOrOpts;
+    let target = null;
+    let owner = null;
+    if (propertyOrOpts && typeof propertyOrOpts === 'object' && !Array.isArray(propertyOrOpts)) {
+      property = propertyOrOpts.properties ?? propertyOrOpts.property ?? null;
+      target = propertyOrOpts.target ?? null;
+      owner = propertyOrOpts.owner ?? null;
+    }
     const raw = [];
     for (const tr of this.tracks) {
       if (!trackMatchesProperty(tr, property)) continue;
+      if (target && !AnimationClip.trackMatchesTarget(tr, target, owner)) continue;
       for (let i = 0; i < tr.times.length; i++) {
         raw.push(tr.times[i]);
       }
@@ -483,9 +507,10 @@ export class AnimationClip {
     return uniq;
   }
 
-  hasKeyframeAt(time, { properties = null, eps = 0.035 } = {}) {
+  hasKeyframeAt(time, { properties = null, target = null, owner = null, eps = 0.035 } = {}) {
     for (const tr of this.tracks) {
       if (!trackMatchesProperty(tr, properties)) continue;
+      if (target && !AnimationClip.trackMatchesTarget(tr, target, owner)) continue;
       if (tr.hasKeyframeAt(time, eps)) return true;
     }
     return false;
@@ -509,10 +534,11 @@ export class AnimationClip {
     return updated;
   }
 
-  removeKeyframeAt(time, { properties = null, eps = 0.035 } = {}) {
+  removeKeyframeAt(time, { properties = null, target = null, owner = null, eps = 0.035 } = {}) {
     let anyRemoved = false;
     for (const tr of this.tracks) {
       if (!trackMatchesProperty(tr, properties)) continue;
+      if (target && !AnimationClip.trackMatchesTarget(tr, target, owner)) continue;
       if (tr.removeKeyframeAt(time, eps)) anyRemoved = true;
     }
     return anyRemoved;
@@ -542,31 +568,34 @@ export class AnimationClip {
     return this;
   }
 
-  previewMoveKeyframe(beforeSnapshot, fromTime, toTime, { properties = null, eps = 0.035 } = {}) {
+  previewMoveKeyframe(beforeSnapshot, fromTime, toTime, { properties = null, target = null, owner = null, eps = 0.035 } = {}) {
     if (beforeSnapshot) this.restoreSnapshot(beforeSnapshot);
     let moved = false;
     for (const tr of this.tracks) {
       if (!trackMatchesProperty(tr, properties)) continue;
+      if (target && !AnimationClip.trackMatchesTarget(tr, target, owner)) continue;
       if (tr.moveKeyframe(fromTime, toTime, { eps, merge: false })) moved = true;
     }
     return moved;
   }
 
-  commitMoveKeyframe(beforeSnapshot, fromTime, toTime, { properties = null, eps = 0.035, mergeEps = 0.025 } = {}) {
+  commitMoveKeyframe(beforeSnapshot, fromTime, toTime, { properties = null, target = null, owner = null, eps = 0.035, mergeEps = 0.025 } = {}) {
     if (beforeSnapshot) this.restoreSnapshot(beforeSnapshot);
     let moved = false;
     for (const tr of this.tracks) {
       if (!trackMatchesProperty(tr, properties)) continue;
+      if (target && !AnimationClip.trackMatchesTarget(tr, target, owner)) continue;
       if (tr.moveKeyframe(fromTime, toTime, { eps, mergeEps, merge: true })) moved = true;
     }
     return moved;
   }
 
-  extractKeyframeData(time, { properties = null, eps = 0.035 } = {}) {
+  extractKeyframeData(time, { properties = null, target = null, owner = null, eps = 0.035 } = {}) {
     const outProps = {};
     let count = 0;
     for (const tr of this.tracks) {
       if (!trackMatchesProperty(tr, properties)) continue;
+      if (target && !AnimationClip.trackMatchesTarget(tr, target, owner)) continue;
       const kf = tr.getKeyframeValueAt(time, eps);
       if (!kf) continue;
       const prop = tr.property || (tr.name && tr.name.includes('.') ? tr.name.split('.').pop() : null);

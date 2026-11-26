@@ -9,8 +9,9 @@ import {
   recorder,
   sculpt,
   edit,
+  paint,
   debug,
-  animState,
+  timeline,
   getCameraMeta,
   isDescendantOrSelf,
 } from './editor/store.js';
@@ -31,6 +32,11 @@ import {
   syncSculptUI,
   renderSculptOverlay,
 } from './editor/sculptController.js';
+import {
+  setPaintMode,
+  syncPaintUI,
+  renderPaintOverlay,
+} from './editor/paintController.js';
 import {
   setEditMode,
   syncEditUI,
@@ -75,6 +81,8 @@ history.setHooks({
   syncCameraHelperSelection,
   syncSelectedUI,
   syncSculptUI,
+  setPaintMode,
+  syncPaintUI,
   syncEditUI,
   setEditMode,
   setRigMode,
@@ -111,15 +119,19 @@ scheduler.register('lightOrbit', (_dt, ctx) => {
 scheduler.register('spinObjects', (dt) => {
   const sculptingMesh =
     sculpt.active && sculpt.sculptor.isStroking ? sculpt.sculptor.activeMesh : null;
+  const paintingMesh =
+    paint.active && paint.painter.isStroking ? paint.painter.activeMesh : null;
   const editingMesh =
     edit.active && edit.editor.drag ? edit.editor.mesh : null;
   for (const obj of sceneStore.spinObjects) {
     const dragging = viewport.gizmo?.drag && viewport.gizmo.objects.includes(obj);
     const beingSculpted =
       Boolean(sculptingMesh) && (obj === sculptingMesh || isDescendantOrSelf(sculptingMesh, obj));
+    const beingPainted =
+      Boolean(paintingMesh) && (obj === paintingMesh || isDescendantOrSelf(paintingMesh, obj));
     const beingEdited =
       Boolean(editingMesh) && (obj === editingMesh || isDescendantOrSelf(editingMesh, obj));
-    if (!dragging && !beingSculpted && !beingEdited) {
+    if (!dragging && !beingSculpted && !beingPainted && !beingEdited) {
       obj.rotation.y += dt * 0.85;
       if (obj === sceneStore.selected) syncTransformInputs();
     }
@@ -133,7 +145,7 @@ scheduler.register('animationMixer', (dt, ctx) => {
     (recorder.autoAnimStop || getMaxSceneAnimationDuration() > 0);
   if (recDrivesTimeline) return;
 
-  if (animState.playing) {
+  if (timeline.playing) {
     stepAnimationTimeline(dt);
   }
   if (sceneStore.mixer && sceneStore.animPlaying) {
@@ -202,6 +214,10 @@ scheduler.register('editOverlay', (_dt, ctx) => {
 
 scheduler.register('sculptOverlay', (_dt, ctx) => {
   renderSculptOverlay(ctx.activeViewportCam);
+});
+
+scheduler.register('paintOverlay', (_dt, ctx) => {
+  renderPaintOverlay(ctx.activeViewportCam);
 });
 
 scheduler.register('rigOverlay', (_dt, ctx) => {

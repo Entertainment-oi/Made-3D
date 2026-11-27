@@ -283,7 +283,7 @@ export class Picker {
     let best = null;
     const walk = (o) => {
       if (!o || !o.visible) return;
-      if (o.isLight && (o.isPointLight || o.isDirectionalLight) && this._isPickAllowed(o, camera)) {
+      if (o.isLight && (o.isPointLight || o.isDirectionalLight || o.isSpotLight) && this._isPickAllowed(o, camera)) {
         const wp = _v1.setFromMatrixPosition(o.matrixWorld);
         const z = -(ve[2] * wp.x + ve[6] * wp.y + ve[10] * wp.z + ve[14]);
         if (z > 0.02 || camera.fov === undefined) {

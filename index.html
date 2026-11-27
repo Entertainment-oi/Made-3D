@@ -5,14 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Made3D Studio</title>
     <meta name="description" content="Entorno interactivo con la librería 3D WebGL2 y WebGPU Made3D (v0.1.0)." />
-    <meta name="theme-color" content="#0d0e12" />
-    <meta name="mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-capable" content="yes" />
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <meta name="apple-mobile-web-app-title" content="Made3D" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="icon" type="image/svg+xml" href="/icon.svg" />
-    <link rel="icon" type="image/png" sizes="192x192" href="/pwa-192x192.png" />
     <meta property="og:title" content="Made3D Studio" />
     <meta property="og:description" content="Entorno interactivo con la librería 3D WebGL2 y WebGPU Made3D (v0.1.0)." />
     <meta property="og:type" content="website" />
@@ -72,20 +65,6 @@
         </div>
 
         <div class="topbar-right">
-          <button
-            type="button"
-            id="btn-install-pwa"
-            class="top-menu-btn top-install-btn"
-            title="Instalar Made3D Studio como aplicación"
-            aria-label="Instalar aplicación"
-            hidden
-          >
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
-            </svg>
-            <span id="btn-install-pwa-label">Instalar app</span>
-          </button>
-
           <button
             type="button"
             id="btn-nav-settings"
@@ -176,6 +155,41 @@
           </div>
 
           <div id="gizmo-readout" class="gizmo-readout" hidden></div>
+
+          <!-- Mini-submenu contextual (mantener presionado el visor) -->
+          <div id="viewport-context-menu" class="vp-context-menu" role="menu" aria-label="Opciones rápidas del visor" hidden>
+            <div class="vp-ctx-head">
+              <span class="vp-ctx-title">Opciones del visor</span>
+            </div>
+            <button type="button" id="btn-ctx-neutral" class="vp-ctx-btn" role="menuitemcheckbox" aria-checked="false">
+              <span class="vp-ctx-main">
+                <span class="vp-ctx-label">Desactivar luces</span>
+                <small class="vp-ctx-sub">Neutro · sin reflejos ni sombras</small>
+              </span>
+              <span id="ctx-neutral-badge" class="vp-ctx-badge">Off</span>
+            </button>
+            <div class="vp-ctx-divider"></div>
+            <button type="button" id="btn-ctx-shadows" class="vp-ctx-btn" role="menuitemcheckbox" aria-checked="true">
+              <span class="vp-ctx-label">Sombras</span>
+              <span id="ctx-shadows-badge" class="vp-ctx-badge">On</span>
+            </button>
+            <button type="button" id="btn-ctx-env" class="vp-ctx-btn" role="menuitemcheckbox" aria-checked="true">
+              <span class="vp-ctx-label">Reflejos HDRI</span>
+              <span id="ctx-env-badge" class="vp-ctx-badge">On</span>
+            </button>
+            <button type="button" id="btn-ctx-floor" class="vp-ctx-btn" role="menuitemcheckbox" aria-checked="true">
+              <span class="vp-ctx-label">Piso</span>
+              <span id="ctx-floor-badge" class="vp-ctx-badge">On</span>
+            </button>
+            <button type="button" id="btn-ctx-grid" class="vp-ctx-btn" role="menuitemcheckbox" aria-checked="true">
+              <span class="vp-ctx-label">Cuadrícula</span>
+              <span id="ctx-grid-badge" class="vp-ctx-badge">On</span>
+            </button>
+            <div class="vp-ctx-divider"></div>
+            <button type="button" id="btn-ctx-reset-cam" class="vp-ctx-btn" role="menuitem">
+              <span class="vp-ctx-label">Centrar cámara</span>
+            </button>
+          </div>
 
           <!-- ========================== MODO ANIMACIÓN: HAMBURGUESA SUPERIOR IZQUIERDA ========================== -->
           <div id="anim-top-left" class="anim-top-left" hidden>
@@ -840,6 +854,20 @@
                 <input type="range" id="rig-brush-size" class="v-range" min="0.06" max="2.5" step="0.02" value="0.40" aria-label="Tamaño del pincel de pesos" />
               </div>
             </div>
+            <div class="vslider-group">
+              <span class="vslider-title">Fuerza</span>
+              <span id="rig-brush-strength-val" class="vslider-num">0.42</span>
+              <div class="vslider-wrap">
+                <input type="range" id="rig-brush-strength" class="v-range" min="0.05" max="1" step="0.01" value="0.42" aria-label="Fuerza del pincel de pesos" />
+              </div>
+            </div>
+            <button type="button" id="btn-rig-smooth-weights" class="brush-btn rig-right-btn" title="Suavizar transición de pesos entre vértices">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 16c2.5-5 5-7 7.5-7s4.5 4 7 4 3.5-2 3.5-5" />
+                <path d="M4 20h16" />
+              </svg>
+              <span>Suavizar</span>
+            </button>
             <button type="button" id="btn-rig-eraser" class="brush-btn rig-right-btn" title="Activar/desactivar borrador de pesos">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
                 <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" />
@@ -1119,10 +1147,6 @@
                     <button type="button" id="btn-export-mtl" class="action-btn">.mtl</button>
                   </div>
                 </div>
-                <a id="btn-scene-download-zip" class="menu-item-btn download-link" href="./zip/Made-3D.zip" download="Made-3D.zip">
-                  <span>Descargar app PWA (.zip)</span>
-                  <small>Made-3D.zip</small>
-                </a>
               </div>
             </div>
 
@@ -1153,10 +1177,11 @@
               </div>
 
               <div id="malla-sub-agregar" class="action-grid" hidden>
-                <button type="button" class="action-btn" data-add="dirLight">+ Luz direccional</button>
+                <button type="button" class="action-btn" data-add="dirLight">+ Sol</button>
+                <button type="button" class="action-btn" data-add="spotLight">+ Luz direccional</button>
                 <button type="button" class="action-btn" data-add="pointLight">+ Luz puntual</button>
                 <button type="button" class="action-btn" data-add="camera">+ Cámara</button>
-                <button type="button" class="action-btn" data-add="rig">+ Rig / Esqueleto</button>
+                <button type="button" class="action-btn is-span2" data-add="rig">+ Rig / Esqueleto</button>
               </div>
             </div>
           </section>
@@ -1419,13 +1444,17 @@
                   </div>
                 </div>
 
-                <!-- Subpanel Luz (para PointLight / DirectionalLight seleccionada) -->
+                <!-- Subpanel Luz (para PointLight / SpotLight / DirectionalLight seleccionada) -->
                 <div id="light-obj-group" class="obj-subpanel" data-obj-panel="light" hidden>
                   <div class="field-row"><label class="field-label" for="sel-light-color">Color</label><input type="color" id="sel-light-color" class="input-color" value="#ffffff" /></div>
                   <div class="field-row"><label class="field-label" for="sel-light-intensity">Intensidad <span id="sel-light-intensity-val" class="val-num">1.0</span></label><input type="range" id="sel-light-intensity" min="0" max="30" step="0.1" value="1" /></div>
                   <div id="sel-light-point-fields" hidden>
-                    <div class="field-row"><label class="field-label" for="sel-light-distance">Alcance (círculos) <span id="sel-light-distance-val" class="val-num">18</span></label><input type="range" id="sel-light-distance" min="0" max="50" step="0.5" value="18" /></div>
+                    <div class="field-row"><label class="field-label" for="sel-light-distance">Alcance <span id="sel-light-distance-val" class="val-num">18</span></label><input type="range" id="sel-light-distance" min="0" max="50" step="0.5" value="18" /></div>
                     <div class="field-row"><label class="field-label" for="sel-light-decay">Caída (decay) <span id="sel-light-decay-val" class="val-num">2.0</span></label><input type="range" id="sel-light-decay" min="0" max="4" step="0.2" value="2" /></div>
+                  </div>
+                  <div id="sel-light-spot-fields" hidden>
+                    <div class="field-row"><label class="field-label" for="sel-light-angle">Ángulo del foco <span id="sel-light-angle-val" class="val-num">30°</span></label><input type="range" id="sel-light-angle" min="5" max="85" step="1" value="30" /></div>
+                    <div class="field-row"><label class="field-label" for="sel-light-penumbra">Suavizado de borde <span id="sel-light-penumbra-val" class="val-num">0.30</span></label><input type="range" id="sel-light-penumbra" min="0" max="1" step="0.05" value="0.3" /></div>
                   </div>
                   <div id="sel-light-dir-fields" hidden>
                     <label class="check-row"><input type="checkbox" id="sel-light-shadows" checked /> Proyectar sombras</label>
@@ -1513,11 +1542,13 @@
               </div>
 
               <div class="set-subpanel" data-set-panel="luces" hidden>
+                <label class="check-row"><input type="checkbox" id="neutral-lighting" /> Modo neutro (sin luces, reflejos ni sombras)</label>
+                <div class="flyout-divider"></div>
                 <div class="field-row"><label class="field-label" for="amb-intensity">Luz Ambiental <span id="amb-intensity-val" class="val-num">0.35</span></label><input type="range" id="amb-intensity" min="0" max="2" step="0.05" value="0.35" /></div>
                 <div class="flyout-divider"></div>
-                <div class="field-row"><label class="field-label" for="dir-intensity">Direccional <span id="dir-intensity-val" class="val-num">1.2</span></label><input type="range" id="dir-intensity" min="0" max="4" step="0.05" value="1.2" /></div>
-                <div class="field-row"><label class="field-label" for="dir-color">Color Direccional</label><input type="color" id="dir-color" class="input-color" value="#fff3df" /></div>
-                <label class="check-row"><input type="checkbox" id="dir-shadows" checked /> Sombras Direccional</label>
+                <div class="field-row"><label class="field-label" for="dir-intensity">Sol <span id="dir-intensity-val" class="val-num">1.2</span></label><input type="range" id="dir-intensity" min="0" max="4" step="0.05" value="1.2" /></div>
+                <div class="field-row"><label class="field-label" for="dir-color">Color del Sol</label><input type="color" id="dir-color" class="input-color" value="#fff3df" /></div>
+                <label class="check-row"><input type="checkbox" id="dir-shadows" checked /> Sombras del Sol</label>
                 <div class="field-row"><label class="field-label" for="dir-shadow-res">Resolución sombra <span id="dir-shadow-res-val" class="val-num">1024 px</span></label><select id="dir-shadow-res" class="input-select"></select></div>
                 <div class="field-row"><label class="field-label" for="dir-shadow-soft">Suavizado PCF <span id="dir-shadow-soft-val" class="val-num">1.25</span></label><input type="range" id="dir-shadow-soft" min="0" max="4" step="0.25" value="1.25" /></div>
                 <label class="check-row"><input type="checkbox" id="dir-orbit" /> Orbitar sol automáticamente</label>
@@ -1564,20 +1595,6 @@
             <div class="settings-foot">
               <button
                 type="button"
-                id="btn-settings-install-pwa"
-                class="menu-item-btn mobile-landscape-btn"
-                title="Instalar Made3D Studio como aplicación (PWA)"
-              >
-                <span class="mobile-landscape-label">
-                  <svg class="btn-inline-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9">
-                    <path d="M12 3v12m0 0l-4-4m4 4l4-4M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2" />
-                  </svg>
-                  <span>Instalar como app</span>
-                </span>
-                <small id="settings-install-pwa-state">PWA</small>
-              </button>
-              <button
-                type="button"
                 id="btn-mobile-landscape"
                 class="menu-item-btn mobile-landscape-btn"
                 aria-pressed="false"
@@ -1605,11 +1622,6 @@
               </div>
             </div>
             <ul id="object-list" class="object-list"></ul>
-            <div class="outliner-foot">
-              <a id="btn-download-zip" class="action-btn download-link" href="./zip/Made-3D.zip" download="Made-3D.zip">
-                Descargar Made-3D.zip (v0.1.0)
-              </a>
-            </div>
           </aside>
 
           <!-- Modal de Vista Previa de Render (antes de descargar) -->
@@ -1644,6 +1656,21 @@
               <div class="paint-uv-modal-toolbar">
                 <label class="check-row-compact"><input type="checkbox" id="paint-uv-wireframe" checked /> Mostrar malla UV</label>
                 <span id="paint-uv-meta" class="preview-meta"></span>
+              </div>
+              <div class="field-row">
+                <label class="field-label" for="paint-uv-size-preset">Tamaño PNG</label>
+                <select id="paint-uv-size-preset" class="input-select">
+                  <option value="auto" selected>Original de textura</option>
+                  <option value="512x512">512 × 512 px</option>
+                  <option value="1024x1024">1024 × 1024 px</option>
+                  <option value="2048x2048">2048 × 2048 px</option>
+                  <option value="4096x4096">4096 × 4096 px</option>
+                  <option value="custom">Personalizado</option>
+                </select>
+              </div>
+              <div class="res-inputs">
+                <label class="num-field">Ancho <input type="number" id="paint-uv-width" min="64" max="8192" step="1" value="1024" /></label>
+                <label class="num-field">Alto <input type="number" id="paint-uv-height" min="64" max="8192" step="1" value="1024" /></label>
               </div>
               <div class="studio-modal-foot">
                 <button type="button" id="btn-paint-uv-close" class="action-btn">Cerrar</button>
@@ -1734,41 +1761,6 @@
             <div class="drop-card">
               <h2 class="drop-title">Suelta tu archivo 3D aquí</h2>
               <p class="drop-sub">Compatible con .glb, .gltf, .obj/.mtl, texturas .ktx2 y paquetes .zip</p>
-            </div>
-          </div>
-
-          <!-- Indicador de modo sin conexión (PWA) -->
-          <div id="pwa-offline-banner" class="pwa-offline-banner" role="status" aria-live="polite" hidden>
-            <span class="pwa-offline-dot" aria-hidden="true"></span>
-            <span>Modo sin conexión — usando caché local</span>
-          </div>
-
-          <!-- Modal guía de instalación PWA (iOS Safari / navegador) -->
-          <div id="pwa-install-modal" class="studio-modal" role="dialog" aria-modal="true" aria-labelledby="pwa-install-modal-title" hidden>
-            <div class="studio-modal-card pwa-install-card">
-              <div class="studio-modal-head">
-                <h2 id="pwa-install-modal-title" class="group-title">Instalar Made3D Studio</h2>
-                <button type="button" id="btn-pwa-install-x" class="xyz-panel-close" aria-label="Cerrar instrucciones">×</button>
-              </div>
-              <div id="pwa-install-guide-ios" class="pwa-install-steps" hidden>
-                <p class="pwa-install-intro">Agrega Made3D Studio a tu pantalla de inicio para abrirla como aplicación:</p>
-                <ol class="pwa-steps-list">
-                  <li>Toca el botón <strong>Compartir</strong> en la barra de Safari.</li>
-                  <li>Desplázate hacia abajo y elige <strong>Añadir a pantalla de inicio</strong>.</li>
-                  <li>Toca <strong>Añadir</strong> para finalizar.</li>
-                </ol>
-              </div>
-              <div id="pwa-install-guide-browser" class="pwa-install-steps" hidden>
-                <p class="pwa-install-intro">Puedes instalar esta web como aplicación (PWA) directamente desde tu navegador:</p>
-                <ol class="pwa-steps-list">
-                  <li>Abre el menú del navegador (<strong>⋮</strong> o barra de direcciones).</li>
-                  <li>Selecciona <strong>Instalar aplicación</strong> o <strong>Añadir a pantalla de inicio</strong>.</li>
-                  <li>Una vez instalada funcionará en ventana propia y sin conexión.</li>
-                </ol>
-              </div>
-              <div class="studio-modal-foot">
-                <button type="button" id="btn-pwa-install-close" class="action-btn is-accent">Entendido</button>
-              </div>
             </div>
           </div>
 

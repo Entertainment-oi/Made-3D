@@ -49,6 +49,11 @@ export function syncGizmoXyzPanel() {
   }
 
   const o = sceneStore.selected;
+  const lockCamScale = mode === 'scale' && Boolean(o && o.isCamera) && !(edit.active && edit.editor.mesh);
+  [dom.gizmoValX, dom.gizmoValY, dom.gizmoValZ].forEach((inp) => {
+    if (inp) inp.disabled = lockCamScale;
+  });
+
   if (!o) {
     if (dom.gizmoValX) dom.gizmoValX.value = '0.00';
     if (dom.gizmoValY) dom.gizmoValY.value = '0.00';
@@ -145,6 +150,7 @@ export function bindGizmoControls() {
       } else if (mode === 'rotate') {
         o.rotation[axes[idx]] = val * DEG2RAD;
       } else if (mode === 'scale') {
+        if (o.isCamera) return;
         o.scale[axes[idx]] = Math.max(0.05, val);
       }
       o.updateMatrixWorld();

@@ -179,7 +179,10 @@ export function syncRigUI() {
     dom.btnRigWeights.disabled = !ctx.hasSkinnedWeights;
     dom.btnRigWeights.classList.toggle('is-active', active && ed.weightPaint);
   }
-  if (dom.btnRigEraser) dom.btnRigEraser.classList.toggle('is-active', ed.eraser);
+  if (dom.btnRigSmoothWeights) {
+    dom.btnRigSmoothWeights.classList.toggle('is-active', ed.weightBrushMode === 'smooth');
+  }
+  if (dom.btnRigEraser) dom.btnRigEraser.classList.toggle('is-active', ed.weightBrushMode === 'erase');
 
   if (dom.rigBrushSize) {
     dom.rigBrushSize.value = String(ed.brushSize);
@@ -187,6 +190,13 @@ export function syncRigUI() {
   }
   if (dom.rigBrushSizeVal) {
     dom.rigBrushSizeVal.textContent = ed.brushSize.toFixed(2);
+  }
+  if (dom.rigBrushStrength) {
+    dom.rigBrushStrength.value = String(ed.brushStrength);
+    syncRangeVisual(dom.rigBrushStrength);
+  }
+  if (dom.rigBrushStrengthVal) {
+    dom.rigBrushStrengthVal.textContent = ed.brushStrength.toFixed(2);
   }
 
   const interactiveOverlay = active && (ed.boneTool || ed.weightPaint);
@@ -292,7 +302,13 @@ export function bindRigControls() {
 
   dom.btnRigMirror?.addEventListener('click', () => {
     const on = ed.setMirror(!ed.mirror);
-    setStatus(on ? 'Espejo activado: clonará los huesos en ambos lados.' : 'Espejo desactivado.');
+    setStatus(
+      on
+        ? (ed.weightPaint
+            ? 'Espejo activado: pintará pesos simétricos en ambos lados.'
+            : 'Espejo activado: clonará los huesos en ambos lados.')
+        : 'Espejo desactivado.'
+    );
     syncRigUI();
   });
 
@@ -316,6 +332,18 @@ export function bindRigControls() {
   dom.rigBrushSize?.addEventListener('input', (e) => {
     const v = ed.setBrushSize(e.target.value);
     if (dom.rigBrushSizeVal) dom.rigBrushSizeVal.textContent = v.toFixed(2);
+  });
+
+  dom.rigBrushStrength?.addEventListener('input', (e) => {
+    const v = ed.setBrushStrength(e.target.value);
+    if (dom.rigBrushStrengthVal) dom.rigBrushStrengthVal.textContent = v.toFixed(2);
+  });
+
+  dom.btnRigSmoothWeights?.addEventListener('click', () => {
+    const nextMode = ed.weightBrushMode === 'smooth' ? 'paint' : 'smooth';
+    ed.setWeightBrushMode(nextMode);
+    setStatus(nextMode === 'smooth' ? 'Suavizar pesos activado.' : 'Modo pintar pesos activado.');
+    syncRigUI();
   });
 
   dom.btnRigEraser?.addEventListener('click', () => {

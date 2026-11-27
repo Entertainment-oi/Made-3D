@@ -1,6 +1,6 @@
 import { buildWgslSource } from '../../shaders/WGSL/prelude.js';
 
-export const GLOBAL_UNIFORM_BYTES = 688;
+export const GLOBAL_UNIFORM_BYTES = 960;
 export const OBJECT_UNIFORM_BYTES = 320;
 export const MATERIAL_UNIFORM_BYTES = 448;
 

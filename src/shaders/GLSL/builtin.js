@@ -98,6 +98,14 @@ uniform vec3 uPointColor[4];
 uniform float uPointDist[4];
 uniform float uPointDecay[4];
 uniform int uPointCount;
+uniform vec3 uSpotPos[4];
+uniform vec3 uSpotDir[4];
+uniform vec3 uSpotColor[4];
+uniform float uSpotDist[4];
+uniform float uSpotDecay[4];
+uniform float uSpotCosOuter[4];
+uniform float uSpotCosInner[4];
+uniform int uSpotCount;
 uniform float uShininess;
 uniform float uSpecular;
 uniform vec3 uEmissive;
@@ -284,6 +292,9 @@ void main() {
 
   vec3 outc = vec3(0.0);
 
+  #ifdef USE_NEUTRAL
+  outc = base.rgb;
+  #else
   #ifdef USE_PBR
   float rough = uRoughness;
   float metal = uMetalness;
@@ -378,6 +389,39 @@ void main() {
     directLo += (kD * base.rgb / M3D_PI + spec) * radiance * ndl;
   }
 
+  for (int i = 0; i < 4; i++) {
+    if (i >= uSpotCount) break;
+    vec3 d = uSpotPos[i] - vWorldPos;
+    float dist = length(d);
+    vec3 ldir = d / max(dist, 1e-4);
+    float ndl = max(dot(n, ldir), 0.0);
+    if (ndl <= 0.0) continue;
+    float theta = dot(-ldir, normalize(uSpotDir[i]));
+    float spotFactor = smoothstep(uSpotCosOuter[i], uSpotCosInner[i], theta);
+    if (spotFactor <= 0.0) continue;
+    float att = 1.0 / max(pow(max(dist, 1e-4), uSpotDecay[i]), 0.01);
+    if (uSpotDist[i] > 0.0) {
+      float pr = dist / uSpotDist[i];
+      float pr2 = pr * pr;
+      att *= clamp(1.0 - pr2 * pr2, 0.0, 1.0);
+    }
+    att *= spotFactor;
+    vec3 hv = ldir + viewDir;
+    float hl = dot(hv, hv);
+    vec3 h = hl > 1e-8 ? hv * inversesqrt(hl) : n;
+    float ndh = max(dot(n, h), 0.0);
+    float vdh = max(dot(viewDir, h), 0.0);
+    float denom = ndh * ndh * (a2 - 1.0) + 1.0;
+    float D = a2 / max(M3D_PI * denom * denom, 1e-6);
+    float g1L = ndl / (ndl * (1.0 - kDirect) + kDirect);
+    float G = g1V * g1L;
+    vec3 F = F0 + (1.0 - F0) * pow(clamp(1.0 - vdh, 0.0, 1.0), 5.0);
+    vec3 spec = (D * G * F) / max(4.0 * ndv * ndl, 1e-4);
+    vec3 kD = (vec3(1.0) - F) * (1.0 - metal);
+    vec3 radiance = uSpotColor[i] * M3D_PI * att;
+    directLo += (kD * base.rgb / M3D_PI + spec) * radiance * ndl;
+  }
+
   vec3 ambientTerm = base.rgb * (1.0 - metal * 0.65) * uAmbient * ao;
   vec3 iblTerm = vec3(0.0);
   if (uEnvHasMap > 0.5 && uEnvIntensity > 0.0 && uEnvMapIntensity > 0.0) {
@@ -440,6 +484,34 @@ void main() {
     #endif
   }
 
+  for (int i = 0; i < 4; i++) {
+    if (i >= uSpotCount) break;
+    vec3 d = uSpotPos[i] - vWorldPos;
+    float dist = length(d);
+    vec3 ldir = d / max(dist, 1e-4);
+    float theta = dot(-ldir, normalize(uSpotDir[i]));
+    float spotFactor = smoothstep(uSpotCosOuter[i], uSpotCosInner[i], theta);
+    if (spotFactor <= 0.0) continue;
+    float att = 1.0 / max(pow(max(dist, 1e-4), uSpotDecay[i]), 0.01);
+    if (uSpotDist[i] > 0.0) {
+      float pr = dist / uSpotDist[i];
+      float pr2 = pr * pr;
+      att *= clamp(1.0 - pr2 * pr2, 0.0, 1.0);
+    }
+    att *= spotFactor;
+    float ndl = max(dot(n, ldir), 0.0);
+    diffLight += uSpotColor[i] * ndl * att;
+    #ifdef USE_SPECULAR
+    if (ndl > 0.0) {
+      vec3 hv = ldir + viewDir;
+      float hl = dot(hv, hv);
+      vec3 h = hl > 1e-8 ? hv * inversesqrt(hl) : n;
+      float nh = max(dot(n, h), 0.0);
+      if (nh > 0.0) specLight += uSpotColor[i] * pow(nh, uShininess) * uSpecular * att;
+    }
+    #endif
+  }
+
   vec3 envFill = vec3(0.0);
   if (uEnvHasMap > 0.5 && uEnvIntensity > 0.0 && uEnvMapIntensity > 0.0) {
     float ndvC = max(dot(n, viewDir), 0.0);
@@ -449,6 +521,7 @@ void main() {
   }
 
   outc = base.rgb * diffLight + specLight + envFill + emissiveTerm;
+  #endif
   #endif
 
   #ifdef USE_FOG

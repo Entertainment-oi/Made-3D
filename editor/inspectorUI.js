@@ -19,6 +19,7 @@ import {
   bindObjectInspector,
 } from './ui/objectInspector.js';
 import { bindSettingsPanel } from './ui/settingsPanel.js';
+import { bindViewportContextMenu } from './ui/viewportMenu.js';
 import { bindShortcutsAndModes } from './ui/shortcuts.js';
 import { bindRangeControls } from './ui/rangeControls.js';
 import { bindRigControls } from './rigController.js';
@@ -43,6 +44,7 @@ export function bindUI() {
   bindGizmoControls();
   bindObjectInspector();
   bindSettingsPanel();
+  bindViewportContextMenu();
   bindShortcutsAndModes();
   bindRangeControls();
   bindRigControls();

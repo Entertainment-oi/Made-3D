@@ -136,6 +136,37 @@ fn fs_main(in: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
     }
   }
 
+  let spotCount = i32(uGlobals.spotMeta.x + 0.5);
+  for (var i: i32 = 0; i < 4; i = i + 1) {
+    if (i >= spotCount) { break; }
+    let d = uGlobals.spotPos[i].xyz - in.vWorldPos;
+    let dist = length(d);
+    let ldir = d / max(dist, 1e-4);
+    let theta = dot(-ldir, normalize(uGlobals.spotDir[i].xyz));
+    let spotFactor = smoothstep(uGlobals.spotColor[i].w, uGlobals.spotCone[i].x, theta);
+    if (spotFactor <= 0.0) { continue; }
+    var att = 1.0 / max(pow(max(dist, 1e-4), uGlobals.spotDir[i].w), 0.01);
+    let sDist = uGlobals.spotPos[i].w;
+    if (sDist > 0.0) {
+      let pr = dist / sDist;
+      let pr2 = pr * pr;
+      att = att * clamp(1.0 - pr2 * pr2, 0.0, 1.0);
+    }
+    att = att * spotFactor;
+    let ndl = max(dot(n, ldir), 0.0);
+    let band = m3dToonBand(ndl * clamp(att, 0.0, 1.0), steps, smoothness);
+    maxBand = max(maxBand, band);
+    directLight = directLight + uGlobals.spotColor[i].xyz * band * clamp(att, 0.0, 1.5);
+    if (shininess > 0.5 && ndl > 0.0) {
+      let hv = ldir + viewDir;
+      let hl = dot(hv, hv);
+      let h = select(n, hv * inverseSqrt(hl), hl > 1e-8);
+      let nh = max(dot(n, h), 0.0);
+      let sp = smoothstep(0.45, 0.52, pow(nh, shininess));
+      specLight = specLight + uGlobals.spotColor[i].xyz * sp * specular * clamp(att, 0.0, 1.5);
+    }
+  }
+
   let litCol = base.rgb * (uGlobals.ambient_dirCount.xyz + directLight);
   let shadowCol = base.rgb * m3dInput(uMat.extraColor0.rgb);
   let inShadow = 1.0 - smoothstep(0.05, 0.55, maxBand);
@@ -155,6 +186,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
     outc = mix(outc, m3dInput(uMat.emissive.rgb), inkMask);
   }
 
+#ifdef USE_NEUTRAL
+  outc = base.rgb;
+#endif
   outc = m3dApplyFog(outc, in.vWorldPos);
   return vec4<f32>(m3dOutput(outc), base.a);
 }
@@ -332,7 +366,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
   mc = mc + m3dInput(uMat.extraColor1.rgb) * fresnel * 0.45;
 #endif
 
-  let outc = m3dApplyFog(base.rgb * mc, in.vWorldPos);
+  var outc = base.rgb * mc;
+#ifdef USE_NEUTRAL
+  outc = base.rgb;
+#endif
+  outc = m3dApplyFog(outc, in.vWorldPos);
   return vec4<f32>(m3dOutput(outc), base.a);
 }
 `;
@@ -403,7 +441,11 @@ fn fs_main(in: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
 
   let coreShade = 0.35 + 0.65 * ndv;
   var outc = base.rgb * coreShade + rimCol * fresnel * uMat.params0.y * pulse;
-  let alpha = select(base.a, clamp(base.a * mix(0.28, 1.35, fresnel), 0.0, 1.0), base.a < 0.999);
+  var alpha = select(base.a, clamp(base.a * mix(0.28, 1.35, fresnel), 0.0, 1.0), base.a < 0.999);
+#ifdef USE_NEUTRAL
+  outc = base.rgb;
+  alpha = base.a;
+#endif
 
   outc = m3dApplyFog(outc, in.vWorldPos);
   return vec4<f32>(m3dOutput(outc), alpha);
@@ -549,12 +591,42 @@ fn fs_main(in: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
     }
   }
 
+  let spotCount = i32(uGlobals.spotMeta.x + 0.5);
+  for (var i: i32 = 0; i < 4; i = i + 1) {
+    if (i >= spotCount) { break; }
+    let d = uGlobals.spotPos[i].xyz - in.vWorldPos;
+    let dist = length(d);
+    let ldir = d / max(dist, 1e-4);
+    let theta = dot(-ldir, normalize(uGlobals.spotDir[i].xyz));
+    let spotFactor = smoothstep(uGlobals.spotColor[i].w, uGlobals.spotCone[i].x, theta);
+    if (spotFactor <= 0.0) { continue; }
+    var att = 1.0 / max(pow(max(dist, 1e-4), uGlobals.spotDir[i].w), 0.01);
+    let sDist = uGlobals.spotPos[i].w;
+    if (sDist > 0.0) {
+      let pr = dist / sDist;
+      let pr2 = pr * pr;
+      att = att * clamp(1.0 - pr2 * pr2, 0.0, 1.0);
+    }
+    att = att * spotFactor;
+    let ndl = max(dot(n, ldir), 0.0);
+    diffLight = diffLight + uGlobals.spotColor[i].xyz * ndl * att;
+    if (shininess > 0.5 && ndl > 0.0) {
+      let hv = ldir + viewDir;
+      let hl = dot(hv, hv);
+      let h = select(n, hv * inverseSqrt(hl), hl > 1e-8);
+      specLight = specLight + uGlobals.spotColor[i].xyz * pow(max(dot(n, h), 0.0), shininess) * specular * att;
+    }
+  }
+
   var outc = base.rgb * diffLight + specLight;
   let edgeBand = 1.0 - smoothstep(thresh, thresh + max(0.005, uMat.params0.w), nVal);
   if (thresh > 0.001) {
     outc = mix(outc, m3dInput(uMat.extraColor0.rgb) * 2.4, edgeBand);
   }
 
+#ifdef USE_NEUTRAL
+  outc = base.rgb;
+#endif
   outc = m3dApplyFog(outc, in.vWorldPos);
   return vec4<f32>(m3dOutput(outc), base.a);
 }

@@ -351,10 +351,16 @@ export function updateMeshWeightHeatmap(skMesh, bone) {
 /**
  * Pinta o borra pesos de un hueso sobre los vértices dentro de un radio esférico alrededor de `hitPoint`.
  */
-export function applyWeightBrushAt(skMesh, hitPoint, bone, radius, strength = 0.42, eraseMode = false) {
-  if (!skMesh || !skMesh.geometry || !skMesh.skeleton || !bone || !hitPoint) return false;
-  const boneIndex = skMesh.skeleton.bones.indexOf(bone);
-  if (boneIndex < 0) return false;
+export function applyWeightBrushAt(skMesh, hitPoint, bone, radius, strength = 0.42, modeOrErase = false, options = {}) {
+  if (!skMesh || !skMesh.geometry || !skMesh.skeleton || !hitPoint) return false;
+  const mode = typeof modeOrErase === 'string'
+    ? (modeOrErase === 'erase' || modeOrErase === 'smooth' ? modeOrErase : 'paint')
+    : (modeOrErase ? 'erase' : 'paint');
+
+  const bones = skMesh.skeleton.bones || [];
+  const boneIndex = bone ? bones.indexOf(bone) : -1;
+  if (mode !== 'smooth' && boneIndex < 0) return false;
+  if (mode === 'smooth' && !bones.length) return false;
 
   const geo = skMesh.geometry;
   const posAttr = geo.attributes.position;
@@ -365,8 +371,8 @@ export function applyWeightBrushAt(skMesh, hitPoint, bone, radius, strength = 0.
   const vCount = posAttr.count;
   const si = siAttr.array;
   const sw = swAttr.array;
-  for (let i = 0; i < skMesh.skeleton.bones.length; i++) {
-    skMesh.skeleton.bones[i]?.updateWorldMatrix(true, false);
+  for (let i = 0; i < bones.length; i++) {
+    bones[i]?.updateWorldMatrix(true, false);
   }
   skMesh.skeleton.update();
 
@@ -381,106 +387,29 @@ export function applyWeightBrushAt(skMesh, hitPoint, bone, radius, strength = 0.
   const hx = hitPoint.x, hy = hitPoint.y, hz = hitPoint.z;
   let changed = false;
 
-  const idxs = new Int32Array(4);
-  const wts = new Float32Array(4);
+  if (mode === 'smooth') {
+    if (!topo) return false;
+    const { W, weldOffsets, weldMembers, adjOffsets, adjNeighbors } = topo;
+    const prevSi = si.slice();
+    const prevSw = sw.slice();
+    const bIds = [];
+    const bCur = [];
+    const bAvg = [];
+    const bBlend = [];
 
-  const editVertex = (v, amount) => {
-    const b4 = v * 4;
-    let curW = 0;
-    let sumOther = 0;
-    let count = 0;
-
-    for (let j = 0; j < 4; j++) {
-      const w = sw[b4 + j];
-      const bi = Math.round(si[b4 + j]) | 0;
-      if (w <= 1e-6) continue;
-      if (bi === boneIndex) {
-        curW += w;
-      } else {
-        let merged = false;
-        for (let k = 0; k < count; k++) {
-          if (idxs[k] === bi) {
-            wts[k] += w;
-            merged = true;
-            break;
-          }
-        }
-        if (!merged && count < 4) {
-          idxs[count] = bi;
-          wts[count] = w;
-          count++;
-        }
-        sumOther += w;
-      }
-    }
-
-    let nextW;
-    if (eraseMode) {
-      if (curW <= 1e-6) return false;
-      if (sumOther > 1e-5) {
-        nextW = Math.max(0, curW - amount);
-        if (nextW < 0.015) nextW = 0;
-      } else {
-        nextW = curW - amount * 1.4 <= 0.35 ? 0 : curW;
-        if (amount >= 0.12) nextW = 0;
-      }
-    } else {
-      nextW = Math.min(1, curW + amount);
-      if (sumOther <= 1e-5) nextW = 1;
-    }
-
-    if (Math.abs(nextW - curW) <= 1e-5) return false;
-
-    const outIdx = [];
-    const outWt = [];
-
-    if (nextW > 1e-5) {
-      outIdx.push(boneIndex);
-      outWt.push(nextW);
-    }
-
-    if (count > 0) {
-      const remainingTarget = nextW > 1e-5 ? Math.max(0, 1 - nextW) : 1;
-      if (remainingTarget > 1e-5 && sumOther > 1e-6) {
-        const maxOther = nextW > 1e-5 ? 3 : 4;
-        if (count > maxOther) {
-          for (let a = 0; a < count - 1; a++) {
-            for (let b = a + 1; b < count; b++) {
-              if (wts[b] > wts[a]) {
-                const tw = wts[a]; wts[a] = wts[b]; wts[b] = tw;
-                const ti = idxs[a]; idxs[a] = idxs[b]; idxs[b] = ti;
-              }
-            }
-          }
-          count = maxOther;
-          sumOther = 0;
-          for (let k = 0; k < count; k++) sumOther += wts[k];
-        }
-        const scale = sumOther > 1e-6 ? remainingTarget / sumOther : 0;
-        for (let k = 0; k < count; k++) {
-          const wScaled = wts[k] * scale;
-          if (wScaled > 1e-5) {
-            outIdx.push(idxs[k]);
-            outWt.push(wScaled);
-          }
+    const addWeightEntry = (id, curAdd, avgAdd) => {
+      for (let i = 0; i < bIds.length; i++) {
+        if (bIds[i] === id) {
+          bCur[i] += curAdd;
+          bAvg[i] += avgAdd;
+          return;
         }
       }
-    }
+      bIds.push(id);
+      bCur.push(curAdd);
+      bAvg.push(avgAdd);
+    };
 
-    for (let j = 0; j < 4; j++) {
-      if (j < outIdx.length) {
-        si[b4 + j] = outIdx[j];
-        sw[b4 + j] = outWt[j];
-      } else {
-        si[b4 + j] = 0;
-        sw[b4 + j] = 0;
-      }
-    }
-    return true;
-  };
-
-  if (topo) {
-    const { W, weldOffsets, weldMembers } = topo;
     for (let w = 0; w < W; w++) {
       const rep = weldMembers[weldOffsets[w]];
       const o = rep * 3;
@@ -489,26 +418,256 @@ export function applyWeightBrushAt(skMesh, hitPoint, bone, radius, strength = 0.
       const dz = worldPos[o + 2] - hz;
       const d2 = dx * dx + dy * dy + dz * dz;
       if (d2 >= r2) continue;
+
+      const adjStart = adjOffsets[w];
+      const adjEnd = adjOffsets[w + 1];
+      const deg = adjEnd - adjStart;
+      if (deg <= 0) continue;
+
       const t = Math.sqrt(d2) / radius;
       const falloff = (1 - t * t) * (1 - t * t);
-      const amount = strength * falloff;
+      const alpha = clamp(strength * falloff, 0, 1);
+      if (alpha <= 1e-5) continue;
+
+      bIds.length = 0;
+      bCur.length = 0;
+      bAvg.length = 0;
+
+      const rb4 = rep * 4;
+      for (let j = 0; j < 4; j++) {
+        const cw = prevSw[rb4 + j];
+        if (cw <= 1e-6) continue;
+        addWeightEntry(Math.round(prevSi[rb4 + j]) | 0, cw, 0);
+      }
+
+      let avgSum = 0;
+      const invDeg = 1 / deg;
+      for (let a = adjStart; a < adjEnd; a++) {
+        const nw = adjNeighbors[a];
+        const nRep = weldMembers[weldOffsets[nw]];
+        const nb4 = nRep * 4;
+        for (let j = 0; j < 4; j++) {
+          const nwVal = prevSw[nb4 + j];
+          if (nwVal <= 1e-6) continue;
+          const contrib = nwVal * invDeg;
+          addWeightEntry(Math.round(prevSi[nb4 + j]) | 0, 0, contrib);
+          avgSum += contrib;
+        }
+      }
+
+      if (avgSum <= 1e-6) continue;
+      const normAvg = 1 / avgSum;
+
+      bBlend.length = bIds.length;
+      for (let i = 0; i < bIds.length; i++) {
+        bBlend[i] = bCur[i] * (1 - alpha) + (bAvg[i] * normAvg) * alpha;
+      }
+
+      // Ordenar descendente y conservar hasta 4 influencias normalizadas
+      for (let i = 0; i < bIds.length - 1; i++) {
+        for (let j = i + 1; j < bIds.length; j++) {
+          if (bBlend[j] > bBlend[i]) {
+            const tb = bBlend[i]; bBlend[i] = bBlend[j]; bBlend[j] = tb;
+            const ti = bIds[i]; bIds[i] = bIds[j]; bIds[j] = ti;
+          }
+        }
+      }
+
+      const keep = Math.min(4, bIds.length);
+      let keepSum = 0;
+      for (let i = 0; i < keep; i++) {
+        if (bBlend[i] > 1e-5) keepSum += bBlend[i];
+      }
+      if (keepSum <= 1e-6) continue;
+
       const start = weldOffsets[w];
       const end = weldOffsets[w + 1];
-      for (let k = start; k < end; k++) {
-        if (editVertex(weldMembers[k], amount)) changed = true;
+      let vertChanged = false;
+      for (let j = 0; j < 4; j++) {
+        const nextIdx = j < keep && bBlend[j] > 1e-5 ? bIds[j] : 0;
+        const nextWt = j < keep && bBlend[j] > 1e-5 ? bBlend[j] / keepSum : 0;
+        if (
+          Math.abs(nextWt - prevSw[rb4 + j]) > 1e-5 ||
+          (nextWt > 1e-5 && (Math.round(prevSi[rb4 + j]) | 0) !== nextIdx)
+        ) {
+          vertChanged = true;
+          break;
+        }
       }
+      if (!vertChanged) continue;
+
+      for (let k = start; k < end; k++) {
+        const b4 = weldMembers[k] * 4;
+        for (let j = 0; j < 4; j++) {
+          if (j < keep && bBlend[j] > 1e-5) {
+            si[b4 + j] = bIds[j];
+            sw[b4 + j] = bBlend[j] / keepSum;
+          } else {
+            si[b4 + j] = 0;
+            sw[b4 + j] = 0;
+          }
+        }
+      }
+      changed = true;
     }
   } else {
-    for (let v = 0; v < vCount; v++) {
-      const o = v * 3;
-      const dx = worldPos[o] - hx;
-      const dy = worldPos[o + 1] - hy;
-      const dz = worldPos[o + 2] - hz;
-      const d2 = dx * dx + dy * dy + dz * dz;
-      if (d2 >= r2) continue;
-      const t = Math.sqrt(d2) / radius;
-      const falloff = (1 - t * t) * (1 - t * t);
-      if (editVertex(v, strength * falloff)) changed = true;
+    let fallbackBoneIndex = -1;
+    if (mode === 'erase' && bones.length > 1) {
+      if (bone.parent && bone.parent.isBone) {
+        fallbackBoneIndex = bones.indexOf(bone.parent);
+      }
+      if (fallbackBoneIndex < 0 && bone.children) {
+        for (const ch of bone.children) {
+          if (ch && ch.isBone) {
+            const ci = bones.indexOf(ch);
+            if (ci >= 0 && ci !== boneIndex) {
+              fallbackBoneIndex = ci;
+              break;
+            }
+          }
+        }
+      }
+      if (fallbackBoneIndex < 0) {
+        fallbackBoneIndex = bones.findIndex((b, idx) => idx !== boneIndex && Boolean(b));
+      }
+    }
+
+    const idxs = new Int32Array(4);
+    const wts = new Float32Array(4);
+
+    const editVertex = (v, amount) => {
+      const b4 = v * 4;
+      let curW = 0;
+      let sumOther = 0;
+      let count = 0;
+
+      for (let j = 0; j < 4; j++) {
+        const w = sw[b4 + j];
+        const bi = Math.round(si[b4 + j]) | 0;
+        if (w <= 1e-6) continue;
+        if (bi === boneIndex) {
+          curW += w;
+        } else {
+          let merged = false;
+          for (let k = 0; k < count; k++) {
+            if (idxs[k] === bi) {
+              wts[k] += w;
+              merged = true;
+              break;
+            }
+          }
+          if (!merged && count < 4) {
+            idxs[count] = bi;
+            wts[count] = w;
+            count++;
+          }
+          sumOther += w;
+        }
+      }
+
+      let nextW;
+      if (mode === 'erase') {
+        if (curW <= 1e-6) return false;
+        if (sumOther > 1e-5) {
+          nextW = Math.max(0, curW - amount);
+          if (nextW < 0.015) nextW = 0;
+        } else if (fallbackBoneIndex >= 0) {
+          nextW = Math.max(0, curW - amount);
+          if (nextW < 0.015) nextW = 0;
+          idxs[0] = fallbackBoneIndex;
+          wts[0] = 1 - nextW;
+          count = 1;
+          sumOther = wts[0];
+        } else {
+          nextW = curW - amount * 1.4 <= 0.35 ? 0 : curW;
+          if (amount >= 0.12) nextW = 0;
+        }
+      } else {
+        nextW = Math.min(1, curW + amount);
+        if (sumOther <= 1e-5) nextW = 1;
+      }
+
+      if (Math.abs(nextW - curW) <= 1e-5) return false;
+
+      const outIdx = [];
+      const outWt = [];
+
+      if (nextW > 1e-5) {
+        outIdx.push(boneIndex);
+        outWt.push(nextW);
+      }
+
+      if (count > 0) {
+        const remainingTarget = nextW > 1e-5 ? Math.max(0, 1 - nextW) : 1;
+        if (remainingTarget > 1e-5 && sumOther > 1e-6) {
+          const maxOther = nextW > 1e-5 ? 3 : 4;
+          if (count > maxOther) {
+            for (let a = 0; a < count - 1; a++) {
+              for (let b = a + 1; b < count; b++) {
+                if (wts[b] > wts[a]) {
+                  const tw = wts[a]; wts[a] = wts[b]; wts[b] = tw;
+                  const ti = idxs[a]; idxs[a] = idxs[b]; idxs[b] = ti;
+                }
+              }
+            }
+            count = maxOther;
+            sumOther = 0;
+            for (let k = 0; k < count; k++) sumOther += wts[k];
+          }
+          const scale = sumOther > 1e-6 ? remainingTarget / sumOther : 0;
+          for (let k = 0; k < count; k++) {
+            const wScaled = wts[k] * scale;
+            if (wScaled > 1e-5) {
+              outIdx.push(idxs[k]);
+              outWt.push(wScaled);
+            }
+          }
+        }
+      }
+
+      for (let j = 0; j < 4; j++) {
+        if (j < outIdx.length) {
+          si[b4 + j] = outIdx[j];
+          sw[b4 + j] = outWt[j];
+        } else {
+          si[b4 + j] = 0;
+          sw[b4 + j] = 0;
+        }
+      }
+      return true;
+    };
+
+    if (topo) {
+      const { W, weldOffsets, weldMembers } = topo;
+      for (let w = 0; w < W; w++) {
+        const rep = weldMembers[weldOffsets[w]];
+        const o = rep * 3;
+        const dx = worldPos[o] - hx;
+        const dy = worldPos[o + 1] - hy;
+        const dz = worldPos[o + 2] - hz;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= r2) continue;
+        const t = Math.sqrt(d2) / radius;
+        const falloff = (1 - t * t) * (1 - t * t);
+        const amount = strength * falloff;
+        const start = weldOffsets[w];
+        const end = weldOffsets[w + 1];
+        for (let k = start; k < end; k++) {
+          if (editVertex(weldMembers[k], amount)) changed = true;
+        }
+      }
+    } else {
+      for (let v = 0; v < vCount; v++) {
+        const o = v * 3;
+        const dx = worldPos[o] - hx;
+        const dy = worldPos[o + 1] - hy;
+        const dz = worldPos[o + 2] - hz;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 >= r2) continue;
+        const t = Math.sqrt(d2) / radius;
+        const falloff = (1 - t * t) * (1 - t * t);
+        if (editVertex(v, strength * falloff)) changed = true;
+      }
     }
   }
 
@@ -516,7 +675,9 @@ export function applyWeightBrushAt(skMesh, hitPoint, bone, radius, strength = 0.
     siAttr.needsUpdate = true;
     swAttr.needsUpdate = true;
     skMesh.refreshSkinning();
-    updateMeshWeightHeatmap(skMesh, bone);
+    if (options.refreshHeatmap !== false && bone) {
+      updateMeshWeightHeatmap(skMesh, bone);
+    }
   }
   return changed;
 }
@@ -687,7 +848,9 @@ export class Rigger {
     this.mirror = Boolean(opts.mirror);
     this.magnet = Boolean(opts.magnet);
     this.weightPaint = Boolean(opts.weightPaint);
-    this.eraser = Boolean(opts.eraser);
+    this.weightBrushMode = opts.weightBrushMode === 'erase' || opts.weightBrushMode === 'smooth'
+      ? opts.weightBrushMode
+      : (opts.eraser ? 'erase' : 'paint');
     this.brushSize = opts.brushSize ?? 0.4;
     this.brushStrength = opts.brushStrength ?? 0.42;
 
@@ -703,6 +866,15 @@ export class Rigger {
     this._pointerState = null;
     this._attached = null;
     this._cleanup = null;
+  }
+
+  get eraser() {
+    return this.weightBrushMode === 'erase';
+  }
+
+  set eraser(on) {
+    if (on) this.weightBrushMode = 'erase';
+    else if (this.weightBrushMode === 'erase') this.weightBrushMode = 'paint';
   }
 
   static isRigMesh(m) {
@@ -1151,9 +1323,157 @@ export class Rigger {
     return this.magnet;
   }
 
+  setWeightBrushMode(mode) {
+    this.weightBrushMode = mode === 'erase' || mode === 'smooth' ? mode : 'paint';
+    return this.weightBrushMode;
+  }
+
   setEraser(on) {
-    this.eraser = Boolean(on);
+    this.setWeightBrushMode(on ? 'erase' : 'paint');
     return this.eraser;
+  }
+
+  resolveMirrorBone(bone, bones = [], root = null, primaryMesh = null) {
+    if (!bone || !bones || !bones.length) return null;
+    const boneSet = new Set(bones);
+
+    const paired = this._mirrorPairs.get(bone);
+    if (paired && boneSet.has(paired) && this._isNodeAlive(paired)) {
+      return paired;
+    }
+
+    const name = typeof bone.name === 'string' ? bone.name : '';
+    if (name) {
+      const candidates = new Set();
+      const suffixMatch = name.match(/^(.*)([._:\-\s])([LlRr])$/);
+      if (suffixMatch) {
+        const opp = suffixMatch[3] === 'L' ? 'R' : suffixMatch[3] === 'R' ? 'L' : suffixMatch[3] === 'l' ? 'r' : 'l';
+        candidates.add(`${suffixMatch[1]}${suffixMatch[2]}${opp}`);
+      }
+      const prefixMatch = name.match(/^([LlRr])([._:\-\s])(.*)$/);
+      if (prefixMatch) {
+        const opp = prefixMatch[1] === 'L' ? 'R' : prefixMatch[1] === 'R' ? 'L' : prefixMatch[1] === 'l' ? 'r' : 'l';
+        candidates.add(`${opp}${prefixMatch[2]}${prefixMatch[3]}`);
+      }
+      const wordMatch = name.replace(/(Left|Right|LEFT|RIGHT|left|right|Izq|Der|IZQ|DER|izq|der)/g, (tok) => {
+        if (tok === 'Left') return 'Right';
+        if (tok === 'Right') return 'Left';
+        if (tok === 'LEFT') return 'RIGHT';
+        if (tok === 'RIGHT') return 'LEFT';
+        if (tok === 'left') return 'right';
+        if (tok === 'right') return 'left';
+        if (tok === 'Izq') return 'Der';
+        if (tok === 'Der') return 'Izq';
+        if (tok === 'IZQ') return 'DER';
+        if (tok === 'DER') return 'IZQ';
+        if (tok === 'izq') return 'der';
+        return 'izq';
+      });
+      if (wordMatch !== name) candidates.add(wordMatch);
+
+      if (candidates.size > 0) {
+        for (const cand of bones) {
+          if (cand && cand !== bone && candidates.has(cand.name)) {
+            return cand;
+          }
+        }
+      }
+    }
+
+    const refRoot = root || primaryMesh;
+    if (refRoot) {
+      bone.updateWorldMatrix(true, false);
+      const boneWorld = bone.getWorldPosition(new Vec3());
+      const localBone = Rigger.worldToRootLocal(refRoot, boneWorld, new Vec3());
+      const centerThresh = Rigger.getMirrorCenterThreshold(refRoot, primaryMesh);
+      if (Math.abs(localBone.x) <= centerThresh) {
+        return bone;
+      }
+
+      const targetLocalX = -localBone.x;
+      const targetLocalY = localBone.y;
+      const targetLocalZ = localBone.z;
+      const maxTolerance = Math.max(0.15, Math.abs(localBone.x) * 0.65);
+      let bestBone = null;
+      let bestDist = Infinity;
+
+      for (const cand of bones) {
+        if (!cand || cand === bone || !cand.isBone) continue;
+        cand.updateWorldMatrix(true, false);
+        const candLocal = Rigger.worldToRootLocal(refRoot, cand.getWorldPosition(_vD), _vC);
+        const dist = Math.hypot(
+          candLocal.x - targetLocalX,
+          candLocal.y - targetLocalY,
+          candLocal.z - targetLocalZ
+        );
+        if (dist <= maxTolerance && dist < bestDist) {
+          bestDist = dist;
+          bestBone = cand;
+        }
+      }
+      if (bestBone) return bestBone;
+    }
+
+    return null;
+  }
+
+  applyWeightBrushStrokeAt(skMesh, hitPoint, bone, root = null) {
+    if (!skMesh || !hitPoint) return false;
+    const mode = this.weightBrushMode;
+    if (mode !== 'smooth' && !bone) return false;
+
+    let anyChanged = applyWeightBrushAt(
+      skMesh,
+      hitPoint,
+      bone,
+      this.brushSize,
+      this.brushStrength,
+      mode,
+      { refreshHeatmap: true }
+    );
+
+    if (this.mirror) {
+      const mirrorRoot = root || skMesh;
+      const mirrorPt = Rigger.mirrorWorldPoint(mirrorRoot, hitPoint, new Vec3());
+      const overlapCenter = hitPoint.distanceTo(mirrorPt) < this.brushSize * 0.35;
+      const bones = skMesh.skeleton?.bones || [];
+
+      if (mode === 'smooth') {
+        if (!overlapCenter) {
+          const mirrorChanged = applyWeightBrushAt(
+            skMesh,
+            mirrorPt,
+            bone,
+            this.brushSize,
+            this.brushStrength,
+            'smooth',
+            { refreshHeatmap: true }
+          );
+          if (mirrorChanged) anyChanged = true;
+        }
+      } else {
+        const mirrorBone = this.resolveMirrorBone(bone, bones, mirrorRoot, skMesh);
+        if (mirrorBone && !(mirrorBone === bone && overlapCenter)) {
+          const mirrorChanged = applyWeightBrushAt(
+            skMesh,
+            mirrorPt,
+            mirrorBone,
+            this.brushSize,
+            this.brushStrength,
+            mode,
+            { refreshHeatmap: mirrorBone === bone }
+          );
+          if (mirrorChanged) {
+            anyChanged = true;
+            if (mirrorBone !== bone) {
+              updateMeshWeightHeatmap(skMesh, bone);
+            }
+          }
+        }
+      }
+    }
+
+    return anyChanged;
   }
 
   setBoneTool(on, sceneForRestore = null) {
@@ -1195,16 +1515,27 @@ export class Rigger {
     }
 
     for (const sm of context.skinnedMeshes) {
-      if (!this._savedWeightState.has(sm)) {
-        this._savedWeightState.set(sm, {
+      const vCount = sm.geometry?.attributes?.position?.count || 0;
+      let saved = this._savedWeightState.get(sm);
+      if (!saved) {
+        const origColorAttr = sm.geometry?.attributes?.color || null;
+        const heatmapAttr = new BufferAttribute(new Float32Array(vCount * 3), 3);
+        saved = {
           material: sm.material,
-          colorAttr: sm.geometry.attributes.color || null,
-        });
+          colorAttr: origColorAttr,
+          heatmapAttr,
+        };
+        this._savedWeightState.set(sm, saved);
         sm.material = new StandardMaterial({
           color: 0xffffff,
           vertexColors: true,
           shininess: 16,
         });
+      } else if (!saved.heatmapAttr || saved.heatmapAttr.count !== vCount) {
+        saved.heatmapAttr = new BufferAttribute(new Float32Array(vCount * 3), 3);
+      }
+      if (sm.geometry) {
+        sm.geometry.attributes.color = saved.heatmapAttr;
       }
       updateMeshWeightHeatmap(sm, this.selectedBone);
     }
@@ -1294,9 +1625,15 @@ export class Rigger {
       else if (this.weightPaint) updateMeshWeightHeatmap(skMesh, this.selectedBone);
     };
 
+    const label = this.weightBrushMode === 'erase'
+      ? 'Borrar pesos'
+      : this.weightBrushMode === 'smooth'
+      ? 'Suavizar pesos'
+      : 'Pintar pesos';
+
     return {
       type: 'weightPaint',
-      label: this.eraser ? 'Borrar pesos' : 'Pintar pesos',
+      label,
       undo: () => applyArrays(beforeIdx, beforeWt),
       redo: () => applyArrays(afterIdx, afterWt),
     };
@@ -1629,7 +1966,7 @@ export class Rigger {
     };
   }
 
-  drawBrushCircle2D(c, camera, W, H, center, normal, radius, eraseMode) {
+  drawBrushCircle2D(c, camera, W, H, center, normal, radius, modeOrErase = false) {
     let ax = 1, ay = 0, az = 0;
     if (Math.abs(normal.x) > 0.85) {
       ax = 0; ay = 1; az = 0;
@@ -1667,8 +2004,13 @@ export class Rigger {
       }
     }
     c.closePath();
+    const mode = typeof modeOrErase === 'string' ? modeOrErase : (modeOrErase ? 'erase' : 'paint');
     c.lineWidth = 2.0;
-    c.strokeStyle = eraseMode ? 'rgba(248, 113, 113, 0.92)' : 'rgba(250, 204, 21, 0.92)';
+    c.strokeStyle = mode === 'erase'
+      ? 'rgba(248, 113, 113, 0.92)'
+      : mode === 'smooth'
+      ? 'rgba(56, 189, 248, 0.92)'
+      : 'rgba(250, 204, 21, 0.92)';
     c.stroke();
     c.lineWidth = 1.0;
     c.strokeStyle = 'rgba(15, 17, 22, 0.65)';
@@ -1789,7 +2131,7 @@ export class Rigger {
     }
 
     if (this.weightPaint && this.hover && this.hover.point && this.hover.normal) {
-      this.drawBrushCircle2D(c, camera, W, H, this.hover.point, this.hover.normal, this.brushSize, this.eraser);
+      this.drawBrushCircle2D(c, camera, W, H, this.hover.point, this.hover.normal, this.brushSize, this.weightBrushMode);
     }
     return true;
   }
@@ -1931,12 +2273,15 @@ export class Rigger {
         if (!hit && !boneSeg) return;
 
         const controlsWereEnabled = ctrl ? ctrl.enabled : true;
-        if (hit && ctrl) ctrl.enabled = false;
+        if (ctrl) {
+          if (typeof ctrl.cancelPointer === 'function') ctrl.cancelPointer(e.pointerId);
+          ctrl.enabled = false;
+        }
 
         const stroke = hit ? this.beginWeightStroke(hit.mesh) : null;
         let paintedNow = false;
-        if (hit && !boneSeg && stroke && this.selectedBone) {
-          if (applyWeightBrushAt(hit.mesh, hit.point, this.selectedBone, this.brushSize, this.brushStrength, this.eraser)) {
+        if (hit && !boneSeg && stroke && (this.selectedBone || this.weightBrushMode === 'smooth')) {
+          if (this.applyWeightBrushStrokeAt(hit.mesh, hit.point, this.selectedBone, ctx.root)) {
             stroke.changed = true;
             paintedNow = true;
           }
@@ -1955,7 +2300,7 @@ export class Rigger {
           boneCandidate: boneSeg,
           weightStroke: stroke,
           paintedNow,
-          controlsPaused: Boolean(hit),
+          controlsPaused: Boolean(ctrl),
           controlsWereEnabled,
         };
       }
@@ -2000,12 +2345,13 @@ export class Rigger {
           }
           const ctrl = resolveControls();
           if (ctrl) {
+            if (typeof ctrl.cancelPointer === 'function') ctrl.cancelPointer(e.pointerId);
             ctrl.enabled = false;
             this._pointerState.controlsPaused = true;
           }
           this.isPainting = true;
-          if (this._pointerState.weightStroke && this.selectedBone) {
-            if (applyWeightBrushAt(hit.mesh, hit.point, this.selectedBone, this.brushSize, this.brushStrength, this.eraser)) {
+          if (this._pointerState.weightStroke && (this.selectedBone || this.weightBrushMode === 'smooth')) {
+            if (this.applyWeightBrushStrokeAt(hit.mesh, hit.point, this.selectedBone, ctx?.root)) {
               this._pointerState.weightStroke.changed = true;
             }
           }

@@ -228,17 +228,6 @@ html.is-mobile-landscape-90 .app-shell {
   height: 15px;
 }
 
-.top-install-btn {
-  background: var(--accent-soft);
-  border-color: rgba(245, 158, 11, 0.35);
-  color: #fde68a;
-}
-
-.top-install-btn:hover {
-  background: rgba(245, 158, 11, 0.25);
-  border-color: rgba(245, 158, 11, 0.55);
-}
-
 .chev-icon {
   width: 13px;
   height: 13px;
@@ -304,6 +293,9 @@ html.is-mobile-landscape-90 .app-shell {
   width: 100%;
   height: 100%;
   touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
 }
 
 .edit-overlay,
@@ -602,7 +594,8 @@ html.is-mobile-landscape-90 .app-shell {
 }
 
 #sculpt-brush-bar,
-#paint-brush-bar {
+#paint-brush-bar,
+#rig-weights-bar {
   max-height: calc(var(--app-vh) - 140px);
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -610,7 +603,8 @@ html.is-mobile-landscape-90 .app-shell {
 }
 
 #sculpt-brush-bar::-webkit-scrollbar,
-#paint-brush-bar::-webkit-scrollbar {
+#paint-brush-bar::-webkit-scrollbar,
+#rig-weights-bar::-webkit-scrollbar {
   display: none;
 }
 
@@ -1012,6 +1006,7 @@ html.is-mobile-landscape-90 .app-shell {
   width: 38px;
   min-height: 40px;
   padding: 4px 2px;
+  flex-shrink: 0;
 }
 
 .brush-btn.rig-right-btn svg {
@@ -2436,16 +2431,6 @@ input[type="range"]:disabled {
   color: #fca5a5;
 }
 
-.outliner-foot {
-  padding: 8px 10px;
-  border-top: 1px solid var(--border);
-}
-
-.download-link {
-  width: 100%;
-  text-decoration: none;
-}
-
 /* ============================================================
    DROP & FALLBACK OVERLAYS
    ============================================================ */
@@ -3182,6 +3167,110 @@ input[type="range"]:disabled {
   color: #fca5a5;
 }
 
+/* Mini-submenu contextual del visor (mantener presionado) */
+.vp-context-menu {
+  position: absolute;
+  z-index: 62;
+  width: 236px;
+  padding: 6px;
+  border-radius: var(--radius-md);
+  background: var(--panel-solid);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(14px);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  animation: popDropIn 130ms ease;
+}
+
+.vp-ctx-head {
+  padding: 3px 8px 5px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 2px;
+}
+
+.vp-ctx-title {
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.vp-ctx-divider {
+  height: 1px;
+  margin: 3px 4px;
+  background: var(--border);
+}
+
+.vp-ctx-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+  color: var(--text);
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.vp-ctx-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.vp-ctx-btn.is-active {
+  background: var(--accent-soft);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fde68a;
+}
+
+.vp-ctx-main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  min-width: 0;
+}
+
+.vp-ctx-label {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.vp-ctx-sub {
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--text-muted);
+  line-height: 1.2;
+}
+
+.vp-ctx-btn.is-active .vp-ctx-sub {
+  color: rgba(253, 230, 138, 0.78);
+}
+
+.vp-ctx-badge {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.vp-ctx-btn.is-active .vp-ctx-badge {
+  background: rgba(245, 158, 11, 0.24);
+  color: #fde68a;
+}
+
 /* ============================================================
    MODALES: VISTA PREVIA RENDER & SELECCIÓN ANIMACIONES EXPORTAR
    ============================================================ */
@@ -3378,58 +3467,6 @@ input[type="range"]:disabled {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
-}
-
-.pwa-offline-banner {
-  position: absolute;
-  left: 12px;
-  bottom: calc(64px + env(safe-area-inset-bottom, 0px));
-  z-index: 54;
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  padding: 6px 11px;
-  border-radius: 9px;
-  background: rgba(24, 18, 10, 0.94);
-  border: 1px solid rgba(245, 158, 11, 0.48);
-  color: #fde68a;
-  font-size: 11.5px;
-  font-weight: 500;
-  box-shadow: var(--shadow);
-  pointer-events: none;
-}
-
-.pwa-offline-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: pwaPulse 1.4s ease-in-out infinite;
-}
-
-@keyframes pwaPulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.45; transform: scale(0.8); }
-}
-
-.pwa-install-card {
-  width: min(400px, calc(var(--app-vw) - 24px));
-}
-
-.pwa-install-intro {
-  margin: 0 0 8px;
-  font-size: 12.5px;
-  color: var(--text-dim);
-}
-
-.pwa-steps-list {
-  margin: 0;
-  padding-left: 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  font-size: 12.5px;
-  color: var(--text);
 }
 
 @media (max-width: 900px) {

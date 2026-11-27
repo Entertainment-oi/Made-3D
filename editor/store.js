@@ -52,6 +52,8 @@ export const lighting = {
   fogEnabled: true,
   fogFar: 38,
   orbitLight: false,
+  neutralMode: false,
+  lastEnvPreset: 'studio',
 };
 
 export const cameraView = {

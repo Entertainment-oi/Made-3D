@@ -425,7 +425,7 @@ export async function initEngine(backendPref = 'auto') {
   lighting.ambientLight = ambient;
 
   const dir = new DirectionalLight(0xfff3df, 1.2);
-  dir.name = 'Luz direccional 1';
+  dir.name = 'Sol 1';
   dir.position.set(7, 10, 6);
   dir.target.set(0, 0, 0);
   dir.castShadow = true;

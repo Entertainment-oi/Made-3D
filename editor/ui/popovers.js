@@ -272,6 +272,7 @@ export function bindPopoverNav() {
       const kind = btn.dataset.add;
       closeAllPopovers();
       if (kind === 'dirLight') addSceneLight('directional', { recordHistory: true });
+      else if (kind === 'spotLight') addSceneLight('spot', { recordHistory: true });
       else if (kind === 'pointLight') addSceneLight('point', { recordHistory: true });
       else if (kind === 'rig') addTestRig({ recordHistory: true });
       else if (kind === 'camera') addSceneCamera({ recordHistory: true });

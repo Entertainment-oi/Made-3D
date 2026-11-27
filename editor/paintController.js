@@ -315,9 +315,37 @@ function scheduleUvPreviewUpdate() {
   }
 }
 
+function getMeshBaseUvSize(mesh) {
+  const tex = mesh?.material?.map;
+  const fallback = Number(paint.painter.resolution) || 1024;
+  const w = tex?.mipmaps?.[0]?.width || tex?.image?.width || fallback;
+  const h = tex?.mipmaps?.[0]?.height || tex?.image?.height || fallback;
+  return {
+    width: Math.max(64, Math.min(8192, Math.round(w))),
+    height: Math.max(64, Math.min(8192, Math.round(h))),
+  };
+}
+
+function syncPaintUvExportSizeInputs(mesh) {
+  const preset = dom.paintUvSizePreset ? dom.paintUvSizePreset.value : 'auto';
+  if (preset === 'custom') return;
+  if (preset === 'auto') {
+    const base = getMeshBaseUvSize(mesh);
+    if (dom.paintUvWidth) dom.paintUvWidth.value = String(base.width);
+    if (dom.paintUvHeight) dom.paintUvHeight.value = String(base.height);
+  } else {
+    const [pw, ph] = preset.split('x').map(Number);
+    if (pw > 0 && ph > 0) {
+      if (dom.paintUvWidth) dom.paintUvWidth.value = String(pw);
+      if (dom.paintUvHeight) dom.paintUvHeight.value = String(ph);
+    }
+  }
+}
+
 function openPaintUvModal() {
   if (!dom.paintUvModal) return;
   dom.paintUvModal.hidden = false;
+  syncPaintUvExportSizeInputs(getPaintPrimaryMesh());
   updatePaintUvPreview({ includeLarge: true });
 }
 
@@ -785,10 +813,29 @@ export function bindPaintControls() {
   dom.paintUvWireframe?.addEventListener('change', () => {
     updatePaintUvPreview({ includeLarge: true });
   });
+  dom.paintUvSizePreset?.addEventListener('change', () => {
+    if (dom.paintUvSizePreset.value === 'custom') {
+      dom.paintUvWidth?.focus();
+    } else {
+      syncPaintUvExportSizeInputs(getPaintPrimaryMesh());
+    }
+  });
+  const onUvDimInput = () => {
+    if (dom.paintUvSizePreset) dom.paintUvSizePreset.value = 'custom';
+  };
+  dom.paintUvWidth?.addEventListener('input', onUvDimInput);
+  dom.paintUvHeight?.addEventListener('input', onUvDimInput);
   dom.btnPaintUvDownload?.addEventListener('click', async () => {
     const mesh = getPaintPrimaryMesh();
     if (!mesh) return;
+    const base = getMeshBaseUvSize(mesh);
+    const width = Math.max(64, Math.min(8192, Math.round(Number(dom.paintUvWidth?.value) || base.width)));
+    const height = Math.max(64, Math.min(8192, Math.round(Number(dom.paintUvHeight?.value) || base.height)));
+    if (dom.paintUvWidth) dom.paintUvWidth.value = String(width);
+    if (dom.paintUvHeight) dom.paintUvHeight.value = String(height);
     const blob = await Painter.exportUvTextureBlob(mesh, {
+      width,
+      height,
       includeWireframe: Boolean(dom.paintUvWireframe?.checked),
     });
     if (!blob) {
@@ -796,8 +843,9 @@ export function bindPaintControls() {
       return;
     }
     const safeName = (mesh.name || 'textura_uv').replace(/\s+/g, '_');
-    downloadBlob(blob, `${safeName}_uv.png`);
-    setStatus(`Textura UV descargada: ${safeName}_uv.png`);
+    const filename = `${safeName}_uv_${width}x${height}.png`;
+    downloadBlob(blob, filename);
+    setStatus(`Textura UV descargada: ${filename} (${width}×${height} px)`);
   });
 
   paint.painter.attach({

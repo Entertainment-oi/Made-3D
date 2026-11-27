@@ -46,7 +46,7 @@ node --input-type=module -e "import { VERSION, Scene, Color } from './made3d.mod
 ```bash
 npm install        # instala dependencias de desarrollo (Vite, Express, dotenv, esbuild)
 npm run dev        # inicia el servidor de desarrollo en http://localhost:3000
-npm run build      # compila el bundle en dist/ y genera public/zip/Made-3D.zip
+npm run build      # compila el bundle en dist/
 npm run preview    # previsualiza el build compilado de dist/
 npm run lint       # valida sintaxis JS en src/, editor/, app.js, made3d.module.js y made3d.full.js
 npm test           # ejecuta la suite automatizada en tests/*.test.js

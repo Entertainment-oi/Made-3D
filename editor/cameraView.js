@@ -1,4 +1,4 @@
-import { PerspectiveCamera } from '../made3d.module.js';
+import { PerspectiveCamera, Vec3, Quat } from '../made3d.module.js';
 import { CameraHelper } from '../src/modules/helpers.js';
 import { dom, DEFAULT_HUD_HINT, setStatus, downloadBlob } from './dom.js';
 import {
@@ -20,6 +20,10 @@ import {
   stepCameraTimelinePlayback,
   closeTimelineSubpopovers,
 } from './animationController.js';
+
+const _spawnPos = new Vec3();
+const _spawnQuat = new Quat();
+const _spawnScale = new Vec3();
 
 const _previewState = {
   url: null,
@@ -109,6 +113,20 @@ export function getCameraResolution(cam) {
 }
 
 export function addSceneCamera(opts = {}) {
+  const refCam = cameraView.activeSceneCam || viewport.camera || viewport.perspCam;
+  let refPos = null;
+  let refForward = null;
+  let refQuat = null;
+  if (refCam) {
+    refCam.updateWorldMatrix(true, false);
+    const me = refCam.matrixWorld.elements;
+    const flen = Math.hypot(me[8], me[9], me[10]) || 1;
+    refPos = new Vec3(me[12], me[13], me[14]);
+    refForward = new Vec3(-me[8] / flen, -me[9] / flen, -me[10] / flen);
+    refCam.matrixWorld.decompose(_spawnPos, _spawnQuat, _spawnScale);
+    refQuat = _spawnQuat.clone();
+  }
+
   if (cameraView.activeSceneCam) {
     exitCameraView({ restoreSnapshot: false });
   }
@@ -117,13 +135,22 @@ export function addSceneCamera(opts = {}) {
   const cam = new PerspectiveCamera(viewport.perspCam ? viewport.perspCam.fov : 50, 16 / 9, 0.1, 400);
   if (opts.position) {
     cam.position.set(opts.position[0], opts.position[1], opts.position[2]);
+  } else if (refPos && refForward) {
+    const stepFront = Number.isFinite(opts.offsetFront) ? opts.offsetFront : 2.5;
+    cam.position.set(
+      refPos.x + refForward.x * stepFront,
+      refPos.y + refForward.y * stepFront,
+      refPos.z + refForward.z * stepFront
+    );
   } else {
-    cam.position.set(0, 0, 0);
+    cam.position.set(0, 0, -2.5);
   }
   if (opts.quaternion) {
     cam.quaternion.copy(opts.quaternion);
   } else if (opts.rotation) {
     cam.rotation.set(opts.rotation[0], opts.rotation[1], opts.rotation[2]);
+  } else if (refQuat) {
+    cam.quaternion.copy(refQuat);
   }
   const initRes = getCameraResolution({ renderWidth: opts.width || 1920, renderHeight: opts.height || 1080 });
   cam.renderWidth = initRes.w;
@@ -138,7 +165,7 @@ export function addSceneCamera(opts = {}) {
   const camName = opts.name || `Cámara ${sceneStore.cameraCounter}`;
   registerUserObject(cam, camName, opts.recordHistory !== false);
   selectObject(cam);
-  setStatus(`"${camName}" creada en (0, 0, 0). Muévela con el gizmo o pulsa "Alinear a vista" / "Entrar a cámara".`);
+  setStatus(`"${camName}" creada frente a tu vista actual. Pulsa "Entrar a cámara" o muévela con el gizmo.`);
   return cam;
 }
 

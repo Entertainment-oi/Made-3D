@@ -51,10 +51,37 @@ function _draw3DCircle(ctx, cx, cy, cz, r, plane, vMat, pMat, W, H) {
   ctx.stroke();
 }
 
+function _draw3DRingVectors(ctx, cx, cy, cz, u, v, r, vMat, pMat, W, H) {
+  const steps = 40;
+  ctx.beginPath();
+  let started = false;
+  for (let i = 0; i <= steps; i++) {
+    const a = (i / steps) * Math.PI * 2;
+    const ca = Math.cos(a) * r;
+    const sa = Math.sin(a) * r;
+    const x = cx + u.x * ca + v.x * sa;
+    const y = cy + u.y * ca + v.y * sa;
+    const z = cz + u.z * ca + v.z * sa;
+    const pt = _projectWorld(x, y, z, vMat, pMat, W, H);
+    if (!pt) {
+      started = false;
+      continue;
+    }
+    if (!started) {
+      ctx.moveTo(pt.x, pt.y);
+      started = true;
+    } else {
+      ctx.lineTo(pt.x, pt.y);
+    }
+  }
+  ctx.stroke();
+}
+
 /**
  * Dibuja en canvas 2D la visualización de luces de escena:
  * - PointLight: dos círculos ortogonales cruzados como cruz mostrando su rango y bombilla central.
- * - DirectionalLight: icono solar y línea punteada hacia su punto objetivo.
+ * - DirectionalLight (Sol): icono solar y línea punteada hacia su punto objetivo.
+ * - SpotLight (Luz direccional): cono de luz proyectado siguiendo su rotación (-Z local).
  */
 export function drawLightsOverlay(ctx, camera, scene, W, H, options = {}) {
   if (!ctx || !camera || !scene) return;
@@ -68,7 +95,7 @@ export function drawLightsOverlay(ctx, camera, scene, W, H, options = {}) {
   const pMat = camera.projectionMatrix;
   const lights = [];
   scene.traverse((n) => {
-    if (n && n.visible && n.showOverlay !== false && (n.isPointLight || n.isDirectionalLight)) lights.push(n);
+    if (n && n.visible && n.showOverlay !== false && (n.isPointLight || n.isDirectionalLight || n.isSpotLight)) lights.push(n);
   });
   if (!lights.length) return;
 
@@ -115,6 +142,81 @@ export function drawLightsOverlay(ctx, camera, scene, W, H, options = {}) {
         ctx.arc(center.x, center.y, isSel ? 12 : 9, 0, Math.PI * 2);
         ctx.stroke();
       }
+    } else if (light.isSpotLight) {
+      const rl = Math.hypot(mw[0], mw[1], mw[2]) || 1;
+      const ul = Math.hypot(mw[4], mw[5], mw[6]) || 1;
+      const fl = Math.hypot(mw[8], mw[9], mw[10]) || 1;
+      const right = { x: mw[0] / rl, y: mw[1] / rl, z: mw[2] / rl };
+      const up = { x: mw[4] / ul, y: mw[5] / ul, z: mw[6] / ul };
+      const fwd = { x: -mw[8] / fl, y: -mw[9] / fl, z: -mw[10] / fl };
+      const range = light.distance > 0 ? Math.min(25, Math.max(1.5, light.distance * 0.45)) : 4.5;
+      const angle = Math.max(0.03, Math.min(Math.PI * 0.46, light.angle ?? Math.PI / 6));
+      const radius = Math.tan(angle) * range;
+      const penumbra = Math.max(0, Math.min(1, light.penumbra ?? 0.3));
+      const baseX = lx + fwd.x * range;
+      const baseY = ly + fwd.y * range;
+      const baseZ = lz + fwd.z * range;
+
+      ctx.strokeStyle = strokeCol;
+      ctx.globalAlpha = isSel ? 0.92 : 0.48;
+      ctx.lineWidth = isSel ? 1.8 : 1.2;
+      ctx.setLineDash(isSel ? [] : [5, 4]);
+      _draw3DRingVectors(ctx, baseX, baseY, baseZ, right, up, radius, vMat, pMat, W, H);
+
+      if (penumbra > 0.04) {
+        const innerR = Math.tan(angle * (1 - penumbra)) * range;
+        if (innerR > 0.02) {
+          ctx.globalAlpha = isSel ? 0.55 : 0.25;
+          ctx.setLineDash([3, 3]);
+          _draw3DRingVectors(ctx, baseX, baseY, baseZ, right, up, innerR, vMat, pMat, W, H);
+        }
+      }
+
+      if (center) {
+        const dirs = [
+          { x: right.x, y: right.y, z: right.z },
+          { x: -right.x, y: -right.y, z: -right.z },
+          { x: up.x, y: up.y, z: up.z },
+          { x: -up.x, y: -up.y, z: -up.z },
+        ];
+        ctx.globalAlpha = isSel ? 0.85 : 0.42;
+        ctx.lineWidth = isSel ? 1.5 : 1.05;
+        ctx.setLineDash(isSel ? [] : [4, 4]);
+        for (const d of dirs) {
+          const rimPt = _projectWorld(baseX + d.x * radius, baseY + d.y * radius, baseZ + d.z * radius, vMat, pMat, W, H);
+          if (!rimPt) continue;
+          ctx.beginPath();
+          ctx.moveTo(center.x, center.y);
+          ctx.lineTo(rimPt.x, rimPt.y);
+          ctx.stroke();
+        }
+        const tipPt = _projectWorld(baseX, baseY, baseZ, vMat, pMat, W, H);
+        if (tipPt) {
+          ctx.globalAlpha = isSel ? 0.6 : 0.28;
+          ctx.setLineDash([2, 4]);
+          ctx.beginPath();
+          ctx.moveTo(center.x, center.y);
+          ctx.lineTo(tipPt.x, tipPt.y);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        ctx.globalAlpha = 0.96;
+        ctx.fillStyle = col;
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, isSel ? 6 : 4.8, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = isSel ? '#fde047' : '#111215';
+        ctx.lineWidth = 1.6;
+        ctx.stroke();
+
+        ctx.strokeStyle = strokeCol;
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.arc(center.x, center.y, isSel ? 11.5 : 8.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
     } else if (light.isDirectionalLight) {
       const tgt = light.target || new Vec3();
       const ptTgt = _projectWorld(tgt.x, tgt.y, tgt.z, vMat, pMat, W, H);

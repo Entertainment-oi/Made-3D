@@ -88,6 +88,14 @@ uniform vec3 uPointColor[4];
 uniform float uPointDist[4];
 uniform float uPointDecay[4];
 uniform int uPointCount;
+uniform vec3 uSpotPos[4];
+uniform vec3 uSpotDir[4];
+uniform vec3 uSpotColor[4];
+uniform float uSpotDist[4];
+uniform float uSpotDecay[4];
+uniform float uSpotCosOuter[4];
+uniform float uSpotCosInner[4];
+uniform int uSpotCount;
 uniform float uShininess;
 uniform float uSpecular;
 uniform float uSteps;
@@ -188,6 +196,35 @@ void main() {
     }
   }
 
+  for (int i = 0; i < 4; i++) {
+    if (i >= uSpotCount) break;
+    vec3 d = uSpotPos[i] - vWorldPos;
+    float dist = length(d);
+    vec3 ldir = d / max(dist, 1e-4);
+    float theta = dot(-ldir, normalize(uSpotDir[i]));
+    float spotFactor = smoothstep(uSpotCosOuter[i], uSpotCosInner[i], theta);
+    if (spotFactor <= 0.0) continue;
+    float att = 1.0 / max(pow(max(dist, 1e-4), uSpotDecay[i]), 0.01);
+    if (uSpotDist[i] > 0.0) {
+      float pr = dist / uSpotDist[i];
+      float pr2 = pr * pr;
+      att *= clamp(1.0 - pr2 * pr2, 0.0, 1.0);
+    }
+    att *= spotFactor;
+    float ndl = max(dot(n, ldir), 0.0);
+    float band = m3dToonBand(ndl * clamp(att, 0.0, 1.0), uSteps, uSmoothness);
+    maxBand = max(maxBand, band);
+    directLight += uSpotColor[i] * band * clamp(att, 0.0, 1.5);
+    if (uShininess > 0.5 && ndl > 0.0) {
+      vec3 hv = ldir + viewDir;
+      float hl = dot(hv, hv);
+      vec3 h = hl > 1e-8 ? hv * inversesqrt(hl) : n;
+      float nh = max(dot(n, h), 0.0);
+      float sp = smoothstep(0.45, 0.52, pow(nh, uShininess));
+      specLight += uSpotColor[i] * sp * uSpecular * clamp(att, 0.0, 1.5);
+    }
+  }
+
   vec3 litCol = base.rgb * (uAmbient + directLight);
   vec3 shadowCol = base.rgb * m3dInput(uShadowColor);
   float inShadow = 1.0 - smoothstep(0.05, 0.55, maxBand);
@@ -206,6 +243,10 @@ void main() {
     float inkMask = smoothstep(edgeT - 0.03, edgeT + 0.02, fresnel);
     outc = mix(outc, m3dInput(uInkColor), inkMask);
   }
+
+  #ifdef USE_NEUTRAL
+  outc = base.rgb;
+  #endif
 
   #ifdef USE_FOG
   outc = m3dApplyFog(outc, vWorldPos);
@@ -403,6 +444,9 @@ void main() {
   #endif
 
   vec3 outc = base.rgb * mc;
+  #ifdef USE_NEUTRAL
+  outc = base.rgb;
+  #endif
   #ifdef USE_FOG
   outc = m3dApplyFog(outc, vWorldPos);
   #endif
@@ -487,6 +531,11 @@ void main() {
   vec3 outc = base.rgb * coreShade + rimCol * fresnel * uFresnelIntensity * pulse;
   float alpha = base.a < 0.999 ? clamp(base.a * mix(0.28, 1.35, fresnel), 0.0, 1.0) : base.a;
 
+  #ifdef USE_NEUTRAL
+  outc = base.rgb;
+  alpha = base.a;
+  #endif
+
   #ifdef USE_FOG
   outc = m3dApplyFog(outc, vWorldPos);
   #endif
@@ -533,6 +582,14 @@ uniform vec3 uPointColor[4];
 uniform float uPointDist[4];
 uniform float uPointDecay[4];
 uniform int uPointCount;
+uniform vec3 uSpotPos[4];
+uniform vec3 uSpotDir[4];
+uniform vec3 uSpotColor[4];
+uniform float uSpotDist[4];
+uniform float uSpotDecay[4];
+uniform float uSpotCosOuter[4];
+uniform float uSpotCosInner[4];
+uniform int uSpotCount;
 uniform float uShininess;
 uniform float uSpecular;
 uniform float uProgress;
@@ -643,11 +700,40 @@ void main() {
     }
   }
 
+  for (int i = 0; i < 4; i++) {
+    if (i >= uSpotCount) break;
+    vec3 d = uSpotPos[i] - vWorldPos;
+    float dist = length(d);
+    vec3 ldir = d / max(dist, 1e-4);
+    float theta = dot(-ldir, normalize(uSpotDir[i]));
+    float spotFactor = smoothstep(uSpotCosOuter[i], uSpotCosInner[i], theta);
+    if (spotFactor <= 0.0) continue;
+    float att = 1.0 / max(pow(max(dist, 1e-4), uSpotDecay[i]), 0.01);
+    if (uSpotDist[i] > 0.0) {
+      float pr = dist / uSpotDist[i];
+      float pr2 = pr * pr;
+      att *= clamp(1.0 - pr2 * pr2, 0.0, 1.0);
+    }
+    att *= spotFactor;
+    float ndl = max(dot(n, ldir), 0.0);
+    diffLight += uSpotColor[i] * ndl * att;
+    if (uShininess > 0.5 && ndl > 0.0) {
+      vec3 hv = ldir + viewDir;
+      float hl = dot(hv, hv);
+      vec3 h = hl > 1e-8 ? hv * inversesqrt(hl) : n;
+      specLight += uSpotColor[i] * pow(max(dot(n, h), 0.0), uShininess) * uSpecular * att;
+    }
+  }
+
   vec3 outc = base.rgb * diffLight + specLight;
   float edgeBand = 1.0 - smoothstep(thresh, thresh + max(0.005, uEdgeWidth), nVal);
   if (thresh > 0.001) {
     outc = mix(outc, m3dInput(uEdgeColor) * 2.4, edgeBand);
   }
+
+  #ifdef USE_NEUTRAL
+  outc = base.rgb;
+  #endif
 
   #ifdef USE_FOG
   outc = m3dApplyFog(outc, vWorldPos);

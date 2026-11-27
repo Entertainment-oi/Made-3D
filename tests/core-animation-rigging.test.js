@@ -13,6 +13,7 @@ import {
   Picker,
   OrbitControls,
   HistoryManager,
+  SpotLight,
   Vec3,
   Quat,
   AVAILABLE_MODULES,
@@ -31,6 +32,8 @@ import { cloneSkinned } from '../src/modules/rigging.js';
 import { ensureEditableBase, canIncrementSubsurf } from '../src/modules/modeling.js';
 import { CameraHelper, drawCamerasOverlay } from '../src/modules/helpers.js';
 import { GizmoBase } from '../src/modules/gizmo.js';
+import { beginDrag, updateDrag } from '../src/gizmo/GizmoTransform.js';
+import { GizmoRenderer2D } from '../src/gizmo/GizmoRenderer2D.js';
 import {
   isCssLandscape90,
   getLogicalViewportSize,
@@ -1281,6 +1284,273 @@ test('Helpers de Object3D, HistoryManager y OrbitControls encapsulan matemática
   assert.ok(controls.target.distanceTo(new Vec3(4, 2, -3)) < 1e-4);
   assert.ok(controls.radius >= 0.8 * 2.8 - 1e-3);
 });
+
+test('Weight Paint preserva colores RGB, suaviza, refleja en espejo, transfiere al padre al borrar y evita conflicto con OrbitControls', async () => {
+  const { Bone, Skeleton, SkinnedMesh, Rigger, applyWeightBrushAt } = await loadRigging();
+
+  // 1. Preservar atributo color RGB original al entrar/pintar/salir de Weight Paint
+  const geo = new BoxGeometry(1.6, 0.8, 0.8, 4, 2, 2);
+  const vCount = geo.attributes.position.count;
+  const origColors = new Float32Array(vCount * 3);
+  for (let i = 0; i < vCount; i++) {
+    origColors[i * 3] = 0.85;
+    origColors[i * 3 + 1] = 0.25;
+    origColors[i * 3 + 2] = 0.65;
+  }
+  geo.setAttribute('color', origColors, 3);
+  const origColorAttr = geo.attributes.color;
+
+  const bSpine = new Bone();
+  bSpine.name = 'Spine';
+  const bArmL = new Bone();
+  bArmL.name = 'Arm_L';
+  bArmL.position.set(-0.6, 0, 0);
+  const bArmR = new Bone();
+  bArmR.name = 'Arm_R';
+  bArmR.position.set(0.6, 0, 0);
+  bSpine.add(bArmL);
+  bSpine.add(bArmR);
+
+  const posArr = geo.attributes.position.array;
+  const si = new Float32Array(vCount * 4);
+  const sw = new Float32Array(vCount * 4);
+  for (let v = 0; v < vCount; v++) {
+    const x = posArr[v * 3];
+    // Extremos en Arm_L (1) / Arm_R (2), zona media en Spine (0)
+    si[v * 4] = x < -0.55 ? 1 : x > 0.55 ? 2 : 0;
+    sw[v * 4] = 1.0;
+  }
+  geo.setAttribute('skinIndex', si, 4);
+  geo.setAttribute('skinWeight', sw, 4);
+
+  const origMat = new StandardMaterial({ color: 0xffffff, vertexColors: true });
+  const skinned = new SkinnedMesh(geo, origMat);
+  skinned.add(bSpine);
+  const scene = new Scene();
+  scene.add(skinned);
+  scene.updateMatrixWorld(true, true);
+  skinned.bind(new Skeleton([bSpine, bArmL, bArmR]), skinned.matrixWorld.clone());
+
+  const rigger = new Rigger({ enabled: true });
+  const ctx = Rigger.collectContext(skinned);
+  const wpRes = rigger.setWeightPaint(true, ctx, scene);
+  assert.equal(wpRes.ok, true);
+  assert.notEqual(geo.attributes.color, origColorAttr, 'heatmap debe usar su propio BufferAttribute temporal');
+
+  // 2. Borrador cuando el vértice solo pertenece al hueso seleccionado (sumOther == 0):
+  // debe transferir gradualmente el peso al hueso padre (Spine, índice 0) manteniendo suma = 1.0
+  rigger.selectWeightBone(bArmL, ctx);
+  rigger.setEraser(true);
+  rigger.setBrushSize(0.45);
+  rigger.setBrushStrength(0.4);
+  const erasedSingle = rigger.applyWeightBrushStrokeAt(skinned, new Vec3(-0.8, 0, 0), bArmL, skinned);
+  assert.equal(erasedSingle, true);
+
+  let sampleLeft = -1;
+  for (let v = 0; v < vCount; v++) {
+    if (posArr[v * 3] <= -0.75 && Math.abs(posArr[v * 3 + 1]) < 0.05 && Math.abs(posArr[v * 3 + 2]) < 0.05) {
+      sampleLeft = v;
+      break;
+    }
+  }
+  assert.ok(sampleLeft >= 0);
+  const weightFor = (v, bi) => {
+    let total = 0;
+    for (let j = 0; j < 4; j++) {
+      if (sw[v * 4 + j] > 0 && Math.round(si[v * 4 + j]) === bi) total += sw[v * 4 + j];
+    }
+    return total;
+  };
+  const leftArmW = weightFor(sampleLeft, 1);
+  const leftSpineW = weightFor(sampleLeft, 0);
+  assert.ok(leftArmW > 0.2 && leftArmW < 0.95, `peso borrado debe bajar suavemente (${leftArmW})`);
+  assert.ok(leftSpineW > 0.05 && Math.abs(leftArmW + leftSpineW - 1.0) < 1e-4, 'peso borrado debe transferirse al hueso padre sumando 1.0');
+
+  // 3. Pintado en espejo (mirror = true): pintar Arm_L en (-0.4, 0, 0.4) debe reflejar en Arm_R en (+0.4, 0, 0.4)
+  rigger.setWeightBrushMode('paint');
+  rigger.setMirror(true);
+  rigger.setBrushSize(0.3);
+  rigger.setBrushStrength(0.8);
+  assert.equal(rigger.resolveMirrorBone(bArmL, ctx.skinnedMeshes[0].skeleton.bones, skinned, skinned), bArmR);
+
+  const mirroredPaint = rigger.applyWeightBrushStrokeAt(skinned, new Vec3(-0.4, 0, 0.4), bArmL, skinned);
+  assert.equal(mirroredPaint, true);
+  let checkedMirrorRight = false;
+  for (let v = 0; v < vCount; v++) {
+    if (Math.abs(posArr[v * 3] - 0.4) < 0.05 && Math.abs(posArr[v * 3 + 1]) < 0.05 && Math.abs(posArr[v * 3 + 2] - 0.4) < 0.05) {
+      if (weightFor(v, 2) > 0.5) checkedMirrorRight = true;
+    }
+  }
+  assert.equal(checkedMirrorRight, true, 'modo espejo debe pintar el hueso simétrico Arm_R en +X');
+
+  // 4. Modo Suavizar ('smooth'): promedia transición de pesos manteniendo normalización a 1.0
+  rigger.setMirror(false);
+  rigger.setWeightBrushMode('smooth');
+  rigger.setBrushSize(0.9);
+  rigger.setBrushStrength(0.75);
+  const smoothed = applyWeightBrushAt(skinned, new Vec3(0, 0, 0), bArmL, 0.9, 0.75, 'smooth');
+  assert.equal(smoothed, true);
+  for (let v = 0; v < vCount; v++) {
+    const sum = sw[v * 4] + sw[v * 4 + 1] + sw[v * 4 + 2] + sw[v * 4 + 3];
+    assert.ok(Math.abs(sum - 1.0) < 1e-4, `todos los vértices tras suavizar deben sumar 1.0 (got ${sum})`);
+  }
+
+  // Salir de Weight Paint restaura el material y los colores RGB originales intactos
+  rigger.setWeightPaint(false, ctx, scene);
+  assert.equal(skinned.material, origMat);
+  assert.equal(geo.attributes.color, origColorAttr, 'debe restaurarse la referencia exacta del BufferAttribute original');
+  assert.ok(Math.abs(origColorAttr.array[0] - 0.85) < 1e-6 && Math.abs(origColorAttr.array[1] - 0.25) < 1e-6);
+
+  // 5. Conflicto de puntero con OrbitControls: iniciar arrastre sobre un hueso fuera de la malla cancela OrbitControls
+  const winListeners = new Map();
+  const prevWindow = globalThis.window;
+  globalThis.window = {
+    devicePixelRatio: 1,
+    addEventListener: (t, fn) => {
+      if (!winListeners.has(t)) winListeners.set(t, new Set());
+      winListeners.get(t).add(fn);
+    },
+    removeEventListener: (t, fn) => winListeners.get(t)?.delete(fn),
+    dispatch: (t, ev) => { for (const fn of winListeners.get(t) || []) fn(ev); },
+  };
+  try {
+    const domListeners = new Map();
+    const fakeDom = {
+      clientWidth: 400,
+      clientHeight: 400,
+      style: {},
+      addEventListener: (t, fn) => {
+        if (!domListeners.has(t)) domListeners.set(t, new Set());
+        domListeners.get(t).add(fn);
+      },
+      removeEventListener: (t, fn) => domListeners.get(t)?.delete(fn),
+      setPointerCapture: () => {},
+      releasePointerCapture: () => {},
+      hasPointerCapture: () => false,
+      getBoundingClientRect: () => ({ left: 0, top: 0, width: 400, height: 400 }),
+      dispatch: (t, ev) => { for (const fn of domListeners.get(t) || []) fn(ev); },
+    };
+
+    const cam = new PerspectiveCamera(50, 1, 0.1, 100);
+    cam.position.set(0, 0, 5);
+    cam.lookAt(0, 0, 0);
+    cam.updateMatrixWorld();
+    cam.updateProjection();
+
+    const controls = new OrbitControls(cam, fakeDom);
+    // Hueso fuera de la malla en (-1.5, 0, 0) conectado a bSpine
+    const bOut = new Bone();
+    bOut.name = 'HuesoExterno';
+    bOut.position.set(-1.5, 0, 0);
+    bSpine.add(bOut);
+    skinned.updateMatrixWorld(true, true);
+    const extSkeleton = new Skeleton([bSpine, bArmL, bArmR, bOut]);
+    skinned.bind(extSkeleton, skinned.matrixWorld.clone());
+
+    const eps = Rigger.getScreenEndpoints([bOut], cam, 400, 400);
+    assert.ok(eps.length > 0);
+    const outEp = eps[0];
+
+    const rigPtr = new Rigger({ enabled: true });
+    rigPtr.setWeightPaint(true, Rigger.collectContext(skinned), scene);
+    rigPtr.attach({
+      domElement: fakeDom,
+      pointerDownTarget: fakeDom,
+      camera: cam,
+      controls,
+      getControlsEnabled: () => true,
+      getContext: () => Rigger.collectContext(skinned),
+      getScene: () => scene,
+    });
+
+    const downEv = {
+      pointerId: 11,
+      pointerType: 'mouse',
+      button: 0,
+      clientX: outEp.x,
+      clientY: outEp.y,
+      target: fakeDom,
+    };
+    fakeDom.dispatch('pointerdown', downEv);
+    assert.equal(controls.enabled, false, 'tocar un hueso fuera de la malla debe pausar OrbitControls');
+    assert.equal(controls._ptrs.has(11), false, 'OrbitControls no debe conservar el puntero activo');
+
+    globalThis.window.dispatch('pointerup', { pointerId: 11, pointerType: 'mouse', clientX: outEp.x, clientY: outEp.y });
+    assert.equal(controls.enabled, true, 'soltar el puntero debe reactivar OrbitControls');
+    rigPtr.detach();
+  } finally {
+    globalThis.window = prevWindow;
+  }
+});
+
+test('SpotLight (Luz direccional) y protección de escala en Gizmo para cámaras', () => {
+  // 1. SpotLight orienta su cono por -Z local y se puede rotar/clonar/pickear
+  const spot = new SpotLight('#ffe8c2', 14, 20, Math.PI / 5, 0.4, 2);
+  assert.equal(spot.isSpotLight, true);
+  assert.equal(spot.type, 'spot');
+  assert.deepEqual([spot.position.x, spot.position.y, spot.position.z], [0, 0, 0]);
+  spot.updateMatrixWorld(true);
+  const e = spot.matrixWorld.elements;
+  // Con rotation.x = -PI/2, -Z local apunta hacia (0, -1, 0)
+  assert.ok(Math.abs(-e[8]) < 1e-5 && Math.abs(-e[9] + 1) < 1e-5 && Math.abs(-e[10]) < 1e-5);
+
+  const clonedSpot = spot.clone();
+  assert.equal(clonedSpot.isSpotLight, true);
+  assert.equal(clonedSpot.distance, 20);
+  assert.ok(Math.abs(clonedSpot.angle - Math.PI / 5) < 1e-6);
+  assert.equal(clonedSpot.penumbra, 0.4);
+
+  const scene = new Scene();
+  const viewCam = new PerspectiveCamera(50, 1, 0.1, 100);
+  viewCam.position.set(0, 0, 8);
+  viewCam.lookAt(0, 0, 0);
+  viewCam.updateMatrixWorld(true);
+  viewCam.updateProjection();
+  scene.add(spot);
+  scene.updateMatrixWorld(true);
+
+  const picker = new Picker().setSize(400, 400);
+  const picked = picker.pickNdc(0, 0, viewCam, scene);
+  assert.ok(picked && picked.object === spot && picked.type === 'light', 'Picker debe poder seleccionar SpotLight');
+
+  // 2. El Gizmo de escala no muestra handles ni escala cámaras (ni siquiera en multiselección)
+  const sceneCam = new PerspectiveCamera(50, 16 / 9, 0.1, 100);
+  const mesh = new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial());
+  scene.add(sceneCam);
+  scene.add(mesh);
+  scene.updateMatrixWorld(true);
+
+  const r2d = new GizmoRenderer2D();
+  const fakeGizmoSingle = {
+    objects: [sceneCam],
+    camera: viewCam,
+    W: 400,
+    H: 400,
+    size: 0.16,
+    _mode: 'scale',
+    _space: 'world',
+    editPivot: false,
+    show: { X: true, Y: true, Z: true },
+    look: { arrowA: 0.2, arrowB: 1, scaleB: 0.85, dotT: 7, dotS: 7, quad: [0.2, 0.4], squad: [0.2, 0.4], ringR: 1, viewR: 1.2, viewC: '#fff', viewF: 0.4, bothSides: true },
+    _local: (o) => ({ p: o.position.clone(), q: o.quaternion.clone(), s: o.scale.clone() }),
+    _snap: () => null,
+  };
+  const F = r2d.computeFrame(fakeGizmoSingle);
+  assert.deepEqual(r2d.buildShapes(fakeGizmoSingle, F), [], 'En cámara seleccionada, escala no debe dibujar handles');
+
+  const ray = new Raycaster();
+  ray.setFromCamera({ x: 0, y: 0 }, viewCam);
+  assert.equal(beginDrag(fakeGizmoSingle, 'uni', F, ray, 200, 200, { clientX: 200, clientY: 200, pointerId: 1 }), null);
+
+  // En multiselección cámara + malla: escala solo la malla, la cámara permanece en (1,1,1)
+  const fakeGizmoMulti = { ...fakeGizmoSingle, objects: [sceneCam, mesh] };
+  const drag = beginDrag(fakeGizmoMulti, 'uni', F, ray, 200, 200, { clientX: 200, clientY: 200, pointerId: 2 });
+  assert.ok(drag);
+  updateDrag(fakeGizmoMulti, drag, ray, 260, 140);
+  assert.deepEqual([sceneCam.scale.x, sceneCam.scale.y, sceneCam.scale.z], [1, 1, 1], 'Cámara no debe cambiar su escala');
+  assert.ok(mesh.scale.x > 1.2, 'La malla en multiselección sí debe escalarse');
+});
+
 
 
 

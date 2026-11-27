@@ -498,12 +498,14 @@ export class GPUBackend {
 
     const baseDefs = m.getDefines();
     const fog = r._fogOn && m.fog !== false;
-    const shadow = r._shadowOn && m.lit && m.receiveShadow !== false && mesh.receiveShadow !== false;
+    const neutral = Boolean(r.neutralLighting && m.lit);
+    const shadow = !neutral && r._shadowOn && m.lit && m.receiveShadow !== false && mesh.receiveShadow !== false;
     const defs = Object.assign({}, baseDefs);
     if (fog) defs.USE_FOG = 1;
     if (shadow) defs.USE_SHADOW = 1;
     if (skin) defs.USE_SKINNING = 1;
     if (morph) defs.USE_MORPH = 1;
+    if (neutral) defs.USE_NEUTRAL = 1;
 
     const texMask = this._getTexMask(m, defs);
     const bg2 = res.getGroup2BindGroup(m, texMask, matSlot);
@@ -550,6 +552,20 @@ export class GPUBackend {
     buf[134] = g.uEnvMaxMip ?? 0;
     buf[135] = g.uEnvGain ?? 1;
     buf.set(r._envShVec4, 136);
+
+    buf[172] = g.uSpotCount ?? 0;
+    buf[173] = 0; buf[174] = 0; buf[175] = 0;
+    for (let i = 0; i < 4; i++) {
+      const s = i * 3;
+      const pOff = 176 + i * 4;
+      buf[pOff + 0] = g.uSpotPos[s]; buf[pOff + 1] = g.uSpotPos[s + 1]; buf[pOff + 2] = g.uSpotPos[s + 2]; buf[pOff + 3] = g.uSpotDist[i];
+      const dOff = 192 + i * 4;
+      buf[dOff + 0] = g.uSpotDir[s]; buf[dOff + 1] = g.uSpotDir[s + 1]; buf[dOff + 2] = g.uSpotDir[s + 2]; buf[dOff + 3] = g.uSpotDecay[i];
+      const cOff = 208 + i * 4;
+      buf[cOff + 0] = g.uSpotColor[s]; buf[cOff + 1] = g.uSpotColor[s + 1]; buf[cOff + 2] = g.uSpotColor[s + 2]; buf[cOff + 3] = g.uSpotCosOuter[i];
+      const kOff = 224 + i * 4;
+      buf[kOff + 0] = g.uSpotCosInner[i]; buf[kOff + 1] = 0; buf[kOff + 2] = 0; buf[kOff + 3] = 0;
+    }
 
     this.device.queue.writeBuffer(this.globalUniformBuf, 0, buf);
   }

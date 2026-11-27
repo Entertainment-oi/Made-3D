@@ -19,11 +19,13 @@ import {
   Mesh,
   DirectionalLight,
   PointLight,
+  SpotLight,
   autoScaleObject,
   loadTextGeometry,
 } from '../made3d.module.js';
 import {
   Rigger,
+  Skeleton,
   SkeletonHelper,
   cloneObject,
 } from '../src/modules/rigging.js';
@@ -79,6 +81,44 @@ export { buildExportTarget, handleModelFiles, exportSceneFormat } from './ioActi
 
 export const proceduralTexture = Texture.checkerboard();
 
+const _savedLightVisibility = new WeakMap();
+
+export function setNeutralLightingMode(enabled, { silent = false } = {}) {
+  const next = Boolean(enabled);
+  lighting.neutralMode = next;
+  if (viewport.renderer) {
+    viewport.renderer.neutralLighting = next;
+  }
+
+  if (viewport.scene) {
+    viewport.scene.traverse((node) => {
+      if (!node || !node.isLight) return;
+      if (next) {
+        if (!_savedLightVisibility.has(node)) {
+          _savedLightVisibility.set(node, node.visible !== false);
+        }
+        node.visible = false;
+      } else {
+        const prevVis = _savedLightVisibility.has(node) ? _savedLightVisibility.get(node) : true;
+        _savedLightVisibility.delete(node);
+        node.visible = prevVis;
+      }
+    });
+  }
+
+  if (dom.neutralLighting) {
+    dom.neutralLighting.checked = next;
+  }
+  if (!silent) {
+    setStatus(
+      next
+        ? 'Luces desactivadas: vista neutra sin reflejos ni sombras.'
+        : 'Luces de la escena activadas.'
+    );
+  }
+  return next;
+}
+
 export function clearUserObjects({ dispose = false, keepSceneLights = false } = {}) {
   if (viewport.gizmo?.drag) viewport.gizmo.cancel();
   if (stopCameraVideo) stopCameraVideo({ cancel: true });
@@ -113,6 +153,7 @@ export function clearUserObjects({ dispose = false, keepSceneLights = false } = 
   if (edit.active) setEditMode(false);
   if (sculpt.active) setSculptMode(false);
   if (rig.active) history._hooks.setRigMode?.(false);
+  setNeutralLightingMode(false, { silent: true });
   rig.rigger.activeTipBone = null;
   rig.rigger.selectedBone = null;
   rig.rigger.hover = null;
@@ -161,14 +202,33 @@ export function addSceneLight(kind = 'point', opts = {}) {
     let dirCount = 0;
     viewport.scene?.traverse((node) => { if (node.isDirectionalLight) dirCount++; });
     if (dirCount >= 4) {
-      setStatus('Aviso: el motor renderiza hasta 4 luces direccionales activas simultáneamente.');
+      setStatus('Aviso: el motor renderiza hasta 4 soles activos simultáneamente.');
     }
     light = new DirectionalLight(opts.color ?? 0xfff5e4, opts.intensity ?? 1.1);
     light.position.set(opts.x ?? 0, opts.y ?? 0, opts.z ?? 0);
     light.target.set(0, -1, 0);
     light.castShadow = false;
-    light.name = opts.name || `Luz direccional ${n + 1}`;
+    light.name = opts.name || `Sol ${n + 1}`;
     if (!lighting.dirLight) lighting.dirLight = light;
+  } else if (kind === 'spot') {
+    let spotCount = 0;
+    viewport.scene?.traverse((node) => { if (node.isSpotLight) spotCount++; });
+    if (spotCount >= 4) {
+      setStatus('Aviso: el motor renderiza hasta 4 luces direccionales activas simultáneamente.');
+    }
+    light = new SpotLight(
+      opts.color ?? 0xfff1d6,
+      opts.intensity ?? 14,
+      opts.distance ?? 18,
+      opts.angle ?? Math.PI / 6,
+      opts.penumbra ?? 0.3,
+      opts.decay ?? 2
+    );
+    light.position.set(opts.x ?? 0, opts.y ?? 0, opts.z ?? 0);
+    if (opts.rotation) {
+      light.rotation.set(opts.rotation[0], opts.rotation[1], opts.rotation[2]);
+    }
+    light.name = opts.name || `Luz direccional ${n + 1}`;
   } else {
     let ptCount = 0;
     viewport.scene?.traverse((node) => { if (node.isPointLight) ptCount++; });
@@ -181,6 +241,9 @@ export function addSceneLight(kind = 'point', opts = {}) {
     if (!lighting.pointLight) lighting.pointLight = light;
   }
 
+  if (lighting.neutralMode) {
+    setNeutralLightingMode(false, { silent: true });
+  }
   registerUserObject(light, light.name, opts.recordHistory !== false);
   selectObject(light);
   setStatus(`${light.name} añadida. Toca "Objeto → Luz" para editar color, alcance e intensidad.`);
@@ -488,6 +551,7 @@ export function applyEnvironmentPreset(preset = 'studio', opts = {}) {
     scene.environmentPreset = 'none';
     if (opts.intensity !== undefined) scene.environmentIntensity = opts.intensity;
   } else {
+    lighting.lastEnvPreset = preset;
     const tex = createProceduralEnvironment(preset, 128, 64);
     scene.environment = tex;
     scene.environmentPreset = preset;

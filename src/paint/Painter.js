@@ -1431,13 +1431,16 @@ export class Painter {
   static async exportUvTextureBlob(mesh, opts = {}) {
     if (typeof document === 'undefined' || !mesh) return null;
     const tex = mesh.material?.map;
-    const size = Math.max(256, tex?.mipmaps?.[0]?.width || tex?.image?.width || opts.size || 1024);
+    const baseW = tex?.mipmaps?.[0]?.width || tex?.image?.width || opts.size || 1024;
+    const baseH = tex?.mipmaps?.[0]?.height || tex?.image?.height || opts.size || 1024;
+    const w = Math.max(64, Math.min(8192, Math.round(Number(opts.width) || baseW)));
+    const h = Math.max(64, Math.min(8192, Math.round(Number(opts.height) || baseH)));
     const cv = document.createElement('canvas');
-    cv.width = size;
-    cv.height = size;
+    cv.width = w;
+    cv.height = h;
     Painter.renderUvPreview(cv, mesh, {
-      width: size,
-      height: size,
+      width: w,
+      height: h,
       showWireframe: Boolean(opts.includeWireframe),
       wireColor: opts.wireColor,
     });

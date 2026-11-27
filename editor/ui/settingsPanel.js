@@ -4,7 +4,7 @@ import { dom, setStatus } from '../dom.js';
 import { viewport, sceneStore, lighting, cameraView } from '../store.js';
 import { resizeRenderer, syncShadowResolutionUI, switchRenderBackend } from '../viewport.js';
 import { exitCameraView } from '../cameraView.js';
-import { applyEnvironmentPreset, loadEnvironmentFile } from '../sceneActions.js';
+import { applyEnvironmentPreset, loadEnvironmentFile, setNeutralLightingMode } from '../sceneActions.js';
 import { closeAllPopovers } from './popovers.js';
 import { drawTimelineCanvas, syncAnimationUI } from '../animationController.js';
 
@@ -110,6 +110,9 @@ export function bindSettingsPanel() {
     const v = Number(e.target.value);
     dom.ambIntensityVal.textContent = v.toFixed(2);
     if (lighting.ambientLight) lighting.ambientLight.intensity = v;
+  });
+  dom.neutralLighting?.addEventListener('change', (e) => {
+    setNeutralLightingMode(e.target.checked);
   });
 
   // Escenario

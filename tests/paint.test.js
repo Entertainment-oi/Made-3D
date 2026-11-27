@@ -526,6 +526,54 @@ test('Segmentos cápsula continuos, buffer pool reutilizable en trazos consecuti
   assert.ok(fast.x > 0.4, `A alta velocidad debe responder casi inmediato: ${fast.x}`);
 });
 
+test('Painter.exportUvTextureBlob respeta ancho y alto personalizados para el PNG', async () => {
+  const mat = new StandardMaterial({ color: 0x3b82f6 });
+  const mesh = new Mesh(new BoxGeometry(1, 1, 1), mat);
+  const createdCanvases = [];
+  const noop = () => {};
+  const makeFakeCtx = () => ({
+    clearRect: noop,
+    fillRect: noop,
+    drawImage: noop,
+    save: noop,
+    restore: noop,
+    beginPath: noop,
+    moveTo: noop,
+    lineTo: noop,
+    closePath: noop,
+    fill: noop,
+    stroke: noop,
+    translate: noop,
+    scale: noop,
+    createImageData: (w, h) => ({ width: w, height: h, data: new Uint8ClampedArray(w * h * 4) }),
+    putImageData: noop,
+  });
+
+  const prevDoc = globalThis.document;
+  globalThis.document = {
+    createElement: (tag) => {
+      assert.equal(tag, 'canvas');
+      const cv = {
+        width: 0,
+        height: 0,
+        getContext: () => makeFakeCtx(),
+        toBlob: (cb, mime) => cb({ type: mime, width: cv.width, height: cv.height, size: 123 }),
+      };
+      createdCanvases.push(cv);
+      return cv;
+    },
+  };
+  try {
+    const blob = await Painter.exportUvTextureBlob(mesh, { width: 1920, height: 1080, includeWireframe: false });
+    assert.ok(blob);
+    assert.equal(blob.type, 'image/png');
+    assert.equal(blob.width, 1920);
+    assert.equal(blob.height, 1080);
+  } finally {
+    globalThis.document = prevDoc;
+  }
+});
+
 
 
 

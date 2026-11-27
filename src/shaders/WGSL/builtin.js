@@ -220,6 +220,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
   let ambient = uGlobals.ambient_dirCount.xyz;
   let dirCount = i32(uGlobals.ambient_dirCount.w + 0.5);
   let pointCount = i32(uGlobals.fogParams.z + 0.5);
+  let spotCount = i32(uGlobals.spotMeta.x + 0.5);
   let shadowLight = i32(round(uGlobals.fogParams.w));
   let shadowStrength = uGlobals.shadowParams.z;
   let envInt = uGlobals.envParams.x;
@@ -230,6 +231,9 @@ fn fs_main(in: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
 
   var outc = vec3<f32>(0.0);
 
+#ifdef USE_NEUTRAL
+  outc = base.rgb;
+#else
 #ifdef USE_PBR
   var rough: f32 = uMat.pbr.x;
   var metal: f32 = uMat.pbr.y;
@@ -311,6 +315,40 @@ fn fs_main(in: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
     directLo = directLo + (kD * base.rgb / PI + spec) * radiance * ndl;
   }
 
+  for (var i: i32 = 0; i < 4; i = i + 1) {
+    if (i >= spotCount) { break; }
+    let d = uGlobals.spotPos[i].xyz - in.vWorldPos;
+    let dist = length(d);
+    let ldir = d / max(dist, 1e-4);
+    let ndl = max(dot(n, ldir), 0.0);
+    if (ndl <= 0.0) { continue; }
+    let theta = dot(-ldir, normalize(uGlobals.spotDir[i].xyz));
+    let spotFactor = smoothstep(uGlobals.spotColor[i].w, uGlobals.spotCone[i].x, theta);
+    if (spotFactor <= 0.0) { continue; }
+    var att = 1.0 / max(pow(max(dist, 1e-4), uGlobals.spotDir[i].w), 0.01);
+    let sDist = uGlobals.spotPos[i].w;
+    if (sDist > 0.0) {
+      let pr = dist / sDist;
+      let pr2 = pr * pr;
+      att = att * clamp(1.0 - pr2 * pr2, 0.0, 1.0);
+    }
+    att = att * spotFactor;
+    let hv = ldir + viewDir;
+    let hl = dot(hv, hv);
+    let h = select(n, hv * inverseSqrt(hl), hl > 1e-8);
+    let ndh = max(dot(n, h), 0.0);
+    let vdh = max(dot(viewDir, h), 0.0);
+    let denom = ndh * ndh * (a2 - 1.0) + 1.0;
+    let D = a2 / max(PI * denom * denom, 1e-6);
+    let g1L = ndl / (ndl * (1.0 - kDirect) + kDirect);
+    let G = g1V * g1L;
+    let F = F0 + (1.0 - F0) * pow(clamp(1.0 - vdh, 0.0, 1.0), 5.0);
+    let spec = (D * G * F) / max(4.0 * ndv * ndl, 1e-4);
+    let kD = (vec3<f32>(1.0) - F) * (1.0 - metal);
+    let radiance = uGlobals.spotColor[i].xyz * PI * att;
+    directLo = directLo + (kD * base.rgb / PI + spec) * radiance * ndl;
+  }
+
   let ambientTerm = base.rgb * (1.0 - metal * 0.65) * ambient * ao;
   let reflDir = reflect(-viewDir, n);
   let prefEnv = m3dSampleEnv(reflDir, rough * max(envMaxMip, 0.0));
@@ -383,6 +421,37 @@ fn fs_main(in: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
 #endif
   }
 
+  for (var i: i32 = 0; i < 4; i = i + 1) {
+    if (i >= spotCount) { break; }
+    let d = uGlobals.spotPos[i].xyz - in.vWorldPos;
+    let dist = length(d);
+    let ldir = d / max(dist, 1e-4);
+    let theta = dot(-ldir, normalize(uGlobals.spotDir[i].xyz));
+    let spotFactor = smoothstep(uGlobals.spotColor[i].w, uGlobals.spotCone[i].x, theta);
+    if (spotFactor <= 0.0) { continue; }
+    var att = 1.0 / max(pow(max(dist, 1e-4), uGlobals.spotDir[i].w), 0.01);
+    let sDist = uGlobals.spotPos[i].w;
+    if (sDist > 0.0) {
+      let pr = dist / sDist;
+      let pr2 = pr * pr;
+      att = att * clamp(1.0 - pr2 * pr2, 0.0, 1.0);
+    }
+    att = att * spotFactor;
+    let ndl = max(dot(n, ldir), 0.0);
+    diffLight = diffLight + uGlobals.spotColor[i].xyz * ndl * att;
+#ifdef USE_SPECULAR
+    if (ndl > 0.0) {
+      let hv = ldir + viewDir;
+      let hl = dot(hv, hv);
+      let h = select(n, hv * inverseSqrt(hl), hl > 1e-8);
+      let nh = max(dot(n, h), 0.0);
+      if (nh > 0.0) {
+        specLight = specLight + uGlobals.spotColor[i].xyz * pow(nh, shininessPx) * specStr * att;
+      }
+    }
+#endif
+  }
+
   let reflC = reflect(-viewDir, n);
   let prefC = m3dSampleEnv(reflC, max(envMaxMip * 0.35, 0.0));
   let irrC = m3dEvalSH(n);
@@ -394,6 +463,7 @@ fn fs_main(in: VsOut, @builtin(front_facing) frontFacing: bool) -> @location(0) 
   }
 
   outc = base.rgb * diffLight + specLight + envFill + emissiveTerm;
+#endif
 #endif
 
   outc = m3dApplyFog(outc, in.vWorldPos);

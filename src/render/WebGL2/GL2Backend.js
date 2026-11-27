@@ -4,7 +4,7 @@ import { GL2Outline } from './GL2Outline.js';
 import { buildSource } from '../../shaders/GLSL/prelude.js';
 import { SHADOW_VERT, SHADOW_FRAG } from '../../shaders/GLSL/builtin.js';
 
-const MAX_LIGHTS = 64;
+const MAX_LIGHTS = 128;
 const s2l = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
 
 export class GL2Backend {
@@ -259,18 +259,19 @@ export class GL2Backend {
     const r = this.renderer;
     const srgb = r._colorSpace === 'srgb' && !r._rt;
     const fog = r._fogOn && material.fog !== false;
-    const shadow = r._shadowOn && material.lit && material.receiveShadow !== false && !noShadow;
+    const neutral = Boolean(r.neutralLighting && material.lit);
+    const shadow = !neutral && r._shadowOn && material.lit && material.receiveShadow !== false && !noShadow;
     let progs = material._progs;
     if (!progs || material._progsOwner !== r || material._progsEpoch !== r._epoch) {
       progs = material._progs = new Array(MAX_LIGHTS).fill(null);
       material._progsOwner = r;
       material._progsEpoch = r._epoch;
     }
-    const slot = (instanced ? 1 : 0) | (srgb ? 2 : 0) | (fog ? 4 : 0) | (shadow ? 8 : 0) | (skinned ? 16 : 0) | (morphed ? 32 : 0);
+    const slot = (instanced ? 1 : 0) | (srgb ? 2 : 0) | (fog ? 4 : 0) | (shadow ? 8 : 0) | (skinned ? 16 : 0) | (morphed ? 32 : 0) | (neutral ? 64 : 0);
     let p = progs[slot];
     if (p) return p;
     const key = material.programKey + (instanced ? '|I' : '|N') + (srgb ? '|S' : '|L')
-      + (fog ? '|F' : '|f') + (shadow ? '|K' : '|k') + (skinned ? '|G' : '') + (morphed ? '|M' : '');
+      + (fog ? '|F' : '|f') + (shadow ? '|K' : '|k') + (skinned ? '|G' : '') + (morphed ? '|M' : '') + (neutral ? '|U' : '');
     p = this._programs.get(key);
     if (!p) {
       const defs = Object.assign({}, material.getDefines());
@@ -278,6 +279,7 @@ export class GL2Backend {
       if (shadow) defs.USE_SHADOW = 1;
       if (skinned) defs.USE_SKINNING = 1;
       if (morphed) defs.USE_MORPH = 1;
+      if (neutral) defs.USE_NEUTRAL = 1;
       p = new Program(
         this.gl,
         buildSource('vertex', material.vertexShader, defs, instanced, srgb),

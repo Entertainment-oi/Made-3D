@@ -134,6 +134,10 @@ export function beginDrag(gizmo, key, F, ray, x, y, e) {
     return { o, p, q, l: gizmo._local(o), invWorld };
   });
 
+  if (m === 'scale' && st.length > 0 && st.every((s) => s.o && s.o.isCamera)) {
+    return null;
+  }
+
   const d = {
     key,
     axis: axn,
@@ -317,6 +321,7 @@ export function updateDrag(gizmo, d, ray, x, y) {
     const axes = d.axis ? [d.axis] : d.axes || ['x', 'y', 'z'];
     for (let i = 0; i < st.length; i++) {
       const s = st[i];
+      if (s.o && s.o.isCamera) continue;
       const sc = s.o.scale.copy(s.l.s);
       for (let ai = 0; ai < axes.length; ai++) {
         const k = axes[ai];

@@ -6,6 +6,7 @@ import { GL2Backend } from './WebGL2/GL2Backend.js';
 
 const MAX_DIR = 4;
 const MAX_POINT = 4;
+const MAX_SPOT = 4;
 
 const _lv = new Mat4(), _lview = new Mat4(), _lproj = new Mat4(), _lvp = new Mat4();
 const _eye = new Vec3(), _up = new Vec3(0, 1, 0);
@@ -96,6 +97,14 @@ export class Renderer {
       uPointDist: new Float32Array(MAX_POINT),
       uPointDecay: new Float32Array(MAX_POINT),
       uPointCount: 0,
+      uSpotPos: new Float32Array(MAX_SPOT * 3),
+      uSpotDir: new Float32Array(MAX_SPOT * 3),
+      uSpotColor: new Float32Array(MAX_SPOT * 3),
+      uSpotDist: new Float32Array(MAX_SPOT),
+      uSpotDecay: new Float32Array(MAX_SPOT),
+      uSpotCosOuter: new Float32Array(MAX_SPOT),
+      uSpotCosInner: new Float32Array(MAX_SPOT),
+      uSpotCount: 0,
       uFogColor: new Float32Array(3),
       uFogNear: 0,
       uFogFar: 0,
@@ -128,6 +137,7 @@ export class Renderer {
     this._globals.uEnvMap = this._dummyBlackTex;
     this._nDir = 0;
     this._nPoint = 0;
+    this._nSpot = 0;
     this._fogOn = false;
     this._shadowOn = false;
     this._shadowLightIndex = -1;
@@ -135,6 +145,7 @@ export class Renderer {
     this._lastShadowInfo = null;
     this._lastRenderToCanvasRenderedViewport = false;
     this._lockedCaptureSize = null;
+    this.neutralLighting = Boolean(opts.neutralLighting);
     this.backend = null;
 
     if (!opts._deferBackend) {
@@ -431,11 +442,25 @@ export class Renderer {
     this._casters.length = 0;
     this._afterRender.length = 0;
     this._nPoint = 0;
+    this._nSpot = 0;
     this._shadowLightIndex = -1;
     this._shadowLight = null;
     this._collect(scene);
-    g.uDirCount = this._nDir;
-    g.uPointCount = this._nPoint;
+    if (this.neutralLighting) {
+      g.uAmbient[0] = g.uAmbient[1] = g.uAmbient[2] = 1;
+      g.uDirCount = 0;
+      g.uPointCount = 0;
+      g.uSpotCount = 0;
+      this._nDir = 0;
+      this._nPoint = 0;
+      this._nSpot = 0;
+      this._shadowLightIndex = -1;
+      this._shadowLight = null;
+    } else {
+      g.uDirCount = this._nDir;
+      g.uPointCount = this._nPoint;
+      g.uSpotCount = this._nSpot;
+    }
 
     const fog = scene.fog;
     this._fogOn = !!fog;
@@ -493,7 +518,7 @@ export class Renderer {
       g.uShadowLight = -1;
     }
 
-    const envTex = scene.environment || null;
+    const envTex = this.neutralLighting ? null : (scene.environment || null);
     if (envTex) {
       g.uEnvMap = envTex;
       g.uEnvHasMap = 1;
@@ -570,7 +595,7 @@ export class Renderer {
       ) {
         this._casters.push(obj);
       }
-    } else if (obj.isLight) {
+    } else if (obj.isLight && !this.neutralLighting) {
       this._addLight(obj);
     }
     const ch = obj.children;
@@ -658,6 +683,29 @@ export class Renderer {
       g.uPointDist[this._nPoint] = l.distance || 0;
       g.uPointDecay[this._nPoint] = l.decay === undefined ? 2 : l.decay;
       this._nPoint++;
+    } else if (l.type === 'spot' && this._nSpot < MAX_SPOT) {
+      const e = l.matrixWorld.elements, o = this._nSpot * 3;
+      let dx = -e[8], dy = -e[9], dz = -e[10];
+      const dlen = Math.hypot(dx, dy, dz) || 1;
+      dx /= dlen; dy /= dlen; dz /= dlen;
+      const angle = Math.max(0.01, Math.min(Math.PI * 0.495, Number(l.angle ?? Math.PI / 6)));
+      const pen = Math.max(0, Math.min(1, Number(l.penumbra ?? 0.3)));
+      const cosOuter = Math.cos(angle);
+      const cosInner = Math.cos(angle * (1 - pen));
+      g.uSpotPos[o] = e[12];
+      g.uSpotPos[o + 1] = e[13];
+      g.uSpotPos[o + 2] = e[14];
+      g.uSpotDir[o] = dx;
+      g.uSpotDir[o + 1] = dy;
+      g.uSpotDir[o + 2] = dz;
+      g.uSpotColor[o] = r * k;
+      g.uSpotColor[o + 1] = gg * k;
+      g.uSpotColor[o + 2] = b * k;
+      g.uSpotDist[this._nSpot] = l.distance || 0;
+      g.uSpotDecay[this._nSpot] = l.decay === undefined ? 2 : l.decay;
+      g.uSpotCosOuter[this._nSpot] = cosOuter;
+      g.uSpotCosInner[this._nSpot] = Math.max(cosOuter + 1e-4, cosInner);
+      this._nSpot++;
     }
   }
 

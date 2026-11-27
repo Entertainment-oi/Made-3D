@@ -1,6 +1,8 @@
 import {
   Texture,
   HistoryManager,
+  DEG2RAD,
+  RAD2DEG,
   loadTextGeometry,
   loadVideoRecorder,
 } from '../../made3d.module.js';
@@ -105,16 +107,26 @@ function syncLightInspectorControls(light) {
     if (dom.selLightIntensityVal) dom.selLightIntensityVal.textContent = (light.intensity ?? 1).toFixed(1);
   }
   const isPoint = Boolean(light.isPointLight);
+  const isSpot = Boolean(light.isSpotLight);
   const isDir = Boolean(light.isDirectionalLight);
-  if (dom.selLightPointFields) dom.selLightPointFields.hidden = !isPoint;
+  if (dom.selLightPointFields) dom.selLightPointFields.hidden = !(isPoint || isSpot);
+  if (dom.selLightSpotFields) dom.selLightSpotFields.hidden = !isSpot;
   if (dom.selLightDirFields) dom.selLightDirFields.hidden = !isDir;
-  if (isPoint) {
+  if (isPoint || isSpot) {
     const dist = light.distance ?? 0;
     const decay = light.decay ?? 2;
     if (dom.selLightDistance) dom.selLightDistance.value = String(dist);
     if (dom.selLightDistanceVal) dom.selLightDistanceVal.textContent = dist > 0 ? dist.toFixed(1) : '∞ (3.5)';
     if (dom.selLightDecay) dom.selLightDecay.value = String(decay);
     if (dom.selLightDecayVal) dom.selLightDecayVal.textContent = decay.toFixed(1);
+  }
+  if (isSpot) {
+    const deg = Math.round((light.angle ?? Math.PI / 6) * RAD2DEG);
+    const pen = light.penumbra ?? 0.3;
+    if (dom.selLightAngle) dom.selLightAngle.value = String(deg);
+    if (dom.selLightAngleVal) dom.selLightAngleVal.textContent = `${deg}°`;
+    if (dom.selLightPenumbra) dom.selLightPenumbra.value = String(pen);
+    if (dom.selLightPenumbraVal) dom.selLightPenumbraVal.textContent = pen.toFixed(2);
   }
   if (isDir) {
     if (dom.selLightShadows) dom.selLightShadows.checked = Boolean(light.castShadow);
@@ -162,8 +174,10 @@ export function syncSelectedUI() {
       ? 'Cámara'
       : o.isPointLight
       ? 'Luz puntual'
-      : o.isDirectionalLight
+      : o.isSpotLight
       ? 'Luz direccional'
+      : o.isDirectionalLight
+      ? 'Sol'
       : o.isSkinnedMesh
       ? 'SkinnedMesh'
       : o.geometry?.isTextGeometry
@@ -430,17 +444,31 @@ export function bindObjectInspector() {
   });
   dom.selLightDistance?.addEventListener('input', (e) => {
     const l = sceneStore.selected;
-    if (!l || !l.isPointLight) return;
+    if (!l || (!l.isPointLight && !l.isSpotLight)) return;
     const v = Number(e.target.value);
     l.distance = v;
     if (dom.selLightDistanceVal) dom.selLightDistanceVal.textContent = v > 0 ? v.toFixed(1) : '∞ (3.5)';
   });
   dom.selLightDecay?.addEventListener('input', (e) => {
     const l = sceneStore.selected;
-    if (!l || !l.isPointLight) return;
+    if (!l || (!l.isPointLight && !l.isSpotLight)) return;
     const v = Number(e.target.value);
     l.decay = v;
     if (dom.selLightDecayVal) dom.selLightDecayVal.textContent = v.toFixed(1);
+  });
+  dom.selLightAngle?.addEventListener('input', (e) => {
+    const l = sceneStore.selected;
+    if (!l || !l.isSpotLight) return;
+    const deg = Number(e.target.value);
+    l.angle = deg * DEG2RAD;
+    if (dom.selLightAngleVal) dom.selLightAngleVal.textContent = `${Math.round(deg)}°`;
+  });
+  dom.selLightPenumbra?.addEventListener('input', (e) => {
+    const l = sceneStore.selected;
+    if (!l || !l.isSpotLight) return;
+    const v = Number(e.target.value);
+    l.penumbra = v;
+    if (dom.selLightPenumbraVal) dom.selLightPenumbraVal.textContent = v.toFixed(2);
   });
   dom.selLightShadows?.addEventListener('change', (e) => {
     const l = sceneStore.selected;

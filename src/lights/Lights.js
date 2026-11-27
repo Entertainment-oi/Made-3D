@@ -83,3 +83,28 @@ export class PointLight extends Light {
     return this;
   }
 }
+
+/**
+ * Luz direccional focal (SpotLight): ilumina en forma de cono desde su posición siguiendo su rotación (-Z local).
+ */
+export class SpotLight extends Light {
+  constructor(color = 0xffffff, intensity = 14, distance = 18, angle = Math.PI / 6, penumbra = 0.3, decay = 2) {
+    super(color, intensity);
+    this.isSpotLight = true;
+    this.type = 'spot';
+    this.distance = distance;
+    this.angle = angle;
+    this.penumbra = penumbra;
+    this.decay = decay;
+    this.position.set(0, 0, 0);
+    this.rotation.set(-Math.PI / 2, 0, 0);
+  }
+  copy(source, recursive = true) {
+    super.copy(source, recursive);
+    this.distance = source.distance ?? 18;
+    this.angle = source.angle ?? Math.PI / 6;
+    this.penumbra = source.penumbra ?? 0.3;
+    this.decay = source.decay ?? 2;
+    return this;
+  }
+}

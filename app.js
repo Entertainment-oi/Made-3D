@@ -68,7 +68,6 @@ import {
   restoreAnimStateSnapshot,
   setAnimationHooks,
 } from './editor/animationController.js';
-import { initPWA } from './editor/pwaController.js';
 
 setAnimationHooks({
   syncTransformInputs,
@@ -232,7 +231,16 @@ scheduler.register('rigOverlay', (_dt, ctx) => {
   renderRigOverlay(ctx.activeViewportCam);
 });
 
-initPWA();
+if (typeof navigator !== 'undefined' && 'serviceWorker' in navigator) {
+  navigator.serviceWorker.getRegistrations().then((regs) => {
+    for (const reg of regs) reg.unregister();
+  }).catch(() => {});
+  if (typeof caches !== 'undefined') {
+    caches.keys().then((keys) => {
+      for (const k of keys) caches.delete(k);
+    }).catch(() => {});
+  }
+}
 
 if (await initEngine()) {
   if (dom.renderBackend && viewport.renderer) {

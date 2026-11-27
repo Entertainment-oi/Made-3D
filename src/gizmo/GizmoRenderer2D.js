@@ -86,6 +86,7 @@ export class GizmoRenderer2D {
   buildShapes(gizmo, F) {
     const m = gizmo.editPivot ? 'translate' : gizmo._mode;
     if (m === 'select') return [];
+    if (m === 'scale' && gizmo.objects.length > 0 && gizmo.objects.every((o) => o && o.isCamera)) return [];
     const { P, ax, L, view } = F;
     const S = [];
     const k = gizmo.look;

@@ -101,6 +101,11 @@ struct GlobalUniforms {
   pointColor: array<vec4<f32>, 4>,
   envParams: vec4<f32>,
   envSH: array<vec4<f32>, 9>,
+  spotMeta: vec4<f32>,
+  spotPos: array<vec4<f32>, 4>,
+  spotDir: array<vec4<f32>, 4>,
+  spotColor: array<vec4<f32>, 4>,
+  spotCone: array<vec4<f32>, 4>,
 };
 
 struct ObjectUniforms {

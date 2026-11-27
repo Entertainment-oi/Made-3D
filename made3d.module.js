@@ -54,7 +54,7 @@ export { Texture } from './src/textures/Texture.js';
 
 // objetos base y luces
 export { Mesh } from './src/objects/Mesh.js';
-export { Light, AmbientLight, DirectionalLight, PointLight, SHADOW_RESOLUTIONS, SHADOW_QUALITY } from './src/lights/Lights.js';
+export { Light, AmbientLight, DirectionalLight, PointLight, SpotLight, SHADOW_RESOLUTIONS, SHADOW_QUALITY } from './src/lights/Lights.js';
 
 // render base (WebGL2 síncrono + WebGPU bajo demanda vía Renderer.create)
 export { Renderer, Renderer as WebGLRenderer, WebGPURenderer } from './src/render/Renderer.js';

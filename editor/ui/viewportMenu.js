@@ -81,13 +81,13 @@ export function bindViewportContextMenu() {
   };
 
   const isViewportCanvas = (target) =>
-    target instanceof HTMLCanvasElement && wrap.contains(target);
+    Boolean(dom.canvas && target === dom.canvas && wrap.contains(target));
 
   wrap.addEventListener('pointerdown', (e) => {
     const pid = e.pointerId ?? 1;
     activePointers.add(pid);
 
-    if (e.target.closest('#viewport-context-menu')) {
+    if (e.target.closest('#viewport-context-menu, #anim-timeline, #anim-kf-menu')) {
       clearPress();
       return;
     }

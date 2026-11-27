@@ -133,7 +133,7 @@ export async function pickWebCodecsConfig(width, height, fps, bitrate, preferred
     const full = {
       ...base,
       bitrateMode: 'variable',
-      latencyMode: mode === 'fixed' ? 'quality' : 'realtime',
+      latencyMode: 'realtime',
     };
 
     for (const cfg of [full, base]) {
@@ -499,6 +499,7 @@ export class VideoRecorder extends EventEmitter {
     this._encoder = null;
     this._muxer = null;
     this._encError = null;
+    this._onEncoderDequeue = null;
     this._lastTsUs = -1000;
     this._prepared = false;
 
@@ -580,6 +581,7 @@ export class VideoRecorder extends EventEmitter {
         ? new MP4Muxer({ width: this.width, height: this.height, fps: this.fps })
         : new WebMMuxer({ width: this.width, height: this.height, fps: this.fps, codec: this._wcChoice.muxCodec });
 
+      this._onEncoderDequeue = null;
       this._encoder = new VideoEncoder({
         output: (chunk, meta) => {
           if (this._muxer) this._muxer.addVideoChunk(chunk, meta);
@@ -587,9 +589,21 @@ export class VideoRecorder extends EventEmitter {
         },
         error: (err) => {
           this._encError = err instanceof Error ? err : new Error(String(err || 'Error en VideoEncoder'));
+          if (this._onEncoderDequeue) {
+            const fn = this._onEncoderDequeue;
+            this._onEncoderDequeue = null;
+            fn();
+          }
           this.emit('error', this._encError);
         },
       });
+      this._encoder.ondequeue = () => {
+        if (this._onEncoderDequeue) {
+          const fn = this._onEncoderDequeue;
+          this._onEncoderDequeue = null;
+          fn();
+        }
+      };
       try {
         this._encoder.configure(this._wcChoice.config);
       } catch (err) {
@@ -742,8 +756,9 @@ export class VideoRecorder extends EventEmitter {
         this.didRenderViewport = false;
         return false;
       }
-      // Contrapresión real: esperar si el codificador ya tiene >= 4 cuadros en cola
-      if (!force && this._encoder.encodeQueueSize >= 4) {
+      // Contrapresión real: permitir pipeline fluido a 60fps sin atascar por colas cortas
+      const rtMaxQueue = this.fps >= 45 ? 8 : 4;
+      if (!force && this._encoder.encodeQueueSize >= rtMaxQueue) {
         this.elapsed = (now - this._startTime) / 1000;
         this.didRenderViewport = false;
         return false;
@@ -832,6 +847,50 @@ export class VideoRecorder extends EventEmitter {
     return true;
   }
 
+  async _waitForEncoderSlot(maxQueue = 8, lowWater = 4) {
+    if (!this.recording || !this._encoder || this._encoder.state === 'closed') return false;
+    if (this._encoder.encodeQueueSize < maxQueue) return true;
+
+    let lastProgressAt = performance.now();
+    let prevEncoded = this.encodedFrames;
+    let prevQueue = this._encoder.encodeQueueSize;
+
+    while (
+      this.recording &&
+      this._encoder &&
+      this._encoder.state !== 'closed' &&
+      this._encoder.encodeQueueSize > lowWater
+    ) {
+      if (this._encError) throw this._encError;
+      await new Promise((resolve) => {
+        let done = false;
+        let timer = 0;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          if (this._onEncoderDequeue === finish) this._onEncoderDequeue = null;
+          resolve();
+        };
+        this._onEncoderDequeue = finish;
+        timer = setTimeout(finish, 20);
+      });
+      if (this._encError) throw this._encError;
+      if (!this.recording || !this._encoder || this._encoder.state === 'closed') return false;
+
+      const curQueue = this._encoder.encodeQueueSize;
+      if (this.encodedFrames !== prevEncoded || curQueue < prevQueue) {
+        prevEncoded = this.encodedFrames;
+        prevQueue = curQueue;
+        lastProgressAt = performance.now();
+      } else if (performance.now() - lastProgressAt >= 4000) {
+        if (curQueue < 24) return true;
+        throw new Error('El codificador de video dejó de responder durante la grabación.');
+      }
+    }
+    return this.recording && Boolean(this._encoder) && this._encoder.state !== 'closed';
+  }
+
   /**
    * Captura un cuadro con paso temporal exacto (`frameIndex / fps`), esperando contrapresión
    * del codificador para producir videos a 30/60 FPS constantes sin pérdida de cuadros.
@@ -843,12 +902,10 @@ export class VideoRecorder extends EventEmitter {
     }
     if (this._encError) throw this._encError;
 
-    while (this.recording && this._encoder && this._encoder.state !== 'closed' && this._encoder.encodeQueueSize >= 3) {
-      if (this._encError) throw this._encError;
-      await new Promise((r) => setTimeout(r, 4));
-    }
-    if (this._encError) throw this._encError;
-    if (!this.recording || !this._encoder || this._encoder.state === 'closed') return false;
+    const maxQueue = this.fps >= 45 ? 10 : 6;
+    const lowWater = this.fps >= 45 ? 4 : 3;
+    const ready = await this._waitForEncoderSlot(maxQueue, lowWater);
+    if (!ready) return false;
 
     const tsUs = Math.round((frameIndex * 1_000_000) / this.fps);
     const isKey = (frameIndex % Math.max(1, this.fps * 2)) === 0;
@@ -892,7 +949,7 @@ export class VideoRecorder extends EventEmitter {
     const duration = Math.max(0, Number(opts.duration || 0));
     const targetFrames = duration > 0 ? Math.max(1, Math.round(duration * this.fps)) : 0;
     const fixedDt = 1 / this.fps;
-    const previewIntervalMs = opts.previewIntervalMs ?? 80;
+    const previewIntervalMs = opts.previewIntervalMs ?? 50;
     const deferViewportRender = opts.deferViewportRender !== false;
     const autoStop = opts.autoStop === true;
     const signal = opts.signal || null;
@@ -913,12 +970,10 @@ export class VideoRecorder extends EventEmitter {
     let simElapsed = Number.isFinite(opts.startTime) ? opts.startTime : 0;
     let frameIdx = 0;
     let lastPreviewAt = 0;
-    let lastFrameMs = 0;
     let completed = false;
 
     try {
       while (this.recording && !aborted && !(opts.isCancelled && opts.isCancelled())) {
-        const t0 = performance.now();
         simElapsed += fixedDt;
         let vpCam = opts.viewportCamera !== undefined ? opts.viewportCamera : this.viewportCamera;
         if (typeof opts.onStep === 'function') {
@@ -938,7 +993,7 @@ export class VideoRecorder extends EventEmitter {
 
         const now = performance.now();
         const shouldRenderPreview =
-          frameIdx === 0 || lastFrameMs < 16 || now - lastPreviewAt >= previewIntervalMs;
+          frameIdx === 0 || now - lastPreviewAt >= previewIntervalMs;
         let didRenderPreview = Boolean(this.didRenderViewport);
 
         if (
@@ -958,7 +1013,6 @@ export class VideoRecorder extends EventEmitter {
           didRenderPreview = true;
         }
 
-        lastFrameMs = performance.now() - t0;
         frameIdx++;
 
         if (typeof opts.onFrame === 'function') {
@@ -1010,6 +1064,11 @@ export class VideoRecorder extends EventEmitter {
         return Promise.resolve(null);
       }
       this.recording = false;
+      if (this._onEncoderDequeue) {
+        const fn = this._onEncoderDequeue;
+        this._onEncoderDequeue = null;
+        fn();
+      }
       const enc = this._encoder;
       const mux = this._muxer;
       this._encoder = null;
@@ -1138,6 +1197,11 @@ export class VideoRecorder extends EventEmitter {
 
   cancel() {
     this.recording = false;
+    if (this._onEncoderDequeue) {
+      const fn = this._onEncoderDequeue;
+      this._onEncoderDequeue = null;
+      fn();
+    }
     if (this._encoder) {
       try { if (this._encoder.state !== 'closed') this._encoder.close(); } catch (_) { /* ignore */ }
       this._encoder = null;

@@ -41,6 +41,7 @@ import {
   clientToLocalPointFromRect,
   isMobilePhoneDevice,
 } from '../src/core/viewportCoords.js';
+import { VideoRecorder, pickWebCodecsConfig } from '../src/render/VideoRecorder.js';
 
 test('made3d.module.js mantiene núcleo ligero y carga submódulos pesados bajo demanda con import()', async () => {
   // 1. El punto de entrada principal no debe re-exportar clases pesadas síncronamente
@@ -1549,6 +1550,98 @@ test('SpotLight (Luz direccional) y protección de escala en Gizmo para cámaras
   updateDrag(fakeGizmoMulti, drag, ray, 260, 140);
   assert.deepEqual([sceneCam.scale.x, sceneCam.scale.y, sceneCam.scale.z], [1, 1, 1], 'Cámara no debe cambiar su escala');
   assert.ok(mesh.scale.x > 1.2, 'La malla en multiselección sí debe escalarse');
+});
+
+test('VideoRecorder a 60fps fijos usa latencyMode realtime, contrapresión ondequeue y completa más de 2 segundos sin atascarse', async () => {
+  const prevVE = globalThis.VideoEncoder;
+  const prevVF = globalThis.VideoFrame;
+  try {
+    class FakeVideoFrame {
+      constructor(src, init) {
+        this.src = src;
+        this.timestamp = init.timestamp;
+        this.closed = false;
+      }
+      close() { this.closed = true; }
+    }
+    class FakeVideoEncoder {
+      static async isConfigSupported(cfg) {
+        return { supported: true, config: cfg };
+      }
+      constructor({ output, error }) {
+        this._output = output;
+        this._error = error;
+        this.state = 'unconfigured';
+        this.encodeQueueSize = 0;
+        this.ondequeue = null;
+      }
+      configure(cfg) {
+        this.config = cfg;
+        this.state = 'configured';
+      }
+      encode(vf) {
+        this.encodeQueueSize++;
+        const ts = vf.timestamp;
+        setTimeout(() => {
+          if (this.state === 'closed') return;
+          this.encodeQueueSize = Math.max(0, this.encodeQueueSize - 1);
+          this._output({ byteLength: 4, type: ts === 0 ? 'key' : 'delta', timestamp: ts, copyTo(dst) { dst.fill(1); } }, {});
+          if (typeof this.ondequeue === 'function') this.ondequeue();
+        }, 1);
+      }
+      async flush() {
+        while (this.encodeQueueSize > 0) {
+          await new Promise((r) => setTimeout(r, 2));
+        }
+      }
+      close() { this.state = 'closed'; }
+    }
+    globalThis.VideoEncoder = FakeVideoEncoder;
+    globalThis.VideoFrame = FakeVideoFrame;
+
+    const wc = await pickWebCodecsConfig(1920, 1080, 60, 14_000_000, 'mp4', 'fixed');
+    assert.ok(wc);
+    assert.equal(wc.config.latencyMode, 'realtime', 'El modo fijo a 60fps no debe habilitar buffering quality que atasca la cola');
+
+    let previewRenders = 0;
+    const fakeRenderer = {
+      _lastRenderToCanvasRenderedViewport: false,
+      isContextLost: () => false,
+      clampRenderSize: (w, h) => ({ width: w, height: h }),
+      beginRecordingSession() {},
+      endRecordingSession() {},
+      renderToCanvas(_s, _c, _w, _h, opts) {
+        if (opts.onFrameReady) opts.onFrameReady({ width: 1920, height: 1080 });
+        return { width: 1920, height: 1080 };
+      },
+      render() { previewRenders++; },
+    };
+
+    const scene = new Scene();
+    const cam = new PerspectiveCamera(50, 16 / 9, 0.1, 100);
+    const vpCam = new PerspectiveCamera(50, 16 / 9, 0.1, 100);
+    const rec = new VideoRecorder(fakeRenderer, scene, cam, 1920, 1080, {
+      fps: 60,
+      mode: 'fixed',
+      format: 'mp4',
+      targetCanvas: { getContext: () => null },
+      viewportCamera: vpCam,
+    });
+    await rec.prepare();
+    rec.start();
+
+    const res = await rec.runFixedLoop({
+      duration: 2.5,
+      autoStop: true,
+      previewIntervalMs: 50,
+    });
+    assert.equal(res.frames, 150, 'Debe grabar los 150 cuadros completos (2.5s a 60fps)');
+    assert.equal(res.encodedFrames, 150);
+    assert.ok(previewRenders < 150, 'No debe duplicar el renderizado de vista previa en cada cuadro');
+  } finally {
+    globalThis.VideoEncoder = prevVE;
+    globalThis.VideoFrame = prevVF;
+  }
 });
 
 

@@ -484,12 +484,32 @@ export class GL2Backend {
     if (outCanvas.height !== h) outCanvas.height = h;
     const opaque = opts.opaque !== false && !this._alpha;
     const ctx = outCanvas._m3dCtx2d || (outCanvas._m3dCtx2d = (
-      outCanvas.getContext('2d', opaque ? { alpha: false, desynchronized: true } : undefined) ||
+      outCanvas.getContext('2d', opaque ? { alpha: false } : undefined) ||
       outCanvas.getContext('2d')
     ));
     if (ctx) {
+      if (this.gl && typeof this.gl.flush === 'function') this.gl.flush();
       if (!opaque) ctx.clearRect(0, 0, w, h);
       ctx.drawImage(this.renderer.domElement, 0, 0, dw, dh, 0, 0, w, h);
+    }
+  }
+
+  async waitForGpu(timeoutMs = 250) {
+    const gl = this.gl;
+    if (!gl || this.isContextLost() || typeof gl.fenceSync !== 'function') return;
+    const sync = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    if (!sync) return;
+    gl.flush();
+    const start = performance.now();
+    try {
+      while (!this.isContextLost()) {
+        const status = gl.getSyncParameter(sync, gl.SYNC_STATUS);
+        if (status === gl.SIGNALED || status === undefined || status === null) break;
+        if (performance.now() - start >= timeoutMs) break;
+        await new Promise((resolve) => setTimeout(resolve, 2));
+      }
+    } finally {
+      try { gl.deleteSync(sync); } catch (_) { /* ignore */ }
     }
   }
 

@@ -3286,6 +3286,11 @@ input[type="range"]:disabled {
   backdrop-filter: blur(8px);
 }
 
+#render-preview-modal {
+  backdrop-filter: none;
+  background: rgba(8, 10, 14, 0.9);
+}
+
 .studio-modal-card {
   width: min(560px, calc(var(--app-vw) - 24px));
   max-height: calc(var(--app-vh) - 32px);

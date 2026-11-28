@@ -100,6 +100,11 @@ export class GPUBackend {
     this.supportsOffscreenCapture = typeof document !== 'undefined';
     this._recCanvas = null;
     this._recContext = null;
+    this._recTex = null;
+    this._recTexView = null;
+    this._recReadBuf = null;
+    this._recTexInfo = null;
+    this._recRgbaBuf = null;
     this._offscreenCapture = null;
 
     if (this.device.lost) {
@@ -144,9 +149,39 @@ export class GPUBackend {
     return this._lost;
   }
 
-  beginOffscreenCapture(w, h) {
-    if (typeof document === 'undefined' || this._lost) return false;
+  _ensureOffscreenReadbackResources(w, h) {
+    const info = this._recTexInfo;
+    if (info && info.w === w && info.h === h && this._recTex && this._recReadBuf) {
+      return info;
+    }
+    if (this._recTex) { try { this._recTex.destroy(); } catch (_) {} this._recTex = null; }
+    if (this._recReadBuf) { try { this._recReadBuf.destroy(); } catch (_) {} this._recReadBuf = null; }
+    const bytesPerRow = Math.ceil((w * 4) / 256) * 256;
+    this._recTex = this.device.createTexture({
+      label: 'M3D_VideoOffscreenTex',
+      size: [w, h, 1],
+      format: 'rgba8unorm',
+      usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
+    });
+    this._recTexView = this._recTex.createView();
+    this._recReadBuf = this.device.createBuffer({
+      label: 'M3D_VideoReadbackBuf',
+      size: bytesPerRow * h,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    this._recTexInfo = { w, h, bytesPerRow, readBuf: this._recReadBuf };
+    return this._recTexInfo;
+  }
+
+  beginOffscreenCapture(w, h, opts = {}) {
+    if (this._lost) return false;
     try {
+      if (opts && opts.pixelReadback) {
+        this._ensureOffscreenReadbackResources(w, h);
+        this._offscreenCapture = { w, h, pixelReadback: true };
+        return true;
+      }
+      if (typeof document === 'undefined') return false;
       if (!this._recCanvas) {
         this._recCanvas = document.createElement('canvas');
         this._recContext = this._recCanvas.getContext('webgpu');
@@ -158,12 +193,12 @@ export class GPUBackend {
           device: this.device,
           format: this.presentationFormat,
           alphaMode: this.alphaMode,
-          usage: GPUTextureUsage.RENDER_ATTACHMENT,
+          usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC,
         });
       }
       if (this._recCanvas.width !== w) this._recCanvas.width = w;
       if (this._recCanvas.height !== h) this._recCanvas.height = h;
-      this._offscreenCapture = { w, h };
+      this._offscreenCapture = { w, h, pixelReadback: false };
       return true;
     } catch (_) {
       this._offscreenCapture = null;
@@ -176,7 +211,53 @@ export class GPUBackend {
   }
 
   getCaptureCanvas() {
-    return this._offscreenCapture && this._recCanvas ? this._recCanvas : this.renderer.domElement;
+    return this._offscreenCapture && !this._offscreenCapture.pixelReadback && this._recCanvas
+      ? this._recCanvas
+      : this.renderer.domElement;
+  }
+
+  async readOffscreenRgba() {
+    const info = this._recTexInfo;
+    if (!info || !info.readBuf || this._lost) return null;
+    const { w, h, bytesPerRow, readBuf } = info;
+    await readBuf.mapAsync(GPUMapMode.READ);
+    try {
+      const mapped = new Uint8Array(readBuf.getMappedRange());
+      const tightRow = w * 4;
+      const total = tightRow * h;
+      if (!this._recRgbaBuf || this._recRgbaBuf.byteLength !== total) {
+        this._recRgbaBuf = new Uint8Array(total);
+      }
+      if (bytesPerRow === tightRow) {
+        this._recRgbaBuf.set(mapped.subarray(0, total));
+      } else {
+        for (let y = 0; y < h; y++) {
+          this._recRgbaBuf.set(mapped.subarray(y * bytesPerRow, y * bytesPerRow + tightRow), y * tightRow);
+        }
+      }
+      return { data: this._recRgbaBuf, width: w, height: h };
+    } finally {
+      try { if (readBuf.mapState === 'mapped') readBuf.unmap(); } catch (_) {}
+    }
+  }
+
+  async waitForGpu(timeoutMs = 1000) {
+    if (this._lost || !this.device || !this.device.queue || typeof this.device.queue.onSubmittedWorkDone !== 'function') {
+      return;
+    }
+    let timer = 0;
+    try {
+      await Promise.race([
+        this.device.queue.onSubmittedWorkDone(),
+        new Promise((resolve) => {
+          timer = setTimeout(resolve, timeoutMs);
+        }),
+      ]);
+    } catch (_) {
+      // ignorar si el dispositivo se perdió durante la espera
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
   }
 
   getCapabilities() {
@@ -661,15 +742,24 @@ export class GPUBackend {
       w = t.w; h = t.h;
     } else {
       const off = this._offscreenCapture;
-      const targetCtx = off && this._recContext ? this._recContext : this.context;
-      const swapTex = targetCtx.getCurrentTexture();
-      this.currentSwapView = swapTex.createView();
-      colorView = this.currentSwapView;
-      w = Math.max(1, swapTex.width || (off ? off.w : r.domElement.width));
-      h = Math.max(1, swapTex.height || (off ? off.h : r.domElement.height));
-      depthView = off ? res.getRecDepthView(w, h) : res.getMainDepthView(w, h);
-      colorFormat = this.presentationFormat;
-      depthFormat = 'depth24plus';
+      if (off && off.pixelReadback && this._recTexView) {
+        colorView = this._recTexView;
+        w = off.w;
+        h = off.h;
+        depthView = res.getRecDepthView(w, h);
+        colorFormat = 'rgba8unorm';
+        depthFormat = 'depth24plus';
+      } else {
+        const targetCtx = off && this._recContext ? this._recContext : this.context;
+        const swapTex = targetCtx.getCurrentTexture();
+        this.currentSwapView = swapTex.createView();
+        colorView = this.currentSwapView;
+        w = Math.max(1, swapTex.width || (off ? off.w : r.domElement.width));
+        h = Math.max(1, swapTex.height || (off ? off.h : r.domElement.height));
+        depthView = off ? res.getRecDepthView(w, h) : res.getMainDepthView(w, h);
+        colorFormat = this.presentationFormat;
+        depthFormat = 'depth24plus';
+      }
     }
 
     // Solo convertir clearColor a lineal si el target/swapchain es -srgb o es un RenderTarget en modo sRGB
@@ -758,6 +848,16 @@ export class GPUBackend {
     }
 
     pass.end();
+    if (this._offscreenCapture && this._offscreenCapture.pixelReadback && this._recTex && this._recTexInfo && !rt) {
+      const info = this._recTexInfo;
+      if (info.readBuf && info.readBuf.mapState === 'unmapped') {
+        enc.copyTextureToBuffer(
+          { texture: this._recTex },
+          { buffer: info.readBuf, bytesPerRow: info.bytesPerRow, rowsPerImage: info.h },
+          [info.w, info.h, 1]
+        );
+      }
+    }
     device.queue.submit([enc.finish()]);
     this._activeShadow = null;
     this._skipShadowPass = false;
@@ -851,7 +951,7 @@ export class GPUBackend {
     if (outCanvas.height !== h) outCanvas.height = h;
     const opaque = opts.opaque !== false && this.alphaMode === 'opaque';
     const ctx = outCanvas._m3dCtx2d || (outCanvas._m3dCtx2d = (
-      outCanvas.getContext('2d', opaque ? { alpha: false, desynchronized: true } : undefined) ||
+      outCanvas.getContext('2d', opaque ? { alpha: false } : undefined) ||
       outCanvas.getContext('2d')
     ));
     if (ctx) {
@@ -864,6 +964,11 @@ export class GPUBackend {
     this._offscreenCapture = null;
     this._recContext = null;
     this._recCanvas = null;
+    if (this._recTex) { try { this._recTex.destroy(); } catch (_) {} this._recTex = null; }
+    if (this._recReadBuf) { try { this._recReadBuf.destroy(); } catch (_) {} this._recReadBuf = null; }
+    this._recTexView = null;
+    this._recTexInfo = null;
+    this._recRgbaBuf = null;
     this.globalUniformBuf.destroy();
     this._dummyShadowTex.destroy();
     if (this._dummyEnvTex) this._dummyEnvTex.destroy();

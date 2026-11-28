@@ -111,14 +111,27 @@ function buildAvcCFromAnnexB(bytes) {
   ]);
 }
 
-function annexBToAvccSample(bytes) {
+function isValidAvccSample(bytes) {
+  if (!bytes || bytes.length < 5) return false;
+  let pos = 0;
+  let count = 0;
+  while (pos + 4 <= bytes.length) {
+    const len = ((bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3]) >>> 0;
+    if (len === 0 || pos + 4 + len > bytes.length) return false;
+    pos += 4 + len;
+    count++;
+  }
+  return count > 0 && pos === bytes.length;
+}
+
+function annexBToAvccSample(bytes, stripParamSets = false) {
   // Si parece start-code Annex-B (00 00 00 01 o 00 00 01), convertir a NALUs con prefijo de 4 bytes.
   const isAnnexB =
     (bytes.length >= 4 && bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 0 && bytes[3] === 1) ||
     (bytes.length >= 3 && bytes[0] === 0 && bytes[1] === 0 && bytes[2] === 1);
   if (!isAnnexB) return bytes;
 
-  const outParts = [];
+  const nalus = [];
   let i = 0;
   while (i < bytes.length) {
     let start = -1;
@@ -140,11 +153,70 @@ function annexBToAvccSample(bytes) {
       }
       end++;
     }
-    const len = end - start;
-    if (len > 0) {
-      outParts.push(u32(len), bytes.subarray(start, end));
+    if (end > start) {
+      nalus.push(bytes.subarray(start, end));
     }
     i = end;
+  }
+  if (!nalus.length) return bytes;
+
+  const filtered = stripParamSets
+    ? nalus.filter((n) => {
+        const t = n[0] & 0x1f;
+        return t !== 7 && t !== 8;
+      })
+    : nalus;
+  const chosen = filtered.length ? filtered : nalus;
+  const outParts = [];
+  for (let k = 0; k < chosen.length; k++) {
+    outParts.push(u32(chosen[k].byteLength), chosen[k]);
+  }
+  return outParts.length ? concatBytes(outParts) : bytes;
+}
+
+function parseAvccNalus(bytes) {
+  const nalus = [];
+  let pos = 0;
+  while (pos + 4 <= bytes.length) {
+    const len = ((bytes[pos] << 24) | (bytes[pos + 1] << 16) | (bytes[pos + 2] << 8) | bytes[pos + 3]) >>> 0;
+    if (len === 0 || pos + 4 + len > bytes.length) return null;
+    nalus.push(bytes.subarray(pos + 4, pos + 4 + len));
+    pos += 4 + len;
+  }
+  return pos === bytes.length && nalus.length ? nalus : null;
+}
+
+function buildAvcCFromNalus(nalus) {
+  if (!nalus || !nalus.length) return null;
+  const sps = nalus.find((n) => (n[0] & 0x1f) === 7);
+  const pps = nalus.find((n) => (n[0] & 0x1f) === 8);
+  if (!sps || !pps || sps.length < 4) return null;
+  return concatBytes([
+    new Uint8Array([1, sps[1], sps[2], sps[3], 0xff, 0xe1]),
+    u16(sps.length),
+    sps,
+    new Uint8Array([1]),
+    u16(pps.length),
+    pps,
+  ]);
+}
+
+function stripAvccParamSets(bytes) {
+  const nalus = parseAvccNalus(bytes);
+  if (!nalus) return bytes;
+  let hasParamSet = false;
+  let hasNonParam = false;
+  for (let i = 0; i < nalus.length; i++) {
+    const t = nalus[i][0] & 0x1f;
+    if (t === 7 || t === 8) hasParamSet = true;
+    else hasNonParam = true;
+  }
+  if (!hasParamSet || !hasNonParam) return bytes;
+  const outParts = [];
+  for (let i = 0; i < nalus.length; i++) {
+    const t = nalus[i][0] & 0x1f;
+    if (t === 7 || t === 8) continue;
+    outParts.push(u32(nalus[i].byteLength), nalus[i]);
   }
   return outParts.length ? concatBytes(outParts) : bytes;
 }
@@ -153,34 +225,50 @@ function annexBToAvccSample(bytes) {
  * Muxador ISO-BMFF MP4 (faststart) para video H.264 proveniente de WebCodecs VideoEncoder.
  */
 export class MP4Muxer {
-  constructor({ width, height, fps = 30 }) {
+  constructor({ width, height, fps = 30, avcFormat = 'auto' }) {
     this.width = width;
     this.height = height;
     this.fps = Math.max(1, fps || 30);
     this.timescale = 90000;
     this.avcC = null;
+    this._isAvcc = avcFormat === 'avc';
     this.samples = [];
     this.totalMdatBytes = 0;
   }
 
   addVideoChunk(chunk, meta) {
-    if (meta && meta.decoderConfig && meta.decoderConfig.description && !this.avcC) {
+    if (meta && meta.decoderConfig && meta.decoderConfig.description) {
       const desc = new Uint8Array(meta.decoderConfig.description);
       if (desc.length >= 7 && desc[0] === 1) {
-        this.avcC = desc.slice();
-      } else {
+        this._isAvcc = true;
+        if (!this.avcC) this.avcC = desc.slice();
+      } else if (!this.avcC) {
         this.avcC = buildAvcCFromAnnexB(desc);
       }
     }
+    if (!chunk || !chunk.byteLength) return;
     const raw = new Uint8Array(chunk.byteLength);
     chunk.copyTo(raw);
-    const data = annexBToAvccSample(raw);
+    const validAvcc = isValidAvccSample(raw);
+    const startsAnnexB =
+      (raw.length >= 4 && raw[0] === 0 && raw[1] === 0 && raw[2] === 0 && raw[3] === 1) ||
+      (raw.length >= 3 && raw[0] === 0 && raw[1] === 0 && raw[2] === 1);
+    const isAvcc = validAvcc || (this._isAvcc && !startsAnnexB);
     if (!this.avcC) {
-      this.avcC = buildAvcCFromAnnexB(raw);
+      if (isAvcc) {
+        const avccNalus = parseAvccNalus(raw);
+        this.avcC = buildAvcCFromNalus(avccNalus);
+      } else {
+        this.avcC = buildAvcCFromAnnexB(raw);
+      }
     }
+    const data = isAvcc
+      ? (this.avcC ? stripAvccParamSets(raw) : raw)
+      : annexBToAvccSample(raw, Boolean(this.avcC));
     this.samples.push({
       data,
       timestampUs: Math.max(0, Number(chunk.timestamp) || 0),
+      durationUs: Math.max(0, Number(chunk.duration) || 0),
       isKey: chunk.type === 'key',
     });
     this.totalMdatBytes += data.byteLength;
@@ -190,20 +278,27 @@ export class MP4Muxer {
     const n = this.samples.length;
     if (!n) return new Uint8Array(0);
 
-    const avcCBytes = this.avcC || new Uint8Array([1, 0x42, 0xc0, 0x28, 0xff, 0xe1, 0, 0, 1, 0, 0]);
+    const defLvl = this.fps >= 45 ? 0x2a : 0x28;
+    const avcCBytes = this.avcC || new Uint8Array([1, 0x42, 0xc0, defLvl, 0xff, 0xe1, 0, 0, 1, 0, 0]);
     const ts = this.timescale;
 
     // Convertir timestamps en microsegundos a ticks de 90kHz y detectar reordenamiento (B-frames)
     const rawPts = new Array(n);
+    let minPts = Infinity;
     let hasReordered = false;
     for (let i = 0; i < n; i++) {
       const t = Math.round((this.samples[i].timestampUs * ts) / 1_000_000);
       rawPts[i] = t;
+      if (t < minPts) minPts = t;
       if (i > 0 && t < rawPts[i - 1]) hasReordered = true;
+    }
+    if (minPts > 0 && Number.isFinite(minPts)) {
+      for (let i = 0; i < n; i++) rawPts[i] -= minPts;
     }
 
     const dts = new Array(n);
     let ctts = null;
+    let cttsShift = 0;
     if (!hasReordered) {
       for (let i = 0; i < n; i++) {
         let t = rawPts[i];
@@ -225,6 +320,7 @@ export class MP4Muxer {
         if (off < minOffset) minOffset = off;
       }
       const shift = minOffset < 0 ? -minOffset : 0;
+      cttsShift = shift;
       const cttsRuns = [];
       for (let i = 0; i < n; i++) {
         const off = ctsOffsets[i] + shift;
@@ -251,9 +347,12 @@ export class MP4Muxer {
       deltas[i] = Math.max(1, dts[i + 1] - dts[i]);
       totalDuration += deltas[i];
     }
-    deltas[n - 1] = n > 1
-      ? Math.max(1, Math.round(totalDuration / (n - 1)))
-      : defaultDelta;
+    const lastDurTicks = this.samples[n - 1].durationUs > 0
+      ? Math.max(1, Math.round((this.samples[n - 1].durationUs * ts) / 1_000_000))
+      : 0;
+    deltas[n - 1] = lastDurTicks > 0
+      ? lastDurTicks
+      : (n > 1 ? Math.max(1, Math.round(totalDuration / (n - 1))) : defaultDelta);
     totalDuration += deltas[n - 1];
 
     // Compresión RLE para stts
@@ -396,7 +495,22 @@ export class MP4Muxer {
         u32((this.width << 16) >>> 0),
         u32((this.height << 16) >>> 0)
       );
-      const trak = mp4Box('trak', tkhd, mdia);
+      const edts = cttsShift > 0
+        ? mp4Box(
+            'edts',
+            mp4FullBox(
+              'elst',
+              0,
+              0,
+              u32(1),
+              u32(totalDuration),
+              u32(cttsShift),
+              u16(1),
+              u16(0)
+            )
+          )
+        : null;
+      const trak = edts ? mp4Box('trak', tkhd, edts, mdia) : mp4Box('trak', tkhd, mdia);
 
       const mvhd = mp4FullBox(
         'mvhd',
@@ -506,14 +620,25 @@ export class WebMMuxer {
     this.fps = Math.max(1, fps || 30);
     this.codec = codec;
     this.chunks = [];
+    this._firstTsUs = null;
   }
 
   addVideoChunk(chunk) {
+    if (!chunk || !chunk.byteLength) return;
     const data = new Uint8Array(chunk.byteLength);
     chunk.copyTo(data);
+    const rawTsUs = Math.max(0, Number(chunk.timestamp) || 0);
+    if (this._firstTsUs === null) this._firstTsUs = rawTsUs;
+    const normTsUs = Math.max(0, rawTsUs - this._firstTsUs);
+    const rawTsMs = Math.max(0, Math.round(normTsUs / 1000));
+    const prev = this.chunks.length ? this.chunks[this.chunks.length - 1] : null;
+    const tsUs = prev ? Math.max(prev.tsUs, normTsUs) : normTsUs;
+    const tsMs = prev ? Math.max(prev.tsMs, rawTsMs) : rawTsMs;
     this.chunks.push({
       data,
-      tsMs: Math.max(0, Math.round((Number(chunk.timestamp) || 0) / 1000)),
+      tsUs,
+      tsMs,
+      durationUs: Math.max(0, Number(chunk.duration) || 0),
       isKey: chunk.type === 'key',
     });
   }
@@ -522,9 +647,14 @@ export class WebMMuxer {
     const n = this.chunks.length;
     if (!n) return new Uint8Array(0);
 
-    const lastTs = this.chunks[n - 1].tsMs;
-    const avgFrameMs = n > 1 ? Math.max(1, lastTs / (n - 1)) : 1000 / this.fps;
-    const durationMs = Math.max(1, lastTs + avgFrameMs);
+    const last = this.chunks[n - 1];
+    const lastDurUs = last.durationUs > 0
+      ? last.durationUs
+      : (n > 1
+          ? Math.max(1_000_000 / this.fps, last.tsUs / (n - 1))
+          : 1_000_000 / this.fps);
+    const durationMs = Math.max(1, Math.round((last.tsUs + lastDurUs) / 1000));
+    const defaultDurationNs = Math.max(1, Math.round(1_000_000_000 / this.fps));
 
     const ebmlHeader = ebmlElem(
       [0x1a, 0x45, 0xdf, 0xa3],
@@ -563,6 +693,8 @@ export class WebMMuxer {
         ebmlUint([0xd7], 1),
         ebmlUint([0x73, 0xc5], 1),
         ebmlUint([0x83], 1),
+        ebmlUint([0x9c], 0),
+        ebmlUint([0x23, 0xe3, 0x83], defaultDurationNs),
         ebmlStr([0x86], this.codec),
         videoElem,
       ])

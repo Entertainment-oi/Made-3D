@@ -30,12 +30,14 @@ const _previewState = {
   blob: null,
   filename: '',
   bound: false,
+  pausedScheduler: false,
 };
 
 export function closeRenderPreview() {
   if (dom.renderPreviewVideo) {
     dom.renderPreviewVideo.pause();
     dom.renderPreviewVideo.removeAttribute('src');
+    try { dom.renderPreviewVideo.load(); } catch (_) { /* ignore */ }
     dom.renderPreviewVideo.hidden = true;
   }
   if (dom.renderPreviewImg) {
@@ -49,6 +51,12 @@ export function closeRenderPreview() {
   _previewState.blob = null;
   _previewState.filename = '';
   if (dom.renderPreviewModal) dom.renderPreviewModal.hidden = true;
+  if (_previewState.pausedScheduler) {
+    _previewState.pausedScheduler = false;
+    if (!(recorder.instance && recorder.mode === 'fixed')) {
+      resumeSchedulerAfterFixed();
+    }
+  }
 }
 
 export function bindRenderPreviewModal() {
@@ -77,9 +85,18 @@ export function openRenderPreview({ kind = 'image', blob, filename, title = 'Res
   _previewState.blob = blob;
   _previewState.filename = filename;
 
+  if (viewport.scheduler && viewport.scheduler.running) {
+    viewport.scheduler.stop();
+    _previewState.pausedScheduler = true;
+  }
+
   if (dom.renderPreviewTitle) dom.renderPreviewTitle.textContent = title;
   if (dom.renderPreviewMeta) dom.renderPreviewMeta.textContent = metaText;
+  if (dom.renderPreviewModal) {
+    dom.renderPreviewModal.hidden = false;
+  }
   if (kind === 'video' && dom.renderPreviewVideo) {
+    dom.renderPreviewVideo.preload = 'auto';
     dom.renderPreviewVideo.src = url;
     dom.renderPreviewVideo.hidden = false;
     dom.renderPreviewVideo.play?.().catch(() => {});
@@ -87,9 +104,7 @@ export function openRenderPreview({ kind = 'image', blob, filename, title = 'Res
     dom.renderPreviewImg.src = url;
     dom.renderPreviewImg.hidden = false;
   }
-  if (dom.renderPreviewModal) {
-    dom.renderPreviewModal.hidden = false;
-  } else {
+  if (!dom.renderPreviewModal) {
     downloadBlob(blob, filename);
   }
 }
@@ -169,29 +184,40 @@ export function addSceneCamera(opts = {}) {
   return cam;
 }
 
+let _lastVfKey = '';
+
 export function updateViewfinderOverlay() {
   const cam = cameraView.activeSceneCam;
   if (!cam) {
-    if (dom.cameraViewfinder) dom.cameraViewfinder.hidden = true;
+    if (dom.cameraViewfinder && !dom.cameraViewfinder.hidden) dom.cameraViewfinder.hidden = true;
+    _lastVfKey = '';
     return null;
   }
-  if (dom.cameraViewfinder) dom.cameraViewfinder.hidden = false;
+  if (dom.cameraViewfinder && dom.cameraViewfinder.hidden) dom.cameraViewfinder.hidden = false;
   const vpW = Math.max(1, dom.viewportWrap.clientWidth || dom.canvas.clientWidth || 1);
   const vpH = Math.max(1, dom.viewportWrap.clientHeight || dom.canvas.clientHeight || 1);
   const { w: rw, h: rh } = getCameraResolution(cam);
   const frame = PerspectiveCamera.computeViewfinderFrame(vpW, vpH, rw / rh);
-
-  dom.vfMaskTop.style.cssText = `left:0;top:0;width:100%;height:${Math.max(0, frame.top)}px;`;
-  dom.vfMaskBottom.style.cssText = `left:0;top:${frame.bottom}px;width:100%;height:${Math.max(0, vpH - frame.bottom)}px;`;
-  dom.vfMaskLeft.style.cssText = `left:0;top:${Math.max(0, frame.top)}px;width:${Math.max(0, frame.left)}px;height:${frame.height}px;`;
-  dom.vfMaskRight.style.cssText = `left:${frame.right}px;top:${Math.max(0, frame.top)}px;width:${Math.max(0, vpW - frame.right)}px;height:${frame.height}px;`;
-  dom.vfFrame.style.cssText = `left:${frame.left}px;top:${frame.top}px;width:${frame.width}px;height:${frame.height}px;`;
-
   const meta = getCameraMeta(cam);
-  dom.vfThirds.hidden = meta.showThirds === false;
-  dom.vfLabel.textContent = `${cam.name || 'Cámara'} · ${rw}×${rh} · FOV ${Math.round(cam.fov)}°`;
-  dom.btnVfLock.classList.toggle('is-active', cameraView.camViewLocked);
-  dom.btnVfLock.textContent = cameraView.camViewLocked ? 'Cámara fijada' : 'Fijar cámara';
+  const showThirds = meta.showThirds !== false;
+  const camName = cam.name || 'Cámara';
+  const fovDeg = Math.round(cam.fov);
+  const locked = Boolean(cameraView.camViewLocked);
+  const key = `${vpW}|${vpH}|${rw}|${rh}|${showThirds ? 1 : 0}|${camName}|${fovDeg}|${locked ? 1 : 0}`;
+
+  if (key !== _lastVfKey) {
+    _lastVfKey = key;
+    dom.vfMaskTop.style.cssText = `left:0;top:0;width:100%;height:${Math.max(0, frame.top)}px;`;
+    dom.vfMaskBottom.style.cssText = `left:0;top:${frame.bottom}px;width:100%;height:${Math.max(0, vpH - frame.bottom)}px;`;
+    dom.vfMaskLeft.style.cssText = `left:0;top:${Math.max(0, frame.top)}px;width:${Math.max(0, frame.left)}px;height:${frame.height}px;`;
+    dom.vfMaskRight.style.cssText = `left:${frame.right}px;top:${Math.max(0, frame.top)}px;width:${Math.max(0, vpW - frame.right)}px;height:${frame.height}px;`;
+    dom.vfFrame.style.cssText = `left:${frame.left}px;top:${frame.top}px;width:${frame.width}px;height:${frame.height}px;`;
+
+    dom.vfThirds.hidden = !showThirds;
+    dom.vfLabel.textContent = `${camName} · ${rw}×${rh} · FOV ${fovDeg}°`;
+    dom.btnVfLock.classList.toggle('is-active', locked);
+    dom.btnVfLock.textContent = locked ? 'Cámara fijada' : 'Fijar cámara';
+  }
 
   return { vpW, vpH, frameW: frame.width, frameH: frame.height };
 }
@@ -454,13 +480,14 @@ export async function stopCameraVideo({ cancel = false } = {}) {
       const count = res.encodedFrames || res.frames;
       const realFps = res.duration > 0 ? (count / res.duration).toFixed(1) : res.fps;
       const engTag = res.encoder === 'webcodecs' ? 'WebCodecs' : 'MediaRecorder';
+      const fmtTag = (res.extension || '').toUpperCase();
       const mbStr = (res.blob.size / (1024 * 1024)).toFixed(2);
       openRenderPreview({
         kind: 'video',
         blob: res.blob,
         filename,
         title: `Video · ${cam?.name || 'Cámara'}`,
-        metaText: `${res.width}×${res.height} · ${res.duration.toFixed(1)}s · ${count} f · ${realFps} fps · ${engTag} · ${mbStr} MB`,
+        metaText: `${res.width}×${res.height} · ${res.duration.toFixed(1)}s · ${count} f · ${realFps} fps · ${engTag}${fmtTag ? ' ' + fmtTag : ''} · ${mbStr} MB`,
       });
       setStatus(`Video listo para previsualizar y descargar (${filename})`);
     } else {
@@ -478,7 +505,14 @@ export async function stopCameraVideo({ cancel = false } = {}) {
     recorder.stopping = false;
     recorder.starting = false;
     recorder.mode = dom.sceneCamVideoMode?.value === 'realtime' ? 'realtime' : 'fixed';
-    if (wasFixed) resumeSchedulerAfterFixed();
+    const previewOpen = Boolean(dom.renderPreviewModal && !dom.renderPreviewModal.hidden);
+    if (wasFixed) {
+      if (previewOpen) {
+        _previewState.pausedScheduler = true;
+      } else {
+        resumeSchedulerAfterFixed();
+      }
+    }
     updateVideoRecordingUI();
   }
 }

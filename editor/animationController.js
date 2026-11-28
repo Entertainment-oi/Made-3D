@@ -54,13 +54,11 @@ export function snapTimelineTime(t) {
   return timeline.snapTime(t);
 }
 
+const UNIFIED_TRANSFORM_PROPS = ['position', 'quaternion', 'scale'];
+
 export function getActiveToolKeyframeProperties() {
   if (edit.active) return null;
-  const mode = viewport.gizmo?.mode || 'select';
-  if (mode === 'translate') return ['position'];
-  if (mode === 'rotate') return ['quaternion'];
-  if (mode === 'scale') return ['scale'];
-  return null;
+  return UNIFIED_TRANSFORM_PROPS.slice();
 }
 
 export function getObjectClips(obj) {
@@ -335,11 +333,9 @@ export function removeKeyframeAt(
 
 export function toggleKeyframeAtCurrentTime() {
   const ctx = getEffectiveClipContext();
-  const activeProps = getActiveToolKeyframeProperties();
-  if (ctx.clip && timeline.hasKeyframeAtSelection(sceneStore.selected, timeline.currentTime, activeProps)) {
-    removeKeyframeAt(ctx.clip, timeline.currentTime, { properties: activeProps });
-    const tag = activeProps?.length === 1 ? ` (${PROP_LABELS[activeProps[0]] || activeProps[0]})` : '';
-    setStatus(`Keyframe${tag} eliminado en ${timeline.currentTime.toFixed(2)}s`);
+  if (ctx.clip && timeline.hasKeyframeAtSelection(sceneStore.selected, timeline.currentTime, null)) {
+    removeKeyframeAt(ctx.clip, timeline.currentTime, { properties: null });
+    setStatus(`Keyframe eliminado en ${timeline.currentTime.toFixed(2)}s`);
     return;
   }
   const target = sceneStore.selected || getClipOwner(ctx.clip);
@@ -347,23 +343,20 @@ export function toggleKeyframeAtCurrentTime() {
     setStatus('Selecciona un objeto para insertar un keyframe.', true);
     return;
   }
-  const insertProps = activeProps || ['position', 'quaternion', 'scale'];
-  if (insertKeyframeAt(target, timeline.currentTime, { properties: insertProps, recordHistory: true })) {
-    const tag = insertProps.length === 1 ? ` (${PROP_LABELS[insertProps[0]] || insertProps[0]})` : '';
-    setStatus(`Keyframe${tag} guardado en ${timeline.currentTime.toFixed(2)}s`);
+  if (insertKeyframeAt(target, timeline.currentTime, { properties: UNIFIED_TRANSFORM_PROPS, recordHistory: true })) {
+    setStatus(`Keyframe guardado en ${timeline.currentTime.toFixed(2)}s (posición, rotación y escala)`);
   }
 }
 
 export function recordAutoKeyframeIfNeeded(targets = [], opts = {}) {
   if (viewport.appMode !== 'animacion' || !timeline.autoKeyframe || timeline.playing) return;
   const list = Array.isArray(targets) && targets.length ? targets : sceneStore.selected ? [sceneStore.selected] : [];
-  const toolProps = viewport.gizmo?.editPivot ? null : getActiveToolKeyframeProperties();
 
   const recorded = timeline.recordAutoKeyframe(list, {
     beforeList: opts.beforeList || null,
     afterList: opts.afterList || null,
     properties: opts.properties || null,
-    toolProperties: toolProps,
+    unified: true,
     time: timeline.currentTime,
   });
   if (!recorded.length) return;
@@ -611,16 +604,8 @@ const RULER_H = 24;
 
 function getTimelineRows(canvasHeight) {
   const bodyH = Math.max(30, canvasHeight - RULER_H);
-  const showDetailRows = bodyH >= 92;
-  const rows = showDetailRows
-    ? [
-        { label: 'Resumen', filter: null },
-        { label: 'Posición', filter: 'position' },
-        { label: 'Rotación', filter: 'quaternion' },
-        { label: 'Escala', filter: 'scale' },
-      ]
-    : [{ label: 'Keyframes', filter: null }];
-  return { rows, rowH: bodyH / rows.length };
+  const rows = [{ label: 'Keyframes', filter: null }];
+  return { rows, rowH: bodyH };
 }
 
 function formatTickNumber(val) {
@@ -788,7 +773,7 @@ export function drawTimelineCanvas() {
       const kx = timeToX(kt);
       if (kx < -14 || kx > w + 14) continue;
       const isAtHead = Math.abs(kt - timeline.currentTime) <= timeline.keyframeHitEps;
-      const r = rIdx === 0 ? 5.5 : 4.2;
+      const r = 6;
 
       ctx.save();
       ctx.translate(kx, yMid);
@@ -879,14 +864,12 @@ export function syncAnimationHeader() {
     }
   }
 
-  const activeProps = getActiveToolKeyframeProperties();
-  const onKf = isPlayheadOnKeyframe(clip, timeline.currentTime, activeProps);
+  const onKf = isPlayheadOnKeyframe(clip, timeline.currentTime, null);
   if (dom.btnTlKeyframe) {
     dom.btnTlKeyframe.classList.toggle('has-keyframe', onKf);
-    const propTag = activeProps?.length === 1 ? ` (${PROP_LABELS[activeProps[0]] || activeProps[0]})` : '';
     dom.btnTlKeyframe.title = onKf
-      ? `Quitar keyframe${propTag} en el tiempo actual`
-      : `Insertar keyframe${propTag} en el tiempo actual`;
+      ? 'Quitar keyframe en el tiempo actual'
+      : 'Insertar keyframe (posición, rotación y escala) en el tiempo actual';
   }
 
   if (dom.btnTlPlay) {

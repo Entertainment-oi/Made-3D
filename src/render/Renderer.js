@@ -213,6 +213,18 @@ export class Renderer {
     return this.contextLost || !this.backend || this.backend.isContextLost();
   }
 
+  async waitForGpu(timeoutMs) {
+    if (this.isContextLost() || !this.backend || typeof this.backend.waitForGpu !== 'function') return;
+    await this.backend.waitForGpu(timeoutMs);
+  }
+
+  async readOffscreenRgba() {
+    if (this.isContextLost() || !this.backend || typeof this.backend.readOffscreenRgba !== 'function') {
+      return null;
+    }
+    return this.backend.readOffscreenRgba();
+  }
+
   // ───────── render targets ─────────
   setRenderTarget(rt) {
     this._rt = rt || null;
@@ -835,7 +847,9 @@ export class Renderer {
         this.backend.supportsOffscreenCapture &&
         typeof this.backend.beginOffscreenCapture === 'function'
       ) {
-        usedOffscreen = this.backend.beginOffscreenCapture(w, h);
+        usedOffscreen = this.backend.beginOffscreenCapture(w, h, {
+          pixelReadback: Boolean(opts.pixelReadback),
+        });
       }
       if (!usedOffscreen) {
         if (this.domElement.width !== w) this.domElement.width = w;
@@ -855,6 +869,9 @@ export class Renderer {
       }
 
       this.render(scene, camera, { skipAdapt: true, time: opts.time });
+      if (usedOffscreen && opts.pixelReadback) {
+        return out;
+      }
       if (typeof opts.onFrameReady === 'function') {
         const capSrc = usedOffscreen && typeof this.backend.getCaptureCanvas === 'function'
           ? this.backend.getCaptureCanvas()

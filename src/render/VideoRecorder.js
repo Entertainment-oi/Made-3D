@@ -78,7 +78,7 @@ export async function pickWebCodecsConfig(width, height, fps, bitrate, preferred
     return null;
   }
 
-  // Calcular nivel H.264 mínimo para la resolución/FPS objetivo
+  // Calcular nivel H.264 y VP9 mínimo para la resolución/FPS objetivo
   const mbs = Math.ceil(width / 16) * Math.ceil(height / 16);
   const mbps = mbs * fps;
   let avcLvl = '28'; // Level 4.0 (1080p30)
@@ -88,36 +88,74 @@ export async function pickWebCodecsConfig(width, height, fps, bitrate, preferred
   else if (mbs <= 36864 && mbps <= 983040) avcLvl = '33'; // Level 5.1 (4K30)
   else avcLvl = '34'; // Level 5.2 (4K60)
 
-  const avcSet = (hw) => [
-    { codec: `avc1.4200${avcLvl}`, ext: 'mp4', mime: 'video/mp4;codecs=avc1', mux: 'mp4', muxCodec: 'avc1', avc: { format: 'avc' }, hw },
-    { codec: `avc1.4d00${avcLvl}`, ext: 'mp4', mime: 'video/mp4;codecs=avc1', mux: 'mp4', muxCodec: 'avc1', avc: { format: 'avc' }, hw },
-    { codec: `avc1.6400${avcLvl}`, ext: 'mp4', mime: 'video/mp4;codecs=avc1', mux: 'mp4', muxCodec: 'avc1', avc: { format: 'avc' }, hw },
-  ];
+  let vp9Lvl = '40';
+  if (mbs <= 3600 && mbps <= 108000) vp9Lvl = '31';
+  else if (mbs <= 8192 && mbps <= 245760) vp9Lvl = '40';
+  else if (mbs <= 8704 && mbps <= 522240) vp9Lvl = '41';
+  else if (mbs <= 36864 && mbps <= 983040) vp9Lvl = '50';
+  else vp9Lvl = '51';
+
+  const avcLevels = avcLvl === '2a' ? ['2a', '32'] : [avcLvl];
+  const avcSet = (hw, avcFormat = 'avc') => {
+    const out = [];
+    for (const lvl of avcLevels) {
+      for (const prof of ['42e0', '6400', '4d40', '4d00', '4200']) {
+        out.push({
+          codec: `avc1.${prof}${lvl}`,
+          ext: 'mp4',
+          mime: 'video/mp4;codecs=avc1',
+          mux: 'mp4',
+          muxCodec: 'avc1',
+          avc: { format: avcFormat },
+          hw,
+        });
+      }
+    }
+    return out;
+  };
   const vp8Set = (hw) => [
     { codec: 'vp8', ext: 'webm', mime: 'video/webm;codecs=vp8', mux: 'webm', muxCodec: 'V_VP8', hw },
   ];
   const vp9Set = (hw) => [
-    { codec: 'vp09.00.10.08', ext: 'webm', mime: 'video/webm;codecs=vp9', mux: 'webm', muxCodec: 'V_VP9', hw },
+    { codec: `vp09.00.${vp9Lvl}.08`, ext: 'webm', mime: 'video/webm;codecs=vp9', mux: 'webm', muxCodec: 'V_VP9', hw },
   ];
 
+  const mobile = isMobileBrowser();
   let list;
   if (preferred === 'mp4' || preferred === 'video/mp4') {
-    list = [...avcSet('prefer-hardware'), ...avcSet('no-preference'), ...vp8Set('prefer-hardware'), ...vp8Set('no-preference')];
+    list = [
+      ...avcSet('prefer-hardware', 'avc'),
+      ...avcSet('no-preference', 'avc'),
+      ...avcSet('prefer-hardware', 'annexb'),
+      ...vp9Set('prefer-hardware'),
+      ...vp8Set(mobile ? 'no-preference' : 'prefer-hardware'),
+      ...vp8Set(mobile ? 'prefer-hardware' : 'no-preference'),
+    ];
   } else if (preferred === 'webm' || preferred === 'video/webm') {
-    list = [...vp8Set('prefer-hardware'), ...vp8Set('no-preference'), ...vp9Set('prefer-hardware'), ...vp9Set('no-preference')];
+    list = mobile
+      ? [...vp9Set('prefer-hardware'), ...vp9Set('no-preference'), ...vp8Set('no-preference'), ...vp8Set('prefer-hardware')]
+      : [...vp8Set('prefer-hardware'), ...vp8Set('no-preference'), ...vp9Set('prefer-hardware'), ...vp9Set('no-preference')];
   } else if (preferred === 'webm-vp9' || preferred === 'video/webm;codecs=vp9') {
     list = [...vp9Set('prefer-hardware'), ...vp9Set('no-preference'), ...vp8Set('no-preference')];
   } else if (preferred === 'webm-vp8' || preferred === 'video/webm;codecs=vp8') {
-    list = [...vp8Set('prefer-hardware'), ...vp8Set('no-preference')];
+    list = mobile
+      ? [...vp8Set('no-preference'), ...vp8Set('prefer-hardware')]
+      : [...vp8Set('prefer-hardware'), ...vp8Set('no-preference')];
   } else {
     list = [
-      ...avcSet('prefer-hardware'),
-      ...vp8Set('prefer-hardware'),
-      ...vp8Set('no-preference'),
-      ...avcSet('no-preference'),
-      ...vp9Set('no-preference'),
+      ...avcSet('prefer-hardware', 'avc'),
+      ...avcSet('no-preference', 'avc'),
+      ...avcSet('prefer-hardware', 'annexb'),
+      ...vp9Set('prefer-hardware'),
+      ...(mobile
+        ? [...vp9Set('no-preference'), ...vp8Set('no-preference'), ...vp8Set('prefer-hardware')]
+        : [...vp8Set('prefer-hardware'), ...vp8Set('no-preference'), ...vp9Set('no-preference')]),
     ];
   }
+
+  const canCheckDec = typeof VideoDecoder === 'function' && typeof VideoDecoder.isConfigSupported === 'function';
+  let fallbackChoice = null;
+  let encOnlyFallback = null;
 
   for (const cand of list) {
     const base = {
@@ -130,17 +168,22 @@ export async function pickWebCodecsConfig(width, height, fps, bitrate, preferred
     };
     if (cand.avc) base.avc = cand.avc;
 
+    const rtOnly = {
+      ...base,
+      latencyMode: 'realtime',
+    };
+
     const full = {
       ...base,
       bitrateMode: 'variable',
       latencyMode: 'realtime',
     };
 
-    for (const cfg of [full, base]) {
+    for (const cfg of [full, rtOnly, base]) {
       try {
         const res = await VideoEncoder.isConfigSupported(cfg);
         if (res && res.supported) {
-          return {
+          const choice = {
             config: res.config || cfg,
             extension: cand.ext,
             mimeType: cand.mime,
@@ -148,13 +191,37 @@ export async function pickWebCodecsConfig(width, height, fps, bitrate, preferred
             muxCodec: cand.muxCodec,
             hardwarePreferred: cand.hw === 'prefer-hardware',
           };
+          if (canCheckDec && cand.mux === 'webm') {
+            if (!encOnlyFallback) encOnlyFallback = choice;
+            try {
+              const decHw = await VideoDecoder.isConfigSupported({
+                codec: choice.config.codec || cand.codec,
+                codedWidth: width,
+                codedHeight: height,
+                hardwareAcceleration: 'prefer-hardware',
+              });
+              if (decHw && decHw.supported) return choice;
+              if (!fallbackChoice) {
+                const decAny = await VideoDecoder.isConfigSupported({
+                  codec: choice.config.codec || cand.codec,
+                  codedWidth: width,
+                  codedHeight: height,
+                });
+                if (decAny && decAny.supported) fallbackChoice = choice;
+              }
+              break;
+            } catch (_) {
+              return choice;
+            }
+          }
+          return choice;
         }
       } catch (_) {
         // continuar con siguiente variante
       }
     }
   }
-  return null;
+  return fallbackChoice || encOnlyFallback;
 }
 
 export function getSupportedVideoFormats() {
@@ -476,15 +543,25 @@ export class VideoRecorder extends EventEmitter {
     this.mimeType = picked.mimeType;
     this.extension = picked.extension;
     const mobile = isMobileBrowser();
-    const maxBitrate = mobile ? 14_000_000 : 24_000_000;
-    const bpp = mobile ? 0.11 : 0.13;
+    const maxBitrate = mobile ? (this.fps >= 45 ? 10_000_000 : 12_000_000) : 24_000_000;
+    const bpp = mobile ? (this.fps >= 45 ? 0.075 : 0.10) : (this.fps >= 45 ? 0.10 : 0.13);
     this.bitrate = opts.bitrate || Math.round(Math.max(2_000_000, Math.min(maxBitrate, this.width * this.height * this.fps * bpp)));
 
     this.canvas = opts.targetCanvas || (typeof document !== 'undefined' ? document.createElement('canvas') : null);
     this._ctx2d = this.canvas
-      ? (this.canvas.getContext('2d', { alpha: false, desynchronized: true }) || this.canvas.getContext('2d'))
+      ? (this.canvas.getContext('2d', { alpha: false }) || this.canvas.getContext('2d'))
       : null;
     if (this.canvas && this._ctx2d) this.canvas._m3dCtx2d = this._ctx2d;
+    this._capCanvases = this.canvas ? [this.canvas] : [];
+    this._capIndex = 0;
+    if (!opts.targetCanvas && typeof document !== 'undefined') {
+      const extra = document.createElement('canvas');
+      const extraCtx = extra.getContext('2d', { alpha: false }) || extra.getContext('2d');
+      if (extraCtx) {
+        extra._m3dCtx2d = extraCtx;
+        this._capCanvases.push(extra);
+      }
+    }
 
     this.recording = false;
     this.frames = 0;
@@ -539,20 +616,58 @@ export class VideoRecorder extends EventEmitter {
     return this;
   }
 
-  _encodeCanvasFrame(srcCanvas, tsUs, keyFrame = false) {
+  _encodeCanvasFrame(srcCanvas, tsUs, keyFrame = false, frameDurUsOverride = 0) {
     if (!this._encoder || this._encoder.state === 'closed') return false;
-    const frameDurUs = Math.max(1, Math.round(1_000_000 / this.fps));
+    const frameDurUs = frameDurUsOverride > 0 ? frameDurUsOverride : Math.max(1, Math.round(1_000_000 / this.fps));
     let vf = null;
-    try {
-      vf = new VideoFrame(srcCanvas, { timestamp: tsUs, duration: frameDurUs });
-    } catch (_) {
-      // Si el canvas fuente aún no admite VideoFrame directo en este navegador/WebView, copiar al canvas 2D
-      if (this.canvas && this.renderer && this.renderer.backend) {
-        this.renderer.backend.copyCanvasTo2D(this.canvas, this.width, this.height, { opaque: true });
-        vf = new VideoFrame(this.canvas, { timestamp: tsUs, duration: frameDurUs });
+    const shouldCopyTo2D =
+      Boolean(this.canvas && this._ctx2d && this.renderer && this.renderer.backend) &&
+      (srcCanvas === this.renderer.domElement || Boolean(this.renderer.isWebGPU));
+
+    const nextCapCanvas = () => {
+      if (this._capCanvases && this._capCanvases.length > 1) {
+        const cv = this._capCanvases[this._capIndex % this._capCanvases.length];
+        this._capIndex++;
+        return cv;
+      }
+      return this.canvas;
+    };
+
+    if (shouldCopyTo2D) {
+      const targetCv = nextCapCanvas();
+      this.renderer.backend.copyCanvasTo2D(targetCv, this.width, this.height, { opaque: true });
+      vf = new VideoFrame(targetCv, { timestamp: tsUs, duration: frameDurUs });
+    } else {
+      try {
+        vf = new VideoFrame(srcCanvas, { timestamp: tsUs, duration: frameDurUs });
+      } catch (_) {
+        // Si el canvas fuente aún no admite VideoFrame directo en este navegador/WebView, copiar al canvas 2D
+        if (this.canvas && this.renderer && this.renderer.backend) {
+          const targetCv = nextCapCanvas();
+          this.renderer.backend.copyCanvasTo2D(targetCv, this.width, this.height, { opaque: true });
+          vf = new VideoFrame(targetCv, { timestamp: tsUs, duration: frameDurUs });
+        }
       }
     }
     if (!vf) return false;
+    try {
+      this._encoder.encode(vf, { keyFrame });
+      return true;
+    } finally {
+      vf.close();
+    }
+  }
+
+  _encodeRgbaFrame(rgbaData, width, height, tsUs, keyFrame = false, frameDurUsOverride = 0) {
+    if (!this._encoder || this._encoder.state === 'closed' || !rgbaData) return false;
+    const frameDurUs = frameDurUsOverride > 0 ? frameDurUsOverride : Math.max(1, Math.round(1_000_000 / this.fps));
+    const vf = new VideoFrame(rgbaData, {
+      format: 'RGBA',
+      codedWidth: width,
+      codedHeight: height,
+      timestamp: tsUs,
+      duration: frameDurUs,
+    });
     try {
       this._encoder.encode(vf, { keyFrame });
       return true;
@@ -578,7 +693,12 @@ export class VideoRecorder extends EventEmitter {
       this._lastTsUs = -1000;
 
       this._muxer = this._wcChoice.mux === 'mp4'
-        ? new MP4Muxer({ width: this.width, height: this.height, fps: this.fps })
+        ? new MP4Muxer({
+            width: this.width,
+            height: this.height,
+            fps: this.fps,
+            avcFormat: this._wcChoice.config?.avc?.format || 'auto',
+          })
         : new WebMMuxer({ width: this.width, height: this.height, fps: this.fps, codec: this._wcChoice.muxCodec });
 
       this._onEncoderDequeue = null;
@@ -756,8 +876,8 @@ export class VideoRecorder extends EventEmitter {
         this.didRenderViewport = false;
         return false;
       }
-      // Contrapresión real: permitir pipeline fluido a 60fps sin atascar por colas cortas
-      const rtMaxQueue = this.fps >= 45 ? 8 : 4;
+      // Contrapresión real: mantener cola acotada para no agotar superficies de GPU/encoder a 60fps
+      const rtMaxQueue = this.fps >= 45 ? 2 : 3;
       if (!force && this._encoder.encodeQueueSize >= rtMaxQueue) {
         this.elapsed = (now - this._startTime) / 1000;
         this.didRenderViewport = false;
@@ -883,8 +1003,7 @@ export class VideoRecorder extends EventEmitter {
         prevEncoded = this.encodedFrames;
         prevQueue = curQueue;
         lastProgressAt = performance.now();
-      } else if (performance.now() - lastProgressAt >= 4000) {
-        if (curQueue < 24) return true;
+      } else if (performance.now() - lastProgressAt >= 5000) {
         throw new Error('El codificador de video dejó de responder durante la grabación.');
       }
     }
@@ -902,15 +1021,24 @@ export class VideoRecorder extends EventEmitter {
     }
     if (this._encError) throw this._encError;
 
-    const maxQueue = this.fps >= 45 ? 10 : 6;
-    const lowWater = this.fps >= 45 ? 4 : 3;
+    const isKey = (frameIndex % Math.max(1, this.fps)) === 0;
+    const mobileHighFps = isMobileBrowser() && this.fps >= 45;
+    const maxQueue = (mobileHighFps || (frameIndex > 0 && isKey)) ? 1 : 2;
+    const lowWater = 0;
     const ready = await this._waitForEncoderSlot(maxQueue, lowWater);
     if (!ready) return false;
 
     const tsUs = Math.round((frameIndex * 1_000_000) / this.fps);
-    const isKey = (frameIndex % Math.max(1, this.fps * 2)) === 0;
+    const nextTsUs = Math.round(((frameIndex + 1) * 1_000_000) / this.fps);
+    const frameDurUs = Math.max(1, nextTsUs - tsUs);
     const vpCam = opts.viewportCamera !== undefined ? opts.viewportCamera : this.viewportCamera;
     this._lastViewportCamera = vpCam;
+
+    const useGpuReadback = Boolean(
+      this.renderer &&
+      this.renderer.isWebGPU &&
+      typeof this.renderer.readOffscreenRgba === 'function'
+    );
 
     let encoded = false;
     const ok = this.renderer.renderToCanvas(this.scene, this.camera, this.width, this.height, {
@@ -920,13 +1048,33 @@ export class VideoRecorder extends EventEmitter {
       viewportCamera: vpCam,
       maxSize: this.maxSize,
       deferViewportRender: Boolean(opts.deferViewportRender),
+      pixelReadback: useGpuReadback,
       time: opts.time,
       opaque: true,
-      onFrameReady: (srcCanvas) => {
-        encoded = this._encodeCanvasFrame(srcCanvas, tsUs, isKey);
-      },
+      onFrameReady: useGpuReadback
+        ? undefined
+        : (srcCanvas) => {
+            encoded = this._encodeCanvasFrame(srcCanvas, tsUs, isKey, frameDurUs);
+          },
     });
-    if (!ok || !encoded) {
+    if (!ok) {
+      this.didRenderViewport = false;
+      return false;
+    }
+
+    if (useGpuReadback) {
+      const px = await this.renderer.readOffscreenRgba();
+      if (!this.recording || !this._encoder || this._encoder.state === 'closed') {
+        this.didRenderViewport = false;
+        return false;
+      }
+      if (this._encError) throw this._encError;
+      if (px && px.data) {
+        encoded = this._encodeRgbaFrame(px.data, px.width, px.height, tsUs, isKey, frameDurUs);
+      }
+    }
+
+    if (!encoded) {
       this.didRenderViewport = false;
       return false;
     }
@@ -949,7 +1097,7 @@ export class VideoRecorder extends EventEmitter {
     const duration = Math.max(0, Number(opts.duration || 0));
     const targetFrames = duration > 0 ? Math.max(1, Math.round(duration * this.fps)) : 0;
     const fixedDt = 1 / this.fps;
-    const previewIntervalMs = opts.previewIntervalMs ?? 50;
+    const previewIntervalMs = opts.previewIntervalMs ?? (this.fps >= 45 ? 120 : 60);
     const deferViewportRender = opts.deferViewportRender !== false;
     const autoStop = opts.autoStop === true;
     const signal = opts.signal || null;
@@ -1033,9 +1181,13 @@ export class VideoRecorder extends EventEmitter {
           break;
         }
 
+        if (this.renderer && typeof this.renderer.waitForGpu === 'function') {
+          await this.renderer.waitForGpu();
+        }
+
         await new Promise((resolve) => {
           const hidden = typeof document !== 'undefined' && document.hidden;
-          if (didRenderPreview && !hidden && typeof requestAnimationFrame === 'function') {
+          if (!hidden && typeof requestAnimationFrame === 'function' && didRenderPreview) {
             requestAnimationFrame(resolve);
           } else {
             setTimeout(resolve, 0);
@@ -1082,8 +1234,23 @@ export class VideoRecorder extends EventEmitter {
       this._stopPromise = (async () => {
         try {
           if (enc.state !== 'closed') {
-            await enc.flush();
-            enc.close();
+            let flushTimer = 0;
+            try {
+              await Promise.race([
+                enc.flush(),
+                new Promise((_, reject) => {
+                  flushTimer = setTimeout(
+                    () => reject(new Error('Tiempo de espera agotado al finalizar el video.')),
+                    6000
+                  );
+                }),
+              ]);
+            } finally {
+              if (flushTimer) clearTimeout(flushTimer);
+              if (enc.state !== 'closed') {
+                try { enc.close(); } catch (_) { /* ignore */ }
+              }
+            }
           }
           if (this._encError) throw this._encError;
           const bytes = mux ? mux.finalize() : new Uint8Array(0);
@@ -1100,6 +1267,7 @@ export class VideoRecorder extends EventEmitter {
             frames: this.frames,
             encodedFrames: this.encodedFrames || this.frames,
             encoder: 'webcodecs',
+            codec: this.codecUsed || '',
             mode: this.mode,
           };
           this.emit('stop', result);

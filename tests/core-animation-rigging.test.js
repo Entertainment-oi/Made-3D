@@ -42,6 +42,7 @@ import {
   isMobilePhoneDevice,
 } from '../src/core/viewportCoords.js';
 import { VideoRecorder, pickWebCodecsConfig } from '../src/render/VideoRecorder.js';
+import { MP4Muxer, WebMMuxer } from '../src/render/VideoMuxer.js';
 
 test('made3d.module.js mantiene núcleo ligero y carga submódulos pesados bajo demanda con import()', async () => {
   // 1. El punto de entrada principal no debe re-exportar clases pesadas síncronamente
@@ -1604,12 +1605,20 @@ test('VideoRecorder a 60fps fijos usa latencyMode realtime, contrapresión ondeq
     assert.equal(wc.config.latencyMode, 'realtime', 'El modo fijo a 60fps no debe habilitar buffering quality que atasca la cola');
 
     let previewRenders = 0;
+    let gpuWaitCalls = 0;
+    let maxObservedQueue = 0;
+    const origEncode = FakeVideoEncoder.prototype.encode;
+    FakeVideoEncoder.prototype.encode = function (vf) {
+      origEncode.call(this, vf);
+      if (this.encodeQueueSize > maxObservedQueue) maxObservedQueue = this.encodeQueueSize;
+    };
     const fakeRenderer = {
       _lastRenderToCanvasRenderedViewport: false,
       isContextLost: () => false,
       clampRenderSize: (w, h) => ({ width: w, height: h }),
       beginRecordingSession() {},
       endRecordingSession() {},
+      async waitForGpu() { gpuWaitCalls++; },
       renderToCanvas(_s, _c, _w, _h, opts) {
         if (opts.onFrameReady) opts.onFrameReady({ width: 1920, height: 1080 });
         return { width: 1920, height: 1080 };
@@ -1638,13 +1647,392 @@ test('VideoRecorder a 60fps fijos usa latencyMode realtime, contrapresión ondeq
     assert.equal(res.frames, 150, 'Debe grabar los 150 cuadros completos (2.5s a 60fps)');
     assert.equal(res.encodedFrames, 150);
     assert.ok(previewRenders < 150, 'No debe duplicar el renderizado de vista previa en cada cuadro');
+    assert.ok(gpuWaitCalls >= 149, 'Debe sincronizar la cola GPU entre cuadros entre cuadros en modo fijo');
+    assert.ok(maxObservedQueue <= 4, `La cola de VideoEncoder no debe saturarse a 60fps (observado=${maxObservedQueue})`);
   } finally {
     globalThis.VideoEncoder = prevVE;
     globalThis.VideoFrame = prevVF;
   }
 });
 
+test('MP4Muxer no corrompe muestras AVCC cuya NALU mide entre 256 y 511 bytes (prefijo 00 00 01)', () => {
+  const muxer = new MP4Muxer({ width: 1920, height: 1080, fps: 60, avcFormat: 'avc' });
+  const avcC = new Uint8Array([1, 0x42, 0x00, 0x2a, 0xff, 0xe1, 0, 4, 0x67, 0x42, 0x00, 0x2a, 1, 2, 0x68, 0xce]);
 
+  // Frame 0: keyframe AVCC de 600 bytes
+  const keyNalu = new Uint8Array(600);
+  keyNalu[0] = 0x65;
+  keyNalu.fill(0xaa, 1);
+  const s0 = new Uint8Array(4 + keyNalu.length);
+  new DataView(s0.buffer).setUint32(0, keyNalu.length, false);
+  s0.set(keyNalu, 4);
 
+  // Frame 1: P-frame AVCC de 300 bytes -> header es [0x00, 0x00, 0x01, 0x2C] (coincide con start-code 00 00 01!)
+  // Además incluye bytes [0,0,1] internos en la carga entropía.
+  const pNalu = new Uint8Array(300);
+  pNalu[0] = 0x41;
+  pNalu[1] = 0x9a;
+  pNalu[40] = 0x00;
+  pNalu[41] = 0x00;
+  pNalu[42] = 0x01;
+  pNalu[43] = 0x77;
+  pNalu.fill(0x55, 44);
+  const s1 = new Uint8Array(4 + pNalu.length);
+  new DataView(s1.buffer).setUint32(0, pNalu.length, false);
+  s1.set(pNalu, 4);
 
+  muxer.addVideoChunk(
+    { byteLength: s0.byteLength, timestamp: 0, type: 'key', copyTo: (d) => d.set(s0) },
+    { decoderConfig: { description: avcC } }
+  );
+  muxer.addVideoChunk(
+    { byteLength: s1.byteLength, timestamp: 16667, type: 'delta', copyTo: (d) => d.set(s1) },
+    {}
+  );
 
+  const mp4 = muxer.finalize();
+  assert.ok(mp4.byteLength > s0.byteLength + s1.byteLength);
+  // Localizar mdat al final del MP4 y verificar que s0 y s1 quedaron bit a bit intactos
+  const mdatTag = [0x6d, 0x64, 0x61, 0x74];
+  let mdatOffset = -1;
+  for (let i = 0; i <= mp4.length - 4; i++) {
+    if (mp4[i] === mdatTag[0] && mp4[i + 1] === mdatTag[1] && mp4[i + 2] === mdatTag[2] && mp4[i + 3] === mdatTag[3]) {
+      mdatOffset = i + 4;
+      break;
+    }
+  }
+  assert.ok(mdatOffset > 0);
+  const mdatPayload = mp4.subarray(mdatOffset);
+  assert.equal(mdatPayload.length, s0.length + s1.length);
+  assert.deepEqual(mdatPayload.subarray(0, s0.length), s0);
+  assert.deepEqual(mdatPayload.subarray(s0.length), s1);
+});
+
+test('VideoRecorder en WebGPU a 60fps fijos usa pixelReadback RGBA sin canvas swapchain desconectado', async () => {
+  const prevVE = globalThis.VideoEncoder;
+  const prevVF = globalThis.VideoFrame;
+  try {
+    const encodedFormats = [];
+    class FakeVideoFrame {
+      constructor(src, init) {
+        this.src = src;
+        this.init = init;
+        this.timestamp = init.timestamp;
+        encodedFormats.push(init.format || 'canvas');
+      }
+      close() {}
+    }
+    class FakeVideoEncoder {
+      static async isConfigSupported(cfg) { return { supported: true, config: cfg }; }
+      constructor({ output }) { this._output = output; this.state = 'unconfigured'; this.encodeQueueSize = 0; }
+      configure(cfg) { this.config = cfg; this.state = 'configured'; }
+      encode(vf) {
+        this.encodeQueueSize++;
+        const ts = vf.timestamp;
+        setTimeout(() => {
+          this.encodeQueueSize = Math.max(0, this.encodeQueueSize - 1);
+          const payload = new Uint8Array([0, 0, 1, 0, ...new Array(256).fill(0x2a)]);
+          this._output({ byteLength: payload.length, type: ts === 0 ? 'key' : 'delta', timestamp: ts, copyTo: (d) => d.set(payload) }, {});
+          if (typeof this.ondequeue === 'function') this.ondequeue();
+        }, 0);
+      }
+      async flush() {
+        while (this.encodeQueueSize > 0) await new Promise((r) => setTimeout(r, 1));
+      }
+      close() { this.state = 'closed'; }
+    }
+    globalThis.VideoEncoder = FakeVideoEncoder;
+    globalThis.VideoFrame = FakeVideoFrame;
+
+    const rgba = new Uint8Array(64 * 64 * 4);
+    rgba.fill(255);
+    let readbackCalls = 0;
+    let sawPixelReadbackFlag = false;
+    const fakeWebGPURenderer = {
+      isWebGPU: true,
+      _lastRenderToCanvasRenderedViewport: false,
+      isContextLost: () => false,
+      clampRenderSize: (w, h) => ({ width: w, height: h }),
+      beginRecordingSession() {},
+      endRecordingSession() {},
+      async waitForGpu() {},
+      async readOffscreenRgba() {
+        readbackCalls++;
+        return { data: rgba, width: 64, height: 64 };
+      },
+      renderToCanvas(_s, _c, _w, _h, opts) {
+        if (opts.pixelReadback) sawPixelReadbackFlag = true;
+        return { width: 64, height: 64 };
+      },
+      render() {},
+    };
+
+    const scene = new Scene();
+    const cam = new PerspectiveCamera(50, 1, 0.1, 100);
+    const rec = new VideoRecorder(fakeWebGPURenderer, scene, cam, 64, 64, {
+      fps: 60,
+      mode: 'fixed',
+      format: 'mp4',
+      targetCanvas: { getContext: () => null },
+    });
+    await rec.prepare();
+    rec.start();
+    const res = await rec.runFixedLoop({ duration: 0.5, autoStop: true });
+    assert.equal(sawPixelReadbackFlag, true);
+    assert.equal(readbackCalls, 30);
+    assert.equal(res.frames, 30);
+    assert.ok(encodedFormats.every((f) => f === 'RGBA'));
+    assert.ok(res.blob.size > 0);
+  } finally {
+    globalThis.VideoEncoder = prevVE;
+    globalThis.VideoFrame = prevVF;
+  }
+});
+
+test('MP4Muxer convierte Annex-B aunque avcFormat sea avc y emite edts/elst con B-frames', () => {
+  const mux = new MP4Muxer({ width: 1920, height: 1080, fps: 60, avcFormat: 'avc' });
+  const avcC = new Uint8Array([1, 0x42, 0xe0, 0x2a, 0xff, 0xe1, 0, 4, 0x67, 0x42, 0xe0, 0x2a, 1, 2, 0x68, 0xce]);
+  // Chunk 0: Annex-B con SPS+PPS+IDR incluso con avcFormat='avc'
+  const annexB = new Uint8Array([
+    0, 0, 0, 1, 0x67, 0x42, 0xe0, 0x2a,
+    0, 0, 0, 1, 0x68, 0xce,
+    0, 0, 0, 1, 0x65, 0x88, 0x84, 0x21,
+  ]);
+  mux.addVideoChunk(
+    { byteLength: annexB.length, timestamp: 0, type: 'key', copyTo: (d) => d.set(annexB) },
+    { decoderConfig: { description: avcC } }
+  );
+  // Chunk 1 & 2 reordenados (B-frames)
+  const p = new Uint8Array([0, 0, 0, 4, 0x41, 0x9a, 0x01, 0x02]);
+  const b = new Uint8Array([0, 0, 0, 4, 0x01, 0x9a, 0x03, 0x04]);
+  mux.addVideoChunk({ byteLength: p.length, timestamp: 33333, type: 'delta', copyTo: (d) => d.set(p) }, {});
+  mux.addVideoChunk({ byteLength: b.length, timestamp: 16667, type: 'delta', copyTo: (d) => d.set(b) }, {});
+  // Chunk vacío debe ignorarse
+  mux.addVideoChunk({ byteLength: 0, timestamp: 50000, type: 'delta', copyTo: () => {} }, {});
+
+  const mp4 = mux.finalize();
+  const txt = new TextDecoder('latin1').decode(mp4);
+  assert.ok(txt.includes('edts') && txt.includes('elst'), 'Debe incluir edts/elst cuando hay ctts con desplazamiento');
+  assert.ok(txt.includes('ctts'));
+  assert.equal(mux.samples.length, 3);
+  // Verificar que el sample 0 convertido solo conserve el slice IDR (sin Annex-B 00 00 00 01)
+  const s0 = mux.samples[0].data;
+  assert.equal((s0[0] << 24) | (s0[1] << 16) | (s0[2] << 8) | s0[3], 4);
+  assert.equal(s0[4], 0x65);
+});
+
+test('pickWebCodecsConfig 60fps prioriza Constrained Baseline H.264 sin-preferencia antes de VP8 y limita cola móvil', async () => {
+  const prevVE = globalThis.VideoEncoder;
+  const prevVF = globalThis.VideoFrame;
+  const prevNav = globalThis.navigator;
+  try {
+    const tried = [];
+    class FakeVideoFrame {
+      constructor(src, init) { this.src = src; this.timestamp = init.timestamp; }
+      close() {}
+    }
+    class FakeVideoEncoder {
+      static async isConfigSupported(cfg) {
+        tried.push(`${cfg.codec}|${cfg.hardwareAcceleration}`);
+        // Simular Android donde prefer-hardware rechaza L4.2 pero no-preference H.264 Constrained Baseline sí soporta
+        const supported = cfg.hardwareAcceleration === 'no-preference' && cfg.codec === 'avc1.42e02a';
+        return { supported, config: cfg };
+      }
+      constructor({ output }) { this._output = output; this.state = 'unconfigured'; this.encodeQueueSize = 0; }
+      configure(cfg) { this.config = cfg; this.state = 'configured'; }
+      encode(vf) {
+        this.encodeQueueSize++;
+        const ts = vf.timestamp;
+        setTimeout(() => {
+          this.encodeQueueSize = Math.max(0, this.encodeQueueSize - 1);
+          this._output({ byteLength: 8, type: ts === 0 ? 'key' : 'delta', timestamp: ts, copyTo: (d) => d.fill(0) }, {});
+          if (typeof this.ondequeue === 'function') this.ondequeue();
+        }, 0);
+      }
+      async flush() { while (this.encodeQueueSize > 0) await new Promise((r) => setTimeout(r, 1)); }
+      close() { this.state = 'closed'; }
+    }
+    globalThis.VideoEncoder = FakeVideoEncoder;
+    globalThis.VideoFrame = FakeVideoFrame;
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/126.0 Mobile Safari/537.36' },
+    });
+
+    const wc = await pickWebCodecsConfig(1920, 1080, 60, 10_000_000, 'auto', 'fixed');
+    assert.ok(wc);
+    assert.equal(wc.config.codec, 'avc1.42e02a');
+    assert.equal(wc.mux, 'mp4');
+    const vp8Idx = tried.indexOf('vp8|prefer-hardware');
+    assert.ok(tried.includes('avc1.42e02a|no-preference'));
+    assert.ok(vp8Idx === -1 || tried.indexOf('avc1.42e02a|no-preference') < vp8Idx);
+
+    let maxQueue = 0;
+    const origEncode = FakeVideoEncoder.prototype.encode;
+    FakeVideoEncoder.prototype.encode = function (vf) {
+      origEncode.call(this, vf);
+      if (this.encodeQueueSize > maxQueue) maxQueue = this.encodeQueueSize;
+    };
+    const fakeRenderer = {
+      isContextLost: () => false,
+      clampRenderSize: (w, h) => ({ width: w, height: h }),
+      beginRecordingSession() {},
+      endRecordingSession() {},
+      async waitForGpu() {},
+      renderToCanvas(_s, _c, _w, _h, opts) {
+        if (opts.onFrameReady) opts.onFrameReady({ width: 1920, height: 1080 });
+        return { width: 1920, height: 1080 };
+      },
+      render() {},
+    };
+    const rec = new VideoRecorder(fakeRenderer, new Scene(), new PerspectiveCamera(50, 16 / 9, 0.1, 100), 1920, 1080, {
+      fps: 60,
+      mode: 'fixed',
+      format: 'auto',
+      targetCanvas: { getContext: () => null },
+    });
+    assert.ok(rec.bitrate <= 10_000_000, `Bitrate móvil 60fps acotado (${rec.bitrate})`);
+    await rec.prepare();
+    rec.start();
+    const res = await rec.runFixedLoop({ duration: 0.5, autoStop: true });
+    assert.equal(res.frames, 30);
+    assert.equal(maxQueue, 1, 'En móvil 60fps fijos debe drenar cada cuadro para no agotar superficies de MediaCodec');
+  } finally {
+    globalThis.VideoEncoder = prevVE;
+    globalThis.VideoFrame = prevVF;
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: prevNav });
+  }
+});
+
+test('WebMMuxer a 60fps conserva duración exacta de 3.0s (no 2.999s) y MP4Muxer limpia SPS/PPS inline en AVCC', () => {
+  const wm = new WebMMuxer({ width: 1920, height: 1080, fps: 60, codec: 'V_VP9' });
+  for (let i = 0; i < 180; i++) {
+    const tsUs = Math.round((i * 1_000_000) / 60);
+    const nextUs = Math.round(((i + 1) * 1_000_000) / 60);
+    wm.addVideoChunk({
+      byteLength: 8,
+      timestamp: tsUs,
+      duration: nextUs - tsUs,
+      type: i % 60 === 0 ? 'key' : 'delta',
+      copyTo: (d) => d.fill(0x11),
+    });
+  }
+  const webm = wm.finalize();
+  // Buscar elemento Duration (44 89 88 + float64) dentro de Info: debe ser >= 3000.0 ms
+  let durMs = 0;
+  for (let i = 0; i + 11 <= webm.length; i++) {
+    if (webm[i] === 0x44 && webm[i + 1] === 0x89 && webm[i + 2] === 0x88) {
+      durMs = new DataView(webm.buffer, webm.byteOffset + i + 3, 8).getFloat64(0, false);
+      break;
+    }
+  }
+  assert.ok(durMs >= 3000, `WebMMuxer debe reportar >= 3000ms para 180 cuadros a 60fps (obtuvo ${durMs})`);
+
+  // Verificar DefaultDuration (23 E3 83)
+  let hasDefDur = false;
+  for (let i = 0; i + 3 <= webm.length; i++) {
+    if (webm[i] === 0x23 && webm[i + 1] === 0xe3 && webm[i + 2] === 0x83) {
+      hasDefDur = true;
+      break;
+    }
+  }
+  assert.ok(hasDefDur, 'WebMMuxer debe incluir DefaultDuration en TrackEntry');
+
+  // MP4Muxer con AVCC que incluye SPS(7)+PPS(8)+IDR(5) inline en keyframe 60
+  const mm = new MP4Muxer({ width: 1920, height: 1080, fps: 60, avcFormat: 'avc' });
+  const avcC = new Uint8Array([1, 0x42, 0xe0, 0x2a, 0xff, 0xe1, 0, 4, 0x67, 0x42, 0xe0, 0x2a, 1, 2, 0x68, 0xce]);
+  const avccWithInlineParams = new Uint8Array([
+    0, 0, 0, 4, 0x67, 0x42, 0xe0, 0x2a,
+    0, 0, 0, 2, 0x68, 0xce,
+    0, 0, 0, 4, 0x65, 0x88, 0x84, 0x21,
+  ]);
+  mm.addVideoChunk(
+    { byteLength: 8, timestamp: 0, type: 'key', copyTo: (d) => d.set([0, 0, 0, 4, 0x65, 1, 2, 3]) },
+    { decoderConfig: { description: avcC } }
+  );
+  mm.addVideoChunk(
+    { byteLength: avccWithInlineParams.length, timestamp: 1_000_000, type: 'key', copyTo: (d) => d.set(avccWithInlineParams) },
+    {}
+  );
+  mm.finalize();
+  assert.equal(mm.samples[1].data.byteLength, 8, 'Debe eliminar SPS/PPS inline del sample AVCC si ya existe avcC');
+  assert.equal(mm.samples[1].data[4], 0x65);
+});
+
+test('pickWebCodecsConfig 60fps en móvil usa VP9 nivel 4.1 decodificable por hardware antes de VP8 si H.264 no está disponible', async () => {
+  const prevVE = globalThis.VideoEncoder;
+  const prevVD = globalThis.VideoDecoder;
+  const prevVF = globalThis.VideoFrame;
+  const prevNav = globalThis.navigator;
+  try {
+    globalThis.VideoFrame = class {};
+    globalThis.VideoEncoder = class {
+      static async isConfigSupported(cfg) {
+        if (cfg.codec.startsWith('avc1')) return { supported: false };
+        if (cfg.codec === 'vp09.00.41.08' && cfg.hardwareAcceleration === 'no-preference') return { supported: true, config: cfg };
+        if (cfg.codec === 'vp8') return { supported: true, config: cfg };
+        return { supported: false };
+      }
+    };
+    globalThis.VideoDecoder = class {
+      static async isConfigSupported(cfg) {
+        // Simular móvil donde VP9 sí tiene decodificador HW 1080p60 y VP8 HW no
+        const hwOk = cfg.codec === 'vp09.00.41.08' && cfg.hardwareAcceleration === 'prefer-hardware';
+        return { supported: hwOk || cfg.hardwareAcceleration !== 'prefer-hardware' };
+      }
+    };
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: { userAgent: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) Chrome/126.0 Mobile Safari/537.36' },
+    });
+    const wc = await pickWebCodecsConfig(1920, 1080, 60, 9_000_000, 'auto', 'fixed');
+    assert.ok(wc);
+    assert.equal(wc.config.codec, 'vp09.00.41.08');
+    assert.equal(wc.mux, 'webm');
+  } finally {
+    globalThis.VideoEncoder = prevVE;
+    globalThis.VideoDecoder = prevVD;
+    globalThis.VideoFrame = prevVF;
+    Object.defineProperty(globalThis, 'navigator', { configurable: true, value: prevNav });
+  }
+});
+
+test('AnimationTimeline unifica posición, rotación y escala en un solo keyframe al insertar y auto-keyframear', async () => {
+  const { AnimationTimeline } = await loadAnimation();
+  const tl = new AnimationTimeline();
+  const obj = new Object3D();
+  obj.name = 'CuboUnificado';
+
+  const before = HistoryManager.snapshotTransform(obj);
+  obj.position.set(2, 1, 0);
+  obj.updateMatrixWorld();
+  const after = HistoryManager.snapshotTransform(obj);
+
+  const rec = tl.recordAutoKeyframe([obj], {
+    beforeList: [before],
+    afterList: [after],
+    time: 0.5,
+  });
+  assert.equal(rec.length, 1);
+  assert.deepEqual(rec[0].properties, ['position', 'quaternion', 'scale']);
+  assert.equal(tl.hasKeyframeAtSelection(obj, 0.5, ['position']), true);
+  assert.equal(tl.hasKeyframeAtSelection(obj, 0.5, ['quaternion']), true);
+  assert.equal(tl.hasKeyframeAtSelection(obj, 0.5, ['scale']), true);
+  assert.deepEqual(tl.getKeyframeTimesForSelection(obj), [0.5]);
+
+  obj.position.set(0, 0, 0);
+  obj.rotation.y = Math.PI / 2;
+  obj.scale.set(2, 2, 2);
+  obj.updateMatrixWorld();
+  const ins = tl.insertKeyframe(obj, 1.5);
+  assert.equal(ins.ok, true);
+  assert.equal(tl.hasKeyframeAtSelection(obj, 1.5, ['position']), true);
+  assert.equal(tl.hasKeyframeAtSelection(obj, 1.5, ['quaternion']), true);
+  assert.equal(tl.hasKeyframeAtSelection(obj, 1.5, ['scale']), true);
+  assert.deepEqual(tl.getKeyframeTimesForSelection(obj), [0.5, 1.5]);
+
+  const rm = tl.removeKeyframe(obj, 0.5);
+  assert.equal(rm.ok, true);
+  assert.equal(tl.hasKeyframeAtSelection(obj, 0.5), false);
+  assert.deepEqual(tl.getKeyframeTimesForSelection(obj), [1.5]);
+});

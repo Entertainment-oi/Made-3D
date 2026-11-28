@@ -515,7 +515,10 @@ export class AnimationTimeline {
     };
   }
 
-  recordAutoKeyframe(targets = [], { beforeList = null, afterList = null, properties = null, toolProperties = null, time = this.currentTime } = {}) {
+  recordAutoKeyframe(
+    targets = [],
+    { beforeList = null, afterList = null, properties = null, toolProperties = null, unified = true, time = this.currentTime } = {}
+  ) {
     if (!this.autoKeyframe || this.playing) return [];
     const list = Array.isArray(targets) ? targets : [];
     const results = [];
@@ -526,13 +529,17 @@ export class AnimationTimeline {
       if (!props && Array.isArray(beforeList) && Array.isArray(afterList) && beforeList[idx] && afterList[idx]) {
         const changed = AnimationClip.detectChangedProperties(beforeList[idx], afterList[idx]);
         if (!changed.length) return;
-        if (Array.isArray(toolProperties) && toolProperties.length === 1) {
+        if (unified) {
+          props = ['position', 'quaternion', 'scale'];
+        } else if (Array.isArray(toolProperties) && toolProperties.length === 1) {
           props = changed.includes(toolProperties[0]) ? toolProperties : changed;
         } else {
           props = changed;
         }
       } else if (!props) {
-        props = (Array.isArray(toolProperties) && toolProperties.length ? toolProperties : null) || ['position', 'quaternion', 'scale'];
+        props = unified
+          ? ['position', 'quaternion', 'scale']
+          : (Array.isArray(toolProperties) && toolProperties.length ? toolProperties : null) || ['position', 'quaternion', 'scale'];
       }
       if (!props || !props.length) return;
       const res = this.insertKeyframe(obj, time, { properties: props });

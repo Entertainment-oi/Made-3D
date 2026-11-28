@@ -96,7 +96,9 @@ export class Texture extends EventEmitter {
       magFilter: this.magFilter,
       flipY: this.flipY,
       colorSpace: this.colorSpace,
+      userData: this.userData ? { ...this.userData } : {},
     });
+    t.name = this.name;
     t.repeat.copy(this.repeat); t.offset.copy(this.offset); t.center.copy(this.center);
     return t;
   }
@@ -115,7 +117,7 @@ export class Texture extends EventEmitter {
   static checkerboard(opts = {}) {
     const colorSpace = opts.colorSpace || 'srgb';
     if (typeof document === 'undefined') {
-      return new Texture(null, { width: 2, height: 2, colorSpace });
+      return new Texture(null, { width: 2, height: 2, colorSpace, userData: { presetId: 'checker' } });
     }
     const size = Math.max(16, opts.size ?? 256);
     const cells = Math.max(2, opts.cells ?? 8);
@@ -139,6 +141,137 @@ export class Texture extends EventEmitter {
       ctx.lineWidth = lw;
       ctx.strokeRect(lw * 0.5, lw * 0.5, size - lw, size - lw);
     }
-    return new Texture(cv, { colorSpace });
+    return new Texture(cv, { colorSpace, userData: { presetId: 'checker' } });
+  }
+  static createPreset(presetId = 'checker', opts = {}) {
+    const id = String(presetId || 'checker');
+    const colorSpace = opts.colorSpace || 'srgb';
+    if (id === 'checker') return Texture.checkerboard(opts);
+    if (typeof document === 'undefined') {
+      return new Texture(null, { width: 2, height: 2, colorSpace, userData: { presetId: id } });
+    }
+    const size = Math.max(32, opts.size ?? 256);
+    const cv = document.createElement('canvas');
+    cv.width = size;
+    cv.height = size;
+    const ctx = cv.getContext('2d');
+
+    if (id === 'grid') {
+      ctx.fillStyle = '#1e293b';
+      ctx.fillRect(0, 0, size, size);
+      const step = size / 8;
+      ctx.strokeStyle = 'rgba(148, 163, 184, 0.35)';
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i <= 8; i++) {
+        const p = i * step;
+        ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, size); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(size, p); ctx.stroke();
+      }
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.75)';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(1.5, 1.5, size - 3, size - 3);
+    } else if (id === 'stripes') {
+      ctx.fillStyle = '#f8fafc';
+      ctx.fillRect(0, 0, size, size);
+      ctx.fillStyle = '#0f172a';
+      const bands = 8;
+      const bandW = size / bands;
+      for (let i = -bands; i < bands * 2; i += 2) {
+        ctx.beginPath();
+        ctx.moveTo(i * bandW, 0);
+        ctx.lineTo((i + 1) * bandW, 0);
+        ctx.lineTo((i + 1 - bands) * bandW, size);
+        ctx.lineTo((i - bands) * bandW, size);
+        ctx.closePath();
+        ctx.fill();
+      }
+    } else if (id === 'brick') {
+      ctx.fillStyle = '#cbd5e1';
+      ctx.fillRect(0, 0, size, size);
+      const rows = 8;
+      const cols = 4;
+      const rowH = size / rows;
+      const colW = size / cols;
+      const gap = Math.max(2, size * 0.015);
+      for (let r = 0; r < rows; r++) {
+        const offset = (r % 2) * (colW * 0.5);
+        for (let c = -1; c <= cols; c++) {
+          const shade = ((r * 7 + c * 13) & 3) * 8;
+          ctx.fillStyle = `rgb(${175 + shade}, ${76 + Math.floor(shade * 0.6)}, ${58 + Math.floor(shade * 0.4)})`;
+          ctx.fillRect(c * colW + offset + gap * 0.5, r * rowH + gap * 0.5, colW - gap, rowH - gap);
+        }
+      }
+    } else if (id === 'wood') {
+      const grad = ctx.createLinearGradient(0, 0, size, 0);
+      grad.addColorStop(0, '#8b5a2b');
+      grad.addColorStop(0.5, '#a47148');
+      grad.addColorStop(1, '#7c4d25');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 42; i++) {
+        const y = (i / 42) * size;
+        ctx.strokeStyle = i % 3 === 0 ? 'rgba(62, 34, 14, 0.32)' : 'rgba(215, 175, 128, 0.18)';
+        ctx.lineWidth = 1 + (i % 3);
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        for (let x = 0; x <= size; x += 16) {
+          ctx.lineTo(x, y + Math.sin(x * 0.04 + i * 0.7) * 4);
+        }
+        ctx.stroke();
+      }
+    } else if (id === 'noise') {
+      const imgData = ctx.createImageData(size, size);
+      let seed = 1337;
+      const nextRand = () => {
+        seed = (seed * 1664525 + 1013904223) >>> 0;
+        return seed / 4294967296;
+      };
+      const block = 4;
+      for (let by = 0; by < size; by += block) {
+        for (let bx = 0; bx < size; bx += block) {
+          const v = Math.floor(110 + nextRand() * 110);
+          for (let dy = 0; dy < block && by + dy < size; dy++) {
+            for (let dx = 0; dx < block && bx + dx < size; dx++) {
+              const p = ((by + dy) * size + (bx + dx)) * 4;
+              imgData.data[p] = v;
+              imgData.data[p + 1] = v;
+              imgData.data[p + 2] = Math.min(255, v + 6);
+              imgData.data[p + 3] = 255;
+            }
+          }
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+    } else if (id === 'uv') {
+      const gX = ctx.createLinearGradient(0, 0, size, 0);
+      gX.addColorStop(0, '#0f172a');
+      gX.addColorStop(1, '#ef4444');
+      ctx.fillStyle = gX;
+      ctx.fillRect(0, 0, size, size);
+      ctx.globalCompositeOperation = 'lighter';
+      const gY = ctx.createLinearGradient(0, size, 0, 0);
+      gY.addColorStop(0, '#000000');
+      gY.addColorStop(1, '#22c55e');
+      ctx.fillStyle = gY;
+      ctx.fillRect(0, 0, size, size);
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+      ctx.lineWidth = 1;
+      const step = size / 8;
+      for (let i = 0; i <= 8; i++) {
+        const p = i * step;
+        ctx.beginPath(); ctx.moveTo(p, 0); ctx.lineTo(p, size); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(0, p); ctx.lineTo(size, p); ctx.stroke();
+      }
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+      ctx.font = `700 ${Math.round(size * 0.14)}px monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText('UV', size * 0.5, size * 0.5);
+    } else {
+      return Texture.checkerboard(opts);
+    }
+
+    return new Texture(cv, { colorSpace, userData: { presetId: id } });
   }
 }

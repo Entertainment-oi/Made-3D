@@ -25,12 +25,51 @@ const PROP_LABELS = {
   position: 'Posición',
   quaternion: 'Rotación',
   scale: 'Escala',
+  visible: 'Visibilidad',
+  castShadow: 'Sombras',
+  fov: 'Campo de visión',
+  intensity: 'Intensidad de luz',
+  color: 'Color de luz',
+  distance: 'Alcance de luz',
+  decay: 'Atenuación',
+  angle: 'Ángulo de luz',
+  penumbra: 'Penumbra',
+  'shadow.radius': 'Suavidad de sombra',
+  'material.color': 'Color de material',
+  'material.opacity': 'Opacidad',
+  'material.map': 'Textura',
+  'material.normalMap': 'Mapa normal',
+  'material.roughnessMap': 'Mapa rugosidad',
+  'material.metalnessMap': 'Mapa metal',
+  'material.aoMap': 'Mapa AO',
+  'material.emissiveMap': 'Mapa emisivo',
+  'material.shininess': 'Brillo',
+  'material.roughness': 'Rugosidad',
+  'material.metalness': 'Metalicidad',
+  'material.normalScale': 'Intensidad normal',
+  'material.aoMapIntensity': 'Oclusión AO',
+  'material.envMapIntensity': 'Intensidad IBL',
+  'material.wireframe': 'Alambre',
+  'material.steps': 'Bandas Toon',
+  'material.inkWidth': 'Contorno tinta',
+  'material.rimStrength': 'Luz de borde',
+  'material.shadowColor': 'Color sombra',
+  'material.scanlineDensity': 'Líneas scan',
+  'material.glitchStrength': 'Glitch',
+  'material.glossiness': 'Brillo MatCap',
+  'material.fresnelIntensity': 'Intensidad Fresnel',
+  'material.iridescence': 'Iridiscencia',
+  'material.rimColor': 'Color borde',
+  'material.autoAnimate': 'Animación automática',
+  'material.progress': 'Progreso Dissolve',
+  'material.edgeColor': 'Color brasa',
 };
 
 const _animHooks = {
   syncTransformInputs: null,
   updateViewfinderOverlay: null,
   syncCameraHelperSelection: null,
+  syncAnimatedUI: null,
 };
 
 let _tlCtx = null;
@@ -41,6 +80,7 @@ let _tlHoverZone = null; // 'duration' | 'keyframe' | null
 let _bound = false;
 let _ro = null;
 let _lastSyncedSelection = undefined;
+const _activePropertySessions = new Set();
 
 export function setAnimationHooks(hooks = {}) {
   Object.assign(_animHooks, hooks);
@@ -121,9 +161,10 @@ export function createClipForObject(obj, name = '', { duration = timeline.defaul
 }
 
 export function selectClip(clip) {
-  timeline.selectClip(clip, { roots: sceneStore.userObjects, fallbackRoot: viewport.scene });
+  const updatedObjects = timeline.selectClip(clip, { roots: sceneStore.userObjects, fallbackRoot: viewport.scene });
   _animHooks.syncTransformInputs?.();
   _animHooks.syncCameraHelperSelection?.();
+  _animHooks.syncAnimatedUI?.(updatedObjects);
   syncAnimationUI();
 }
 
@@ -200,6 +241,7 @@ export function evaluateActiveAnimationsAt(time) {
   }
   _animHooks.syncTransformInputs?.();
   _animHooks.syncCameraHelperSelection?.();
+  _animHooks.syncAnimatedUI?.(updatedObjects);
 }
 
 // ============================================================
@@ -332,6 +374,7 @@ export function removeKeyframeAt(
 }
 
 export function toggleKeyframeAtCurrentTime() {
+  flushAutoKeyframeSessions();
   const ctx = getEffectiveClipContext();
   if (ctx.clip && timeline.hasKeyframeAtSelection(sceneStore.selected, timeline.currentTime, null)) {
     removeKeyframeAt(ctx.clip, timeline.currentTime, { properties: null });
@@ -343,9 +386,138 @@ export function toggleKeyframeAtCurrentTime() {
     setStatus('Selecciona un objeto para insertar un keyframe.', true);
     return;
   }
-  if (insertKeyframeAt(target, timeline.currentTime, { properties: UNIFIED_TRANSFORM_PROPS, recordHistory: true })) {
-    setStatus(`Keyframe guardado en ${timeline.currentTime.toFixed(2)}s (posición, rotación y escala)`);
+  const propsToInsert = UNIFIED_TRANSFORM_PROPS.slice();
+  if (ctx.clip) {
+    for (const tr of ctx.clip.tracks) {
+      if (!tr || !tr.times || !tr.times.length) continue;
+      const resolved = ctx.clip.constructor.resolveTrackTarget(tr, ctx.owner || target);
+      if (resolved && resolved.object === target && resolved.property && !propsToInsert.includes(resolved.property)) {
+        propsToInsert.push(resolved.property);
+      }
+    }
   }
+  if (insertKeyframeAt(target, timeline.currentTime, { properties: propsToInsert, recordHistory: true })) {
+    const extraCount = propsToInsert.length - UNIFIED_TRANSFORM_PROPS.length;
+    setStatus(
+      extraCount > 0
+        ? `Keyframe guardado en ${timeline.currentTime.toFixed(2)}s (transformación y ${extraCount} ajuste${extraCount === 1 ? '' : 's'})`
+        : `Keyframe guardado en ${timeline.currentTime.toFixed(2)}s (posición, rotación y escala)`
+    );
+  }
+}
+
+function pushRecordedKeyframeHistory(res, propLabel) {
+  const pushEntries = () => {
+    if (res.createdNewClip && res.beforeState && res.afterState) {
+      history.push({
+        type: 'animState',
+        before: res.beforeState,
+        after: res.afterState,
+        label: 'Crear clip',
+      });
+    }
+    history.push({
+      type: 'animClip',
+      clip: res.clip,
+      owner: res.target,
+      before: res.beforeClip,
+      after: res.afterClip,
+      label: `Keyframe ${propLabel} en ${res.time.toFixed(2)}s`,
+    });
+  };
+  if (res.createdNewClip) {
+    history.runGrouped(`Keyframe ${propLabel} en ${res.time.toFixed(2)}s`, pushEntries);
+  } else {
+    pushEntries();
+  }
+}
+
+export function flushAutoKeyframeSessions() {
+  for (const commit of Array.from(_activePropertySessions)) {
+    commit();
+  }
+}
+
+export function bindAutoKeyframeControl(elInput, getTarget, getProperties) {
+  if (!elInput) return;
+  let session = null;
+
+  const commit = () => {
+    _activePropertySessions.delete(commit);
+    if (!session) return;
+    const done = session;
+    session = null;
+    if (!done.dirty || !done.clip) return;
+    const afterClip = done.clip.captureSnapshot();
+    const propLabel =
+      done.properties.length === 1
+        ? (PROP_LABELS[done.properties[0]] || done.properties[0])
+        : 'Propiedades';
+    pushRecordedKeyframeHistory(
+      {
+        createdNewClip: done.createdNewClip,
+        beforeState: done.beforeState,
+        afterState: done.afterState,
+        clip: done.clip,
+        target: done.target,
+        beforeClip: done.beforeClip,
+        afterClip,
+        time: done.time,
+      },
+      propLabel
+    );
+    syncSceneClipListToStore();
+    syncAnimationUI();
+  };
+
+  const begin = () => {
+    if (viewport.appMode !== 'animacion' || !timeline.autoKeyframe || timeline.playing) return null;
+    const target = typeof getTarget === 'function' ? getTarget() : null;
+    if (!target) return null;
+    const rawProps = typeof getProperties === 'function' ? getProperties(target) : getProperties;
+    const properties = Array.isArray(rawProps) ? rawProps.filter(Boolean) : rawProps ? [rawProps] : [];
+    if (!properties.length) return null;
+
+    if (session && session.target === target) return session;
+    if (session) commit();
+
+    const ctx = timeline.resolveClipContext(target);
+    session = {
+      target,
+      properties,
+      createdNewClip: !ctx.clip,
+      beforeState: !ctx.clip ? timeline.captureStateSnapshot() : null,
+      afterState: null,
+      beforeClip: ctx.clip ? ctx.clip.captureSnapshot() : null,
+      clip: ctx.clip,
+      time: timeline.snapTime(timeline.currentTime),
+      dirty: false,
+    };
+    _activePropertySessions.add(commit);
+    return session;
+  };
+
+  const update = () => {
+    const s = begin();
+    if (!s) return;
+    const res = timeline.insertKeyframe(s.target, s.time, { properties: s.properties });
+    if (!res.ok) return;
+    s.dirty = true;
+    s.clip = res.clip;
+    if (res.createdNewClip) {
+      s.createdNewClip = true;
+      s.afterState = res.afterState || timeline.captureStateSnapshot();
+    }
+    syncSceneClipListToStore();
+    syncAnimationHeader();
+    drawTimelineCanvas();
+  };
+
+  elInput.addEventListener('pointerdown', begin);
+  elInput.addEventListener('focus', begin);
+  elInput.addEventListener('input', update);
+  elInput.addEventListener('change', commit);
+  elInput.addEventListener('blur', commit);
 }
 
 export function recordAutoKeyframeIfNeeded(targets = [], opts = {}) {
@@ -365,29 +537,7 @@ export function recordAutoKeyframeIfNeeded(targets = [], opts = {}) {
     const propLabel = res.properties.length === 1
       ? (PROP_LABELS[res.properties[0]] || res.properties[0])
       : 'Transformación';
-    const pushEntries = () => {
-      if (res.createdNewClip && res.beforeState && res.afterState) {
-        history.push({
-          type: 'animState',
-          before: res.beforeState,
-          after: res.afterState,
-          label: 'Crear clip',
-        });
-      }
-      history.push({
-        type: 'animClip',
-        clip: res.clip,
-        owner: res.target,
-        before: res.beforeClip,
-        after: res.afterClip,
-        label: `Keyframe ${propLabel} en ${res.time.toFixed(2)}s`,
-      });
-    };
-    if (res.createdNewClip) {
-      history.runGrouped(`Keyframe ${propLabel} en ${res.time.toFixed(2)}s`, pushEntries);
-    } else {
-      pushEntries();
-    }
+    pushRecordedKeyframeHistory(res, propLabel);
   }
   syncSceneClipListToStore();
   syncAnimationUI();
@@ -457,6 +607,7 @@ export function pasteKeyframeAtCurrentTime(targetObj = null, time = timeline.cur
 
   _animHooks.syncTransformInputs?.();
   _animHooks.syncCameraHelperSelection?.();
+  _animHooks.syncAnimatedUI?.();
   syncSceneClipListToStore();
   syncAnimationUI();
   const names = res.pasted.map((p) => PROP_LABELS[p] || p).join(', ');
@@ -469,6 +620,7 @@ export function pasteKeyframeAtCurrentTime(targetObj = null, time = timeline.cur
 // ============================================================
 
 export function setTimelineTime(t) {
+  flushAutoKeyframeSessions();
   const updatedObjects = timeline.setCurrentTime(t, sceneStore.userObjects, viewport.scene);
   if (
     cameraView.activeSceneCam &&
@@ -480,6 +632,7 @@ export function setTimelineTime(t) {
   }
   _animHooks.syncTransformInputs?.();
   _animHooks.syncCameraHelperSelection?.();
+  _animHooks.syncAnimatedUI?.(updatedObjects);
   syncAnimationHeader();
   drawTimelineCanvas();
 }
@@ -520,6 +673,7 @@ export function jumpNextKeyframe() {
 }
 
 export function setTimelinePlaying(play) {
+  if (play) flushAutoKeyframeSessions();
   const res = timeline.setPlaying(play, sceneStore.userObjects, sceneStore.animations);
   if (play && res.empty) {
     setStatus('Agrega al menos 2 keyframes para reproducir la animación.');
@@ -547,6 +701,7 @@ export function stepAnimationTimeline(dt) {
   }
   _animHooks.syncTransformInputs?.();
   _animHooks.syncCameraHelperSelection?.();
+  _animHooks.syncAnimatedUI?.(stepRes.updatedObjects);
   if (viewport.appMode === 'animacion') {
     syncAnimationHeader();
     drawTimelineCanvas();

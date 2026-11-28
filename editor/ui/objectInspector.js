@@ -34,16 +34,16 @@ import {
 import { syncSculptUI } from '../sculptController.js';
 import { syncSubsurfUI } from '../editController.js';
 import {
-  proceduralTexture,
+  getTexturePreset,
   duplicateSelected,
   deleteSelected,
   playAnimationClip,
 } from '../sceneActions.js';
-import { recordAutoKeyframeIfNeeded } from '../animationController.js';
+import { recordAutoKeyframeIfNeeded, bindAutoKeyframeControl } from '../animationController.js';
 import { closeAllPopovers, syncViewCameraQuickBtn } from './popovers.js';
 import { renderObjectList } from './outliner.js';
 import { syncGizmoXyzPanel } from './gizmoPanel.js';
-import { syncAllRanges } from './rangeControls.js';
+import { syncAllRanges, syncRangeVisual } from './rangeControls.js';
 
 const forEachMat = (fn) => sceneStore.selected?.collectMaterials?.().forEach(fn);
 
@@ -99,11 +99,65 @@ export function switchObjectSubtab(subName) {
   });
 }
 
-function syncLightInspectorControls(light) {
+const PRESET_TEX_NAMES = {
+  checker: 'Tablero',
+  grid: 'Cuadrícula',
+  stripes: 'Rayas',
+  brick: 'Ladrillo',
+  wood: 'Madera',
+  noise: 'Piedra / Ruido',
+  uv: 'Guía UV',
+};
+
+function syncMaterialTextureUI(mat) {
+  const tex = mat?.map || null;
+  const presetId = tex?.userData?.presetId;
+  const isKnownPreset = Boolean(presetId && presetId in PRESET_TEX_NAMES);
+  const value = !tex ? 'none' : isKnownPreset ? presetId : 'custom';
+
+  if (dom.matTexturePreset && document.activeElement !== dom.matTexturePreset) {
+    dom.matTexturePreset.value = value;
+  }
+  if (dom.matTextureState) {
+    if (!tex) {
+      dom.matTextureState.textContent = 'Sin textura';
+    } else if (isKnownPreset) {
+      dom.matTextureState.textContent = PRESET_TEX_NAMES[presetId];
+    } else {
+      dom.matTextureState.textContent = tex.userData?.customName || tex.name || 'Imagen cargada';
+    }
+  }
+  if (dom.btnMatTextureClear) {
+    dom.btnMatTextureClear.hidden = !tex;
+  }
+}
+
+function syncMaterialPbrMapsUI(mat) {
+  if (!mat || mat.type !== 'standard') return;
+  const slots = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap'];
+  for (const slot of slots) {
+    const chip = document.querySelector(`[data-mat-map="${slot}"]`);
+    const stateEl = document.querySelector(`[data-map-state="${slot}"]`);
+    const clearBtn = document.querySelector(`[data-mat-map-clear="${slot}"]`);
+    const directTex = mat[slot];
+    const packedOrm = !directTex && (slot === 'roughnessMap' || slot === 'metalnessMap') ? mat.metallicRoughnessMap : null;
+    const active = Boolean(directTex || packedOrm);
+    if (chip) chip.classList.toggle('has-map', active);
+    if (stateEl) stateEl.textContent = directTex ? 'OK' : packedOrm ? 'ORM' : '—';
+    if (clearBtn) clearBtn.hidden = !directTex;
+  }
+}
+
+function syncLightInspectorControls(light, { respectFocus = false } = {}) {
   if (!light || !dom.lightObjGroup) return;
-  if (dom.selLightColor && light.color) dom.selLightColor.value = light.color.getStyle();
+  if (dom.selLightColor && light.color && (!respectFocus || document.activeElement !== dom.selLightColor)) {
+    dom.selLightColor.value = light.color.getStyle();
+  }
   if (dom.selLightIntensity) {
-    dom.selLightIntensity.value = String(light.intensity ?? 1);
+    if (!respectFocus || document.activeElement !== dom.selLightIntensity) {
+      dom.selLightIntensity.value = String(light.intensity ?? 1);
+      syncRangeVisual(dom.selLightIntensity);
+    }
     if (dom.selLightIntensityVal) dom.selLightIntensityVal.textContent = (light.intensity ?? 1).toFixed(1);
   }
   const isPoint = Boolean(light.isPointLight);
@@ -115,27 +169,220 @@ function syncLightInspectorControls(light) {
   if (isPoint || isSpot) {
     const dist = light.distance ?? 0;
     const decay = light.decay ?? 2;
-    if (dom.selLightDistance) dom.selLightDistance.value = String(dist);
+    if (dom.selLightDistance) {
+      if (!respectFocus || document.activeElement !== dom.selLightDistance) {
+        dom.selLightDistance.value = String(dist);
+        syncRangeVisual(dom.selLightDistance);
+      }
+    }
     if (dom.selLightDistanceVal) dom.selLightDistanceVal.textContent = dist > 0 ? dist.toFixed(1) : '∞ (3.5)';
-    if (dom.selLightDecay) dom.selLightDecay.value = String(decay);
+    if (dom.selLightDecay) {
+      if (!respectFocus || document.activeElement !== dom.selLightDecay) {
+        dom.selLightDecay.value = String(decay);
+        syncRangeVisual(dom.selLightDecay);
+      }
+    }
     if (dom.selLightDecayVal) dom.selLightDecayVal.textContent = decay.toFixed(1);
   }
   if (isSpot) {
     const deg = Math.round((light.angle ?? Math.PI / 6) * RAD2DEG);
     const pen = light.penumbra ?? 0.3;
-    if (dom.selLightAngle) dom.selLightAngle.value = String(deg);
+    if (dom.selLightAngle) {
+      if (!respectFocus || document.activeElement !== dom.selLightAngle) {
+        dom.selLightAngle.value = String(deg);
+        syncRangeVisual(dom.selLightAngle);
+      }
+    }
     if (dom.selLightAngleVal) dom.selLightAngleVal.textContent = `${deg}°`;
-    if (dom.selLightPenumbra) dom.selLightPenumbra.value = String(pen);
+    if (dom.selLightPenumbra) {
+      if (!respectFocus || document.activeElement !== dom.selLightPenumbra) {
+        dom.selLightPenumbra.value = String(pen);
+        syncRangeVisual(dom.selLightPenumbra);
+      }
+    }
     if (dom.selLightPenumbraVal) dom.selLightPenumbraVal.textContent = pen.toFixed(2);
   }
   if (isDir) {
-    if (dom.selLightShadows) dom.selLightShadows.checked = Boolean(light.castShadow);
+    if (dom.selLightShadows && (!respectFocus || document.activeElement !== dom.selLightShadows)) {
+      dom.selLightShadows.checked = Boolean(light.castShadow);
+    }
     const soft = light.shadow?.radius ?? 1.25;
     if (dom.selLightShadowSoft) {
-      dom.selLightShadowSoft.value = String(soft);
+      if (!respectFocus || document.activeElement !== dom.selLightShadowSoft) {
+        dom.selLightShadowSoft.value = String(soft);
+        syncRangeVisual(dom.selLightShadowSoft);
+      }
       dom.selLightShadowSoft.disabled = !light.castShadow;
     }
     if (dom.selLightShadowSoftVal) dom.selLightShadowSoftVal.textContent = soft.toFixed(2);
+  }
+}
+
+export function syncAnimatedInspectorValues() {
+  const o = sceneStore.selected;
+  if (!o) return;
+
+  if (dom.objVisible && document.activeElement !== dom.objVisible) {
+    dom.objVisible.checked = o.visible !== false;
+  }
+  if (dom.objCastShadow && document.activeElement !== dom.objCastShadow) {
+    dom.objCastShadow.checked = o.hasShadowCaster();
+  }
+
+  if (o.isLight) {
+    syncLightInspectorControls(o, { respectFocus: true });
+    return;
+  }
+
+  if (o.isCamera) {
+    const fov = Math.round(o.fov || 50);
+    if (dom.sceneCamFov && document.activeElement !== dom.sceneCamFov) {
+      dom.sceneCamFov.value = String(fov);
+      syncRangeVisual(dom.sceneCamFov);
+    }
+    if (dom.sceneCamFovVal) dom.sceneCamFovVal.textContent = `${fov}°`;
+    return;
+  }
+
+  const mat = o.getPrimaryMaterial?.();
+  if (!mat) return;
+
+  const shaderType = mat.type || 'standard';
+  if (mat.color && dom.matColor && document.activeElement !== dom.matColor) {
+    dom.matColor.value = mat.color.getStyle();
+  }
+  syncMaterialTextureUI(mat);
+
+  const displayShininess = typeof mat.getShininess === 'function' ? mat.getShininess() : (mat.shininess ?? 0);
+  if (dom.matShininess && document.activeElement !== dom.matShininess) {
+    dom.matShininess.value = String(displayShininess);
+    syncRangeVisual(dom.matShininess);
+  }
+  if (dom.matShininessVal) dom.matShininessVal.textContent = String(Math.round(displayShininess));
+
+  if (shaderType === 'standard') {
+    const rVal = mat.roughness ?? 1;
+    const mVal = mat.metalness ?? 0;
+    const nVal = mat.normalScale?.x ?? 1;
+    const aoVal = mat.aoMapIntensity ?? 1;
+    const envVal = mat.envMapIntensity ?? 1;
+    if (dom.matRoughness && document.activeElement !== dom.matRoughness) {
+      dom.matRoughness.value = String(rVal);
+      syncRangeVisual(dom.matRoughness);
+    }
+    if (dom.matRoughnessVal) dom.matRoughnessVal.textContent = rVal.toFixed(2);
+    if (dom.matMetalness && document.activeElement !== dom.matMetalness) {
+      dom.matMetalness.value = String(mVal);
+      syncRangeVisual(dom.matMetalness);
+    }
+    if (dom.matMetalnessVal) dom.matMetalnessVal.textContent = mVal.toFixed(2);
+    if (dom.matNormalScale && document.activeElement !== dom.matNormalScale) {
+      dom.matNormalScale.value = String(nVal);
+      syncRangeVisual(dom.matNormalScale);
+    }
+    if (dom.matNormalScaleVal) dom.matNormalScaleVal.textContent = nVal.toFixed(2);
+    if (dom.matAoIntensity && document.activeElement !== dom.matAoIntensity) {
+      dom.matAoIntensity.value = String(aoVal);
+      syncRangeVisual(dom.matAoIntensity);
+    }
+    if (dom.matAoIntensityVal) dom.matAoIntensityVal.textContent = aoVal.toFixed(2);
+    if (dom.matEnvIntensity && document.activeElement !== dom.matEnvIntensity) {
+      dom.matEnvIntensity.value = String(envVal);
+      syncRangeVisual(dom.matEnvIntensity);
+    }
+    if (dom.matEnvIntensityVal) dom.matEnvIntensityVal.textContent = envVal.toFixed(2);
+    syncMaterialPbrMapsUI(mat);
+  }
+
+  const op = mat.opacity ?? 1;
+  if (dom.matOpacity && document.activeElement !== dom.matOpacity) {
+    dom.matOpacity.value = String(op);
+    syncRangeVisual(dom.matOpacity);
+  }
+  if (dom.matOpacityVal) dom.matOpacityVal.textContent = op.toFixed(2);
+  if (dom.matWireframe && document.activeElement !== dom.matWireframe) {
+    dom.matWireframe.checked = Boolean(mat.wireframe);
+  }
+
+  if (shaderType === 'toon') {
+    const st = mat.steps ?? 3;
+    const ink = mat.inkWidth ?? 0.22;
+    const rim = mat.rimStrength ?? 0.7;
+    if (dom.matToonSteps && document.activeElement !== dom.matToonSteps) {
+      dom.matToonSteps.value = String(st);
+      syncRangeVisual(dom.matToonSteps);
+    }
+    if (dom.matToonStepsVal) dom.matToonStepsVal.textContent = String(Math.round(st));
+    if (dom.matToonInk && document.activeElement !== dom.matToonInk) {
+      dom.matToonInk.value = String(ink);
+      syncRangeVisual(dom.matToonInk);
+    }
+    if (dom.matToonInkVal) dom.matToonInkVal.textContent = ink.toFixed(2);
+    if (dom.matToonRim && document.activeElement !== dom.matToonRim) {
+      dom.matToonRim.value = String(rim);
+      syncRangeVisual(dom.matToonRim);
+    }
+    if (dom.matToonRimVal) dom.matToonRimVal.textContent = rim.toFixed(2);
+    if (mat.shadowColor && dom.matToonShadow && document.activeElement !== dom.matToonShadow) {
+      dom.matToonShadow.value = mat.shadowColor.getStyle();
+    }
+  } else if (shaderType === 'hologram') {
+    const den = mat.scanlineDensity ?? 18;
+    const gl = mat.glitchStrength ?? 0.35;
+    if (dom.matHoloDensity && document.activeElement !== dom.matHoloDensity) {
+      dom.matHoloDensity.value = String(den);
+      syncRangeVisual(dom.matHoloDensity);
+    }
+    if (dom.matHoloDensityVal) dom.matHoloDensityVal.textContent = String(Math.round(den));
+    if (dom.matHoloGlitch && document.activeElement !== dom.matHoloGlitch) {
+      dom.matHoloGlitch.value = String(gl);
+      syncRangeVisual(dom.matHoloGlitch);
+    }
+    if (dom.matHoloGlitchVal) dom.matHoloGlitchVal.textContent = gl.toFixed(2);
+  } else if (shaderType === 'matcap') {
+    const gloss = mat.glossiness ?? 0.55;
+    const metal = mat.metalness ?? 0.25;
+    if (dom.matMatcapGloss && document.activeElement !== dom.matMatcapGloss) {
+      dom.matMatcapGloss.value = String(gloss);
+      syncRangeVisual(dom.matMatcapGloss);
+    }
+    if (dom.matMatcapGlossVal) dom.matMatcapGlossVal.textContent = gloss.toFixed(2);
+    if (dom.matMatcapMetal && document.activeElement !== dom.matMatcapMetal) {
+      dom.matMatcapMetal.value = String(metal);
+      syncRangeVisual(dom.matMatcapMetal);
+    }
+    if (dom.matMatcapMetalVal) dom.matMatcapMetalVal.textContent = metal.toFixed(2);
+  } else if (shaderType === 'fresnel') {
+    const fi = mat.fresnelIntensity ?? 1.6;
+    const ir = mat.iridescence ?? 0.55;
+    if (dom.matFresnelIntensity && document.activeElement !== dom.matFresnelIntensity) {
+      dom.matFresnelIntensity.value = String(fi);
+      syncRangeVisual(dom.matFresnelIntensity);
+    }
+    if (dom.matFresnelIntensityVal) dom.matFresnelIntensityVal.textContent = fi.toFixed(2);
+    if (dom.matFresnelIrid && document.activeElement !== dom.matFresnelIrid) {
+      dom.matFresnelIrid.value = String(ir);
+      syncRangeVisual(dom.matFresnelIrid);
+    }
+    if (dom.matFresnelIridVal) dom.matFresnelIridVal.textContent = ir.toFixed(2);
+    if (mat.rimColor && dom.matFresnelRim && document.activeElement !== dom.matFresnelRim) {
+      dom.matFresnelRim.value = mat.rimColor.getStyle();
+    }
+  } else if (shaderType === 'dissolve') {
+    const autoAnim = mat.autoAnimate !== false;
+    if (dom.matDissolveAuto && document.activeElement !== dom.matDissolveAuto) {
+      dom.matDissolveAuto.checked = autoAnim;
+    }
+    if (dom.rowDissolveProgress) dom.rowDissolveProgress.hidden = autoAnim;
+    const prog = mat.progress ?? 0.35;
+    if (dom.matDissolveProgress && document.activeElement !== dom.matDissolveProgress) {
+      dom.matDissolveProgress.value = String(prog);
+      syncRangeVisual(dom.matDissolveProgress);
+    }
+    if (dom.matDissolveProgressVal) dom.matDissolveProgressVal.textContent = prog.toFixed(2);
+    if (mat.edgeColor && dom.matDissolveEdge && document.activeElement !== dom.matDissolveEdge) {
+      dom.matDissolveEdge.value = mat.edgeColor.getStyle();
+    }
   }
 }
 
@@ -219,12 +466,15 @@ export function syncSelectedUI() {
     switchObjectSubtab(_activeObjSub);
   }
 
+  if (dom.objVisible) dom.objVisible.checked = o.visible !== false;
+
   syncSubsurfUI();
   syncGizmoXyzPanel();
   syncViewCameraQuickBtn();
 
   if (isLight) {
     syncLightInspectorControls(o);
+    syncAllRanges(dom.objectEditor || document);
     return;
   }
 
@@ -320,23 +570,12 @@ export function syncSelectedUI() {
       if (dom.matEnvIntensity) dom.matEnvIntensity.value = envVal;
       if (dom.matEnvIntensityVal) dom.matEnvIntensityVal.textContent = envVal.toFixed(2);
 
-      const slots = ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap'];
-      for (const slot of slots) {
-        const chip = document.querySelector(`[data-mat-map="${slot}"]`);
-        const stateEl = document.querySelector(`[data-map-state="${slot}"]`);
-        const clearBtn = document.querySelector(`[data-mat-map-clear="${slot}"]`);
-        const directTex = mat[slot];
-        const packedOrm = !directTex && (slot === 'roughnessMap' || slot === 'metalnessMap') ? mat.metallicRoughnessMap : null;
-        const active = Boolean(directTex || packedOrm);
-        if (chip) chip.classList.toggle('has-map', active);
-        if (stateEl) stateEl.textContent = directTex ? 'OK' : packedOrm ? 'ORM' : '—';
-        if (clearBtn) clearBtn.hidden = !directTex;
-      }
+      syncMaterialPbrMapsUI(mat);
     }
 
     dom.matOpacity.value = mat.opacity ?? 1;
     dom.matOpacityVal.textContent = (mat.opacity ?? 1).toFixed(2);
-    dom.matTexture.checked = Boolean(mat.map);
+    syncMaterialTextureUI(mat);
     dom.matWireframe.checked = Boolean(mat.wireframe);
 
     const groups = dom.shaderParams.querySelectorAll('.shader-param-group');
@@ -419,7 +658,16 @@ export function bindObjectInspector() {
     applyPivotPreset((o) => o.resetPivot(true), 'Pivote restablecido.')
   );
 
+  dom.objVisible?.addEventListener('change', (e) => {
+    const o = sceneStore.selected;
+    if (!o) return;
+    o.visible = e.target.checked;
+    renderObjectList();
+    recordAutoKeyframeIfNeeded([o], { properties: ['visible'] });
+  });
+
   // Luz seleccionada
+  const getSelected = () => sceneStore.selected;
   dom.selLightColor?.addEventListener('input', (e) => {
     const l = sceneStore.selected;
     if (!l || !l.isLight || !l.color) return;
@@ -427,6 +675,8 @@ export function bindObjectInspector() {
     if (l === lighting.dirLight && dom.dirColor) dom.dirColor.value = e.target.value;
     if (l === lighting.pointLight && dom.pointColor) dom.pointColor.value = e.target.value;
   });
+  bindAutoKeyframeControl(dom.selLightColor, getSelected, 'color');
+
   dom.selLightIntensity?.addEventListener('input', (e) => {
     const l = sceneStore.selected;
     if (!l || !l.isLight) return;
@@ -435,13 +685,17 @@ export function bindObjectInspector() {
     if (dom.selLightIntensityVal) dom.selLightIntensityVal.textContent = v.toFixed(1);
     if (l === lighting.dirLight && dom.dirIntensity) {
       dom.dirIntensity.value = String(v);
+      syncRangeVisual(dom.dirIntensity);
       if (dom.dirIntensityVal) dom.dirIntensityVal.textContent = v.toFixed(1);
     }
     if (l === lighting.pointLight && dom.pointIntensity) {
       dom.pointIntensity.value = String(v);
+      syncRangeVisual(dom.pointIntensity);
       if (dom.pointIntensityVal) dom.pointIntensityVal.textContent = v.toFixed(1);
     }
   });
+  bindAutoKeyframeControl(dom.selLightIntensity, getSelected, 'intensity');
+
   dom.selLightDistance?.addEventListener('input', (e) => {
     const l = sceneStore.selected;
     if (!l || (!l.isPointLight && !l.isSpotLight)) return;
@@ -449,6 +703,8 @@ export function bindObjectInspector() {
     l.distance = v;
     if (dom.selLightDistanceVal) dom.selLightDistanceVal.textContent = v > 0 ? v.toFixed(1) : '∞ (3.5)';
   });
+  bindAutoKeyframeControl(dom.selLightDistance, getSelected, 'distance');
+
   dom.selLightDecay?.addEventListener('input', (e) => {
     const l = sceneStore.selected;
     if (!l || (!l.isPointLight && !l.isSpotLight)) return;
@@ -456,6 +712,8 @@ export function bindObjectInspector() {
     l.decay = v;
     if (dom.selLightDecayVal) dom.selLightDecayVal.textContent = v.toFixed(1);
   });
+  bindAutoKeyframeControl(dom.selLightDecay, getSelected, 'decay');
+
   dom.selLightAngle?.addEventListener('input', (e) => {
     const l = sceneStore.selected;
     if (!l || !l.isSpotLight) return;
@@ -463,6 +721,8 @@ export function bindObjectInspector() {
     l.angle = deg * DEG2RAD;
     if (dom.selLightAngleVal) dom.selLightAngleVal.textContent = `${Math.round(deg)}°`;
   });
+  bindAutoKeyframeControl(dom.selLightAngle, getSelected, 'angle');
+
   dom.selLightPenumbra?.addEventListener('input', (e) => {
     const l = sceneStore.selected;
     if (!l || !l.isSpotLight) return;
@@ -470,6 +730,8 @@ export function bindObjectInspector() {
     l.penumbra = v;
     if (dom.selLightPenumbraVal) dom.selLightPenumbraVal.textContent = v.toFixed(2);
   });
+  bindAutoKeyframeControl(dom.selLightPenumbra, getSelected, 'penumbra');
+
   dom.selLightShadows?.addEventListener('change', (e) => {
     const l = sceneStore.selected;
     if (!l || !l.isDirectionalLight) return;
@@ -479,6 +741,7 @@ export function bindObjectInspector() {
       dom.dirShadows.checked = l.castShadow;
       syncShadowResolutionUI();
     }
+    recordAutoKeyframeIfNeeded([l], { properties: ['castShadow'] });
   });
   dom.selLightShadowSoft?.addEventListener('input', (e) => {
     const l = sceneStore.selected;
@@ -488,9 +751,11 @@ export function bindObjectInspector() {
     if (dom.selLightShadowSoftVal) dom.selLightShadowSoftVal.textContent = v.toFixed(2);
     if (l === lighting.dirLight && dom.dirShadowSoft) {
       dom.dirShadowSoft.value = String(v);
+      syncRangeVisual(dom.dirShadowSoft);
       if (dom.dirShadowSoftVal) dom.dirShadowSoftVal.textContent = v.toFixed(2);
     }
   });
+  bindAutoKeyframeControl(dom.selLightShadowSoft, getSelected, 'shadow.radius');
 
   // Animaciones importadas legado
   dom.animSelect?.addEventListener('change', (e) => playAnimationClip(Number(e.target.value)));
@@ -634,6 +899,7 @@ export function bindObjectInspector() {
     dom.sceneCamFovVal.textContent = `${fov}°`;
     updateSceneCameraProps(cam);
   });
+  bindAutoKeyframeControl(dom.sceneCamFov, getSelected, 'fov');
 
   dom.sceneCamPreset?.addEventListener('change', (e) => {
     const cam = sceneStore.selected;
@@ -703,6 +969,8 @@ export function bindObjectInspector() {
     syncSelectedUI();
   });
   dom.matColor?.addEventListener('input', (e) => forEachMat((mat) => { if (mat.color) mat.color.set(e.target.value); }));
+  bindAutoKeyframeControl(dom.matColor, getSelected, 'material.color');
+
   dom.matShininess?.addEventListener('input', (e) => {
     const val = Number(e.target.value);
     dom.matShininessVal.textContent = String(val);
@@ -711,6 +979,8 @@ export function bindObjectInspector() {
       else mat.shininess = val;
     });
   });
+  bindAutoKeyframeControl(dom.matShininess, getSelected, 'material.shininess');
+
   dom.matPbr?.addEventListener('change', (e) => {
     const enabled = e.target.checked;
     forEachMat((mat) => { if (typeof mat.setHasPbr === 'function') mat.setHasPbr(enabled); });
@@ -721,29 +991,69 @@ export function bindObjectInspector() {
     if (dom.matRoughnessVal) dom.matRoughnessVal.textContent = val.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'standard') mat.roughness = val; });
   });
+  bindAutoKeyframeControl(dom.matRoughness, getSelected, 'material.roughness');
+
   dom.matMetalness?.addEventListener('input', (e) => {
     const val = Number(e.target.value);
     if (dom.matMetalnessVal) dom.matMetalnessVal.textContent = val.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'standard') mat.metalness = val; });
   });
+  bindAutoKeyframeControl(dom.matMetalness, getSelected, 'material.metalness');
+
   dom.matNormalScale?.addEventListener('input', (e) => {
     const val = Number(e.target.value);
     if (dom.matNormalScaleVal) dom.matNormalScaleVal.textContent = val.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'standard' && mat.normalScale) mat.normalScale.set(val, val); });
   });
+  bindAutoKeyframeControl(dom.matNormalScale, getSelected, 'material.normalScale');
+
   dom.matAoIntensity?.addEventListener('input', (e) => {
     const val = Number(e.target.value);
     if (dom.matAoIntensityVal) dom.matAoIntensityVal.textContent = val.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'standard') mat.aoMapIntensity = val; });
   });
+  bindAutoKeyframeControl(dom.matAoIntensity, getSelected, 'material.aoMapIntensity');
+
   dom.matEnvIntensity?.addEventListener('input', (e) => {
     const val = Number(e.target.value);
     if (dom.matEnvIntensityVal) dom.matEnvIntensityVal.textContent = val.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'standard') mat.envMapIntensity = val; });
   });
+  bindAutoKeyframeControl(dom.matEnvIntensity, getSelected, 'material.envMapIntensity');
 
   {
     let pendingMapSlot = 'map';
+
+    dom.matTexturePreset?.addEventListener('change', (e) => {
+      const val = e.target.value;
+      const target = sceneStore.selected;
+      if (!target || val === 'custom') return;
+      const tex = val === 'none' ? null : getTexturePreset(val);
+      forEachMat((mat) => {
+        if ('map' in mat) mat.map = tex;
+      });
+      syncSelectedUI();
+      recordAutoKeyframeIfNeeded([target], { properties: ['material.map'] });
+      setStatus(tex ? `Textura "${PRESET_TEX_NAMES[val] || val}" aplicada.` : 'Textura eliminada.');
+    });
+
+    dom.btnMatTextureUpload?.addEventListener('click', () => {
+      if (!sceneStore.selected) return;
+      pendingMapSlot = 'map';
+      dom.matMapFileInput?.click();
+    });
+
+    dom.btnMatTextureClear?.addEventListener('click', () => {
+      const target = sceneStore.selected;
+      if (!target) return;
+      forEachMat((mat) => {
+        if ('map' in mat) mat.map = null;
+      });
+      syncSelectedUI();
+      recordAutoKeyframeIfNeeded([target], { properties: ['material.map'] });
+      setStatus('Textura eliminada.');
+    });
+
     document.querySelectorAll('[data-mat-map]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (!sceneStore.selected) return;
@@ -753,22 +1063,24 @@ export function bindObjectInspector() {
     });
     document.querySelectorAll('[data-mat-map-clear]').forEach((btn) => {
       btn.addEventListener('click', () => {
+        const target = sceneStore.selected;
+        if (!target) return;
         const slot = btn.dataset.matMapClear;
         forEachMat((mat) => {
-          if (mat.type === 'standard' && slot in mat) {
-            const old = mat[slot];
+          if (slot in mat && (mat.type === 'standard' || slot === 'map')) {
             mat[slot] = null;
-            if (old && old !== proceduralTexture && typeof old.dispose === 'function') old.dispose();
           }
         });
         syncSelectedUI();
+        recordAutoKeyframeIfNeeded([target], { properties: [`material.${slot}`] });
         setStatus(`Mapa "${slot}" eliminado.`);
       });
     });
     dom.matMapFileInput?.addEventListener('change', (e) => {
       const file = e.target.files?.[0];
       e.target.value = '';
-      if (!file || !sceneStore.selected) return;
+      const target = sceneStore.selected;
+      if (!file || !target) return;
       const slot = pendingMapSlot || 'map';
       const colorSpace = slot === 'map' || slot === 'emissiveMap' ? 'srgb' : 'linear';
       const reader = new FileReader();
@@ -779,12 +1091,14 @@ export function bindObjectInspector() {
             width: img.naturalWidth || img.width,
             height: img.naturalHeight || img.height,
             colorSpace,
+            name: file.name,
+            userData: { customName: file.name },
           });
           tex.needsUpdate = true;
-          forEachMat((mat) => {
-            if (mat.type === 'standard' && slot in mat) {
+          target.collectMaterials?.().forEach((mat) => {
+            if (slot in mat && (mat.type === 'standard' || slot === 'map')) {
               mat[slot] = tex;
-              if (slot !== 'map' && slot !== 'emissiveMap' && typeof mat.setHasPbr === 'function' && !mat.hasPbr) {
+              if (mat.type === 'standard' && slot !== 'map' && slot !== 'emissiveMap' && typeof mat.setHasPbr === 'function' && !mat.hasPbr) {
                 mat.setHasPbr(true);
               }
               if (slot === 'emissiveMap' && mat.emissive && mat.emissive.r === 0 && mat.emissive.g === 0 && mat.emissive.b === 0) {
@@ -792,8 +1106,9 @@ export function bindObjectInspector() {
               }
             }
           });
-          syncSelectedUI();
-          setStatus(`Textura "${file.name}" aplicada a ${slot}.`);
+          if (sceneStore.selected === target) syncSelectedUI();
+          recordAutoKeyframeIfNeeded([target], { properties: [`material.${slot}`] });
+          setStatus(`Textura "${file.name}" aplicada${slot === 'map' ? '' : ` a ${slot}`}.`);
         };
         img.onerror = () => setStatus(`No se pudo decodificar la imagen "${file.name}".`, true);
         img.src = reader.result;
@@ -813,15 +1128,19 @@ export function bindObjectInspector() {
       }
     });
   });
-  dom.matTexture?.addEventListener('change', (e) => {
-    forEachMat((mat) => { mat.map = e.target.checked ? proceduralTexture : null; });
-    syncSelectedUI();
-  });
+  bindAutoKeyframeControl(dom.matOpacity, getSelected, 'material.opacity');
+
   dom.matWireframe?.addEventListener('change', (e) => {
+    const target = sceneStore.selected;
+    if (!target) return;
     forEachMat((mat) => { mat.wireframe = e.target.checked; });
+    recordAutoKeyframeIfNeeded([target], { properties: ['material.wireframe'] });
   });
   dom.objCastShadow?.addEventListener('change', (e) => {
-    sceneStore.selected?.setCastShadowRecursive(e.target.checked);
+    const target = sceneStore.selected;
+    if (!target) return;
+    target.setCastShadowRecursive(e.target.checked);
+    recordAutoKeyframeIfNeeded([target], { properties: ['castShadow'] });
   });
   dom.objAutoSpin?.addEventListener('change', (e) => {
     if (!sceneStore.selected) return;
@@ -834,63 +1153,90 @@ export function bindObjectInspector() {
     dom.matToonStepsVal.textContent = String(v);
     forEachMat((mat) => { if (mat.type === 'toon') mat.steps = v; });
   });
+  bindAutoKeyframeControl(dom.matToonSteps, getSelected, 'material.steps');
+
   dom.matToonInk?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.matToonInkVal.textContent = v.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'toon') mat.inkWidth = v; });
   });
+  bindAutoKeyframeControl(dom.matToonInk, getSelected, 'material.inkWidth');
+
   dom.matToonRim?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.matToonRimVal.textContent = v.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'toon') mat.rimStrength = v; });
   });
+  bindAutoKeyframeControl(dom.matToonRim, getSelected, 'material.rimStrength');
+
   dom.matToonShadow?.addEventListener('input', (e) => {
     forEachMat((mat) => { if (mat.type === 'toon' && mat.shadowColor) mat.shadowColor.set(e.target.value); });
   });
+  bindAutoKeyframeControl(dom.matToonShadow, getSelected, 'material.shadowColor');
+
   dom.matHoloDensity?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.matHoloDensityVal.textContent = String(v);
     forEachMat((mat) => { if (mat.type === 'hologram') mat.scanlineDensity = v; });
   });
+  bindAutoKeyframeControl(dom.matHoloDensity, getSelected, 'material.scanlineDensity');
+
   dom.matHoloGlitch?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.matHoloGlitchVal.textContent = v.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'hologram') mat.glitchStrength = v; });
   });
+  bindAutoKeyframeControl(dom.matHoloGlitch, getSelected, 'material.glitchStrength');
+
   dom.matMatcapGloss?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.matMatcapGlossVal.textContent = v.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'matcap') mat.glossiness = v; });
   });
+  bindAutoKeyframeControl(dom.matMatcapGloss, getSelected, 'material.glossiness');
+
   dom.matMatcapMetal?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.matMatcapMetalVal.textContent = v.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'matcap') mat.metalness = v; });
   });
+  bindAutoKeyframeControl(dom.matMatcapMetal, getSelected, 'material.metalness');
+
   dom.matFresnelIntensity?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.matFresnelIntensityVal.textContent = v.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'fresnel') mat.fresnelIntensity = v; });
   });
+  bindAutoKeyframeControl(dom.matFresnelIntensity, getSelected, 'material.fresnelIntensity');
+
   dom.matFresnelIrid?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.matFresnelIridVal.textContent = v.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'fresnel') mat.iridescence = v; });
   });
+  bindAutoKeyframeControl(dom.matFresnelIrid, getSelected, 'material.iridescence');
+
   dom.matFresnelRim?.addEventListener('input', (e) => {
     forEachMat((mat) => { if (mat.type === 'fresnel' && mat.rimColor) mat.rimColor.set(e.target.value); });
   });
+  bindAutoKeyframeControl(dom.matFresnelRim, getSelected, 'material.rimColor');
+
   dom.matDissolveAuto?.addEventListener('change', (e) => {
+    const target = sceneStore.selected;
     const checked = e.target.checked;
     dom.rowDissolveProgress.hidden = checked;
     forEachMat((mat) => { if (mat.type === 'dissolve') mat.autoAnimate = checked; });
+    if (target) recordAutoKeyframeIfNeeded([target], { properties: ['material.autoAnimate'] });
   });
   dom.matDissolveProgress?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.matDissolveProgressVal.textContent = v.toFixed(2);
     forEachMat((mat) => { if (mat.type === 'dissolve') mat.progress = v; });
   });
+  bindAutoKeyframeControl(dom.matDissolveProgress, getSelected, 'material.progress');
+
   dom.matDissolveEdge?.addEventListener('input', (e) => {
     forEachMat((mat) => { if (mat.type === 'dissolve' && mat.edgeColor) mat.edgeColor.set(e.target.value); });
   });
+  bindAutoKeyframeControl(dom.matDissolveEdge, getSelected, 'material.edgeColor');
 }

@@ -55,6 +55,8 @@ import {
   bindUI,
   syncSelectedUI,
   syncTransformInputs,
+  syncAnimatedInspectorValues,
+  syncAnimatedSettingsLights,
   renderObjectList,
 } from './editor/inspectorUI.js';
 import {
@@ -73,6 +75,13 @@ setAnimationHooks({
   syncTransformInputs,
   updateViewfinderOverlay,
   syncCameraHelperSelection,
+  syncAnimatedUI: (updatedObjects) => {
+    syncAnimatedInspectorValues(updatedObjects);
+    syncAnimatedSettingsLights();
+    if (dom.menuOutliner && !dom.menuOutliner.hidden) {
+      renderObjectList();
+    }
+  },
 });
 
 history.setHooks({

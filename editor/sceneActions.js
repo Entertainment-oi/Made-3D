@@ -79,7 +79,21 @@ import {
 export { mergeSelectedObjects } from './meshMerge.js';
 export { buildExportTarget, handleModelFiles, exportSceneFormat } from './ioActions.js';
 
-export const proceduralTexture = Texture.checkerboard();
+const _texturePresetCache = new Map();
+
+export const TEXTURE_PRESET_IDS = ['checker', 'grid', 'stripes', 'brick', 'wood', 'noise', 'uv'];
+
+export function getTexturePreset(presetId = 'checker') {
+  const id = TEXTURE_PRESET_IDS.includes(presetId) ? presetId : 'checker';
+  let tex = _texturePresetCache.get(id);
+  if (!tex) {
+    tex = Texture.createPreset(id);
+    _texturePresetCache.set(id, tex);
+  }
+  return tex;
+}
+
+export const proceduralTexture = getTexturePreset('checker');
 
 const _savedLightVisibility = new WeakMap();
 

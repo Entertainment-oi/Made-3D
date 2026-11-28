@@ -16,9 +16,10 @@ import {
 import {
   switchObjectSubtab,
   syncSelectedUI,
+  syncAnimatedInspectorValues,
   bindObjectInspector,
 } from './ui/objectInspector.js';
-import { bindSettingsPanel } from './ui/settingsPanel.js';
+import { bindSettingsPanel, syncAnimatedSettingsLights } from './ui/settingsPanel.js';
 import { bindViewportContextMenu } from './ui/viewportMenu.js';
 import { bindShortcutsAndModes } from './ui/shortcuts.js';
 import { bindRangeControls } from './ui/rangeControls.js';
@@ -36,6 +37,8 @@ export {
   syncTransformInputs,
   switchObjectSubtab,
   syncSelectedUI,
+  syncAnimatedInspectorValues,
+  syncAnimatedSettingsLights,
 };
 
 export function bindUI() {

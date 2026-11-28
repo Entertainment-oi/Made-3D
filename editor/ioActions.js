@@ -1,4 +1,5 @@
 import {
+  Texture,
   autoScaleObject,
   loadGLTFLoader,
   loadOBJLoader,
@@ -19,6 +20,7 @@ import {
   getClipOwner,
   getClipKeyframeTimes,
   registerImportedClips,
+  recordAutoKeyframeIfNeeded,
 } from './animationController.js';
 
 export function buildExportTarget() {
@@ -429,6 +431,8 @@ export async function handleModelFiles(fileList) {
     null;
   const ktx2File = !mainModel ? files.find((f) => /\.ktx2$/i.test(f.name)) : null;
 
+  const imgFile = !mainModel && !ktx2File ? files.find((f) => /\.(png|jpe?g|webp|gif|bmp)$/i.test(f.name)) : null;
+
   if (!mainModel && ktx2File) {
     setStatus(`Transcodificando textura KTX2: ${ktx2File.name}...`);
     try {
@@ -437,13 +441,17 @@ export async function handleModelFiles(fileList) {
         viewport.ktx2Loader = new KTX2Loader().detectSupport(viewport.renderer);
       }
       const tex = await viewport.ktx2Loader.loadFile(ktx2File, { colorSpace: 'srgb' });
-      const mat = sceneStore.selected?.getPrimaryMaterial?.() || null;
+      tex.name = ktx2File.name;
+      tex.userData = { customName: ktx2File.name };
+      const mats = sceneStore.selected?.collectMaterials?.() || [];
       const dims = `${tex.width || 0}x${tex.height || 0}`;
       const fmtTag = tex.compressed ? 'comprimida GPU' : 'RGBA32';
-      if (mat) {
-        mat.map = tex;
-        if (mat.color) mat.color.set(0xffffff);
+      if (mats.length) {
+        for (const mat of mats) {
+          if ('map' in mat) mat.map = tex;
+        }
         syncSelectedUI();
+        recordAutoKeyframeIfNeeded([sceneStore.selected], { properties: ['material.map'] });
         setStatus(`Textura KTX2 aplicada a ${sceneStore.selected.name || 'selección'}: ${ktx2File.name} (${dims}, ${fmtTag})`);
       } else {
         const mesh = addPrimitive('box', {
@@ -463,8 +471,59 @@ export async function handleModelFiles(fileList) {
     return;
   }
 
+  if (!mainModel && imgFile) {
+    setStatus(`Cargando imagen como textura: ${imgFile.name}...`);
+    try {
+      const tex = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const img = new Image();
+          img.onload = () => {
+            const t = new Texture(img, {
+              width: img.naturalWidth || img.width,
+              height: img.naturalHeight || img.height,
+              colorSpace: 'srgb',
+              name: imgFile.name,
+              userData: { customName: imgFile.name },
+            });
+            t.needsUpdate = true;
+            resolve(t);
+          };
+          img.onerror = () => reject(new Error(`No se pudo decodificar la imagen "${imgFile.name}".`));
+          img.src = reader.result;
+        };
+        reader.onerror = () => reject(new Error(`Error leyendo "${imgFile.name}".`));
+        reader.readAsDataURL(imgFile);
+      });
+
+      const mats = sceneStore.selected?.collectMaterials?.() || [];
+      if (mats.length) {
+        for (const mat of mats) {
+          if ('map' in mat) mat.map = tex;
+        }
+        syncSelectedUI();
+        recordAutoKeyframeIfNeeded([sceneStore.selected], { properties: ['material.map'] });
+        setStatus(`Textura "${imgFile.name}" aplicada a ${sceneStore.selected.name || 'selección'}.`);
+      } else {
+        const mesh = addPrimitive('box', {
+          name: imgFile.name.replace(/\.[^.]+$/, '') || 'Cubo textura',
+          color: 0xffffff,
+          shininess: 24,
+          recordHistory: true,
+        });
+        mesh.material.map = tex;
+        syncSelectedUI();
+        focusOnObject(mesh);
+        setStatus(`Cubo creado con textura "${imgFile.name}".`);
+      }
+    } catch (err) {
+      setStatus(err.message || `Error al cargar imagen "${imgFile.name}".`, true);
+    }
+    return;
+  }
+
   if (!mainModel) {
-    setStatus('Selecciona un archivo .glb, .gltf, .obj, .zip o .ktx2.', true);
+    setStatus('Selecciona un archivo .glb, .gltf, .obj, .zip, .ktx2 o imagen (.png, .jpg, .webp).', true);
     return;
   }
 

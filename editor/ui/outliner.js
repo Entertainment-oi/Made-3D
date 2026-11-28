@@ -4,7 +4,7 @@ import { history } from '../history.js';
 import { selectObject } from '../viewport.js';
 import { enterCameraView, exitCameraView } from '../cameraView.js';
 import { clearUserObjects, deleteSelected } from '../sceneActions.js';
-import { syncAnimationUI } from '../animationController.js';
+import { syncAnimationUI, recordAutoKeyframeIfNeeded } from '../animationController.js';
 import { closeAllPopovers } from './popovers.js';
 import { syncSelectedUI } from './objectInspector.js';
 
@@ -112,6 +112,8 @@ export function renderObjectList() {
       e.stopPropagation();
       obj.visible = !obj.visible;
       renderObjectList();
+      if (sceneStore.selected === obj) syncSelectedUI();
+      recordAutoKeyframeIfNeeded([obj], { properties: ['visible'] });
     });
 
     const renameBtn = document.createElement('button');
@@ -156,6 +158,8 @@ export function renderObjectList() {
         e.stopPropagation();
         part.visible = !part.visible;
         renderObjectList();
+        if (sceneStore.selected === part) syncSelectedUI();
+        recordAutoKeyframeIfNeeded([part], { properties: ['visible'] });
       });
       pli.append(pName, pEye);
       pli.addEventListener('click', () => selectObject(part));

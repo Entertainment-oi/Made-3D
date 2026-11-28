@@ -3914,5 +3914,25 @@ html.is-mobile-landscape-90 .tl-popover {
   overflow-y: auto;
 }
 
+.obj-visibility-bar {
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+  flex-shrink: 0;
+}
 
+.mat-texture-block {
+  padding: 8px;
+  border-radius: 9px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.025);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
 
+.mat-texture-actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(108px, 1fr));
+  gap: 6px;
+}

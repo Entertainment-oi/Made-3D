@@ -1,7 +1,15 @@
 import { clamp } from '../math/utils.js';
 import { Quat } from '../math/Quat.js';
+import { Color } from '../math/Color.js';
+import {
+  splitTrackNameAndProperty,
+  getAnimatedPropertyKind,
+  readObjectPropertyValues,
+  applyAnimatedProperty,
+} from './AnimationClip.js';
 
 const _v3 = { x: 0, y: 0, z: 0, set(x, y, z) { this.x = x; this.y = y; this.z = z; return this; } };
+const _c3 = new Color();
 const _q = new Quat();
 const _q2 = new Quat();
 const _q4 = new Quat();
@@ -73,6 +81,9 @@ export class AnimationMixer {
     this._cache = new WeakMap();
     this._groups = new Map();
     this._arrayGroups = new Map();
+    this._scalarGroups = new Map();
+    this._colorGroups = new Map();
+    this._discreteGroups = new Map();
     this._evalScratch = [];
   }
 
@@ -113,8 +124,14 @@ export class AnimationMixer {
   _applyAll() {
     const groups = this._groups;
     const arrayGroups = this._arrayGroups;
+    const scalarGroups = this._scalarGroups;
+    const colorGroups = this._colorGroups;
+    const discreteGroups = this._discreteGroups;
     groups.clear();
     arrayGroups.clear();
+    scalarGroups.clear();
+    colorGroups.clear();
+    discreteGroups.clear();
 
     for (let ai = 0; ai < this.actions.length; ai++) {
       const a = this.actions[ai];
@@ -126,15 +143,79 @@ export class AnimationMixer {
       const tracks = a.clip.tracks;
       for (let ti = 0; ti < tracks.length; ti++) {
         const track = tracks[ti];
+        if (!track.times || !track.times.length) continue;
         const t = this._resolve(track);
         if (!t) continue;
         const obj = t.object;
         const prop = t.property === 'weights' ? 'morphTargetInfluences' : t.property;
+        const key = obj.id + '.' + prop;
+        const kind = track.isObjectTrack
+          ? 'object'
+          : track.isBooleanTrack
+          ? 'boolean'
+          : track.isColorTrack
+          ? 'color'
+          : track.isNumberTrack
+          ? 'number'
+          : getAnimatedPropertyKind(prop, track.valueSize);
+
+        if (kind === 'object') {
+          const val = track.evaluate(a.time);
+          let dg = discreteGroups.get(key);
+          if (!dg || w >= dg.bestWeight) {
+            discreteGroups.set(key, { obj, prop, val, bestWeight: w });
+          }
+          continue;
+        }
+
+        if (kind === 'boolean') {
+          const curArr = readObjectPropertyValues(obj, prop);
+          if (!curArr) continue;
+          let sg = scalarGroups.get(key);
+          if (!sg) {
+            sg = { obj, prop, total: 0, acc: 0, base: curArr[0] ? 1 : 0, isBool: true };
+            scalarGroups.set(key, sg);
+          }
+          const b = track.evaluate(a.time) ? 1 : 0;
+          sg.acc += b * w;
+          sg.total += w;
+          continue;
+        }
+
+        if (kind === 'number') {
+          const curArr = readObjectPropertyValues(obj, prop);
+          if (!curArr) continue;
+          let sg = scalarGroups.get(key);
+          if (!sg) {
+            sg = { obj, prop, total: 0, acc: 0, base: Number(curArr[0]) || 0, isBool: false };
+            scalarGroups.set(key, sg);
+          }
+          const num = Number(track.evaluate(a.time)) || 0;
+          sg.acc += num * w;
+          sg.total += w;
+          continue;
+        }
+
+        if (kind === 'color') {
+          const curArr = readObjectPropertyValues(obj, prop);
+          if (!curArr) continue;
+          let cg = colorGroups.get(key);
+          if (!cg) {
+            cg = { obj, prop, total: 0, r: 0, g: 0, b: 0, or: curArr[0] ?? 1, og: curArr[1] ?? 1, ob: curArr[2] ?? 1 };
+            colorGroups.set(key, cg);
+          }
+          const c = track.evaluate(a.time, _c3);
+          cg.r += (c.r ?? 0) * w;
+          cg.g += (c.g ?? 0) * w;
+          cg.b += (c.b ?? 0) * w;
+          cg.total += w;
+          continue;
+        }
+
         const value = obj[prop];
         if (!value) continue;
 
         if (Array.isArray(value) || ArrayBuffer.isView(value)) {
-          const key = obj.id + '.' + prop;
           let ag = arrayGroups.get(key);
           const len = Math.max(value.length, track.valueSize || 0);
           if (!ag) {
@@ -149,7 +230,6 @@ export class AnimationMixer {
           continue;
         }
 
-        const key = obj.id + '.' + prop;
         let g = groups.get(key);
         if (!g) {
           g = {
@@ -196,20 +276,37 @@ export class AnimationMixer {
         target[j] = t >= 1 ? avg : ag.base[j] + (avg - ag.base[j]) * t;
       }
     }
+    for (const sg of scalarGroups.values()) {
+      const t = sg.total;
+      const avg = sg.acc / t;
+      const blended = t >= 1 ? avg : sg.base + (avg - sg.base) * t;
+      applyAnimatedProperty(sg.obj, sg.prop, sg.isBool ? blended >= 0.5 : blended);
+    }
+    for (const cg of colorGroups.values()) {
+      const t = cg.total;
+      const ar = cg.r / t, ag = cg.g / t, ab = cg.b / t;
+      if (t >= 1) {
+        _c3.set(ar, ag, ab);
+      } else {
+        _c3.set(cg.or + (ar - cg.or) * t, cg.og + (ag - cg.og) * t, cg.ob + (ab - cg.ob) * t);
+      }
+      applyAnimatedProperty(cg.obj, cg.prop, _c3);
+    }
+    for (const dg of discreteGroups.values()) {
+      applyAnimatedProperty(dg.obj, dg.prop, dg.val);
+    }
   }
 
   // Resuelve el objeto y la propiedad de una pista.
   _resolve(track) {
     if (track.target) {
-      const i = track.name ? track.name.lastIndexOf('.') : -1;
-      const property = track.property || (i >= 0 ? track.name.slice(i + 1) : 'position');
+      const { property } = splitTrackNameAndProperty(track.name, track.property);
       return { object: track.target, property };
     }
     const cached = this._cache.get(track);
     if (cached && cached.root === this.root) return cached.res;
-    const i = track.name.lastIndexOf('.');
-    const property = track.property || (i >= 0 ? track.name.slice(i + 1) : 'position');
-    const obj = this._find(i >= 0 ? track.name.slice(0, i) : track.name);
+    const { nodePath, property } = splitTrackNameAndProperty(track.name, track.property);
+    const obj = this._find(nodePath);
     if (!obj) return null;
     const res = { object: obj, property };
     this._cache.set(track, { root: this.root, res });

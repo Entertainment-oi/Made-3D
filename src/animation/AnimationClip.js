@@ -1,8 +1,77 @@
 import { Quat } from '../math/Quat.js';
 import { Vec3 } from '../math/Vec3.js';
+import { Color } from '../math/Color.js';
 
 const _evalV3 = new Vec3();
 const _evalQuat = new Quat();
+const _evalColor = new Color();
+
+const NESTED_PROP_PREFIXES = ['.material.', '.shadow.'];
+
+const BOOLEAN_PROPS = new Set([
+  'visible',
+  'castShadow',
+  'material.wireframe',
+  'material.autoAnimate',
+]);
+
+const OBJECT_PROPS = new Set([
+  'material.map',
+  'material.normalMap',
+  'material.roughnessMap',
+  'material.metalnessMap',
+  'material.aoMap',
+  'material.emissiveMap',
+  'material.metallicRoughnessMap',
+  'material.matcap',
+]);
+
+const COLOR_PROPS = new Set([
+  'color',
+  'material.color',
+  'material.emissive',
+  'material.shadowColor',
+  'material.shadowTintColor',
+  'material.rimColor',
+  'material.inkColor',
+  'material.stripeColor',
+  'material.edgeColor',
+]);
+
+const NUMBER_PROPS = new Set([
+  'fov',
+  'intensity',
+  'distance',
+  'decay',
+  'angle',
+  'penumbra',
+  'shadow.radius',
+  'material.opacity',
+  'material.shininess',
+  'material.roughness',
+  'material.metalness',
+  'material.normalScale',
+  'material.aoMapIntensity',
+  'material.envMapIntensity',
+  'material.steps',
+  'material.smoothness',
+  'material.shadowTint',
+  'material.rimPower',
+  'material.rimStrength',
+  'material.inkWidth',
+  'material.fresnelPower',
+  'material.scanlineDensity',
+  'material.scanlineSpeed',
+  'material.glitchStrength',
+  'material.glossiness',
+  'material.fresnelIntensity',
+  'material.iridescence',
+  'material.pulseSpeed',
+  'material.progress',
+  'material.speed',
+  'material.edgeWidth',
+  'material.noiseScale',
+]);
 
 function evalInterp(interpolation, t) {
   if (interpolation === 'smooth') return t * t * (3 - 2 * t);
@@ -15,16 +84,119 @@ function roundKeyframeTime(t) {
   return Math.round(Math.max(0, Number(t) || 0) * 1000) / 1000;
 }
 
-function readObjectPropertyValues(obj, property) {
+export function splitTrackNameAndProperty(name = '', explicitProperty = null) {
+  const rawName = String(name || '');
+  if (explicitProperty) {
+    const suffix = `.${explicitProperty}`;
+    if (rawName.endsWith(suffix)) {
+      return {
+        nodePath: rawName.slice(0, rawName.length - suffix.length),
+        property: explicitProperty,
+      };
+    }
+    const idx = rawName.lastIndexOf('.');
+    return {
+      nodePath: idx >= 0 ? rawName.slice(0, idx) : rawName,
+      property: explicitProperty,
+    };
+  }
+
+  for (const prefix of NESTED_PROP_PREFIXES) {
+    const idx = rawName.lastIndexOf(prefix);
+    if (idx >= 0) {
+      return {
+        nodePath: rawName.slice(0, idx),
+        property: rawName.slice(idx + 1),
+      };
+    }
+  }
+
+  const idx = rawName.lastIndexOf('.');
+  return {
+    nodePath: idx >= 0 ? rawName.slice(0, idx) : rawName,
+    property: idx >= 0 ? rawName.slice(idx + 1) : 'position',
+  };
+}
+
+export function getAnimatedPropertyKind(property, valueSize = null, sampleValues = null) {
+  if (property === 'quaternion') return 'quaternion';
+  if (property === 'weights' || property === 'morphTargetInfluences') return 'numberArray';
+  if (BOOLEAN_PROPS.has(property)) return 'boolean';
+  if (OBJECT_PROPS.has(property)) return 'object';
+  if (COLOR_PROPS.has(property)) return 'color';
+  if (NUMBER_PROPS.has(property)) return 'number';
+  if (Array.isArray(sampleValues) && sampleValues.length === 1) {
+    const first = sampleValues[0];
+    if (first === null || (typeof first === 'object' && first !== null)) return 'object';
+    if (typeof first === 'boolean') return 'boolean';
+  }
+  if (valueSize === 1) return 'number';
+  if (valueSize != null && valueSize > 0 && valueSize !== 3) return 'numberArray';
+  return 'vector';
+}
+
+function getPrimaryMat(obj) {
+  if (!obj) return null;
+  if (typeof obj.getPrimaryMaterial === 'function') return obj.getPrimaryMaterial();
+  return obj.material || null;
+}
+
+function getAllMats(obj) {
+  if (!obj) return [];
+  if (typeof obj.collectMaterials === 'function') return obj.collectMaterials();
+  return obj.material ? [obj.material] : [];
+}
+
+export function readObjectPropertyValues(obj, property) {
   if (!obj) return null;
   if (property === 'quaternion') {
     return [obj.quaternion.x, obj.quaternion.y, obj.quaternion.z, obj.quaternion.w];
   }
+  if (property === 'visible') {
+    return [obj.visible !== false ? 1 : 0];
+  }
+  if (property === 'castShadow') {
+    const casting = typeof obj.hasShadowCaster === 'function' ? obj.hasShadowCaster() : Boolean(obj.castShadow);
+    return [casting ? 1 : 0];
+  }
+  if (property === 'shadow.radius') {
+    const r = obj.shadow?.radius;
+    return typeof r === 'number' && Number.isFinite(r) ? [r] : null;
+  }
+  if (property.startsWith('material.')) {
+    const slot = property.slice('material.'.length);
+    const mat = getPrimaryMat(obj);
+    if (!mat) return null;
+    if (OBJECT_PROPS.has(property)) {
+      return [mat[slot] ?? null];
+    }
+    if (slot === 'shininess') {
+      const s = typeof mat.getShininess === 'function' ? mat.getShininess() : (mat.shininess ?? 0);
+      return [Number(s) || 0];
+    }
+    if (slot === 'normalScale') {
+      return [Number(mat.normalScale?.x ?? 1)];
+    }
+    const val = mat[slot];
+    if (val === undefined) return null;
+    if (typeof val === 'boolean') return [val ? 1 : 0];
+    if (typeof val === 'number') return [Number.isFinite(val) ? val : 0];
+    if (val && typeof val === 'object' && val.r !== undefined && val.g !== undefined && val.b !== undefined) {
+      return [val.r, val.g, val.b];
+    }
+    return null;
+  }
+
   const prop = property === 'weights' ? 'morphTargetInfluences' : property;
   const val = obj[prop];
-  if (!val) return null;
+  if (val === undefined || val === null) return null;
+  if (typeof val === 'boolean') return [val ? 1 : 0];
+  if (typeof val === 'number') return [Number.isFinite(val) ? val : 0];
   if (Array.isArray(val) || ArrayBuffer.isView(val)) {
     return Array.from(val);
+  }
+  if (val.r !== undefined && val.g !== undefined && val.b !== undefined) {
+    return [val.r, val.g, val.b];
   }
   if (val.x !== undefined && val.y !== undefined && val.z !== undefined) {
     return [val.x, val.y, val.z];
@@ -32,10 +204,145 @@ function readObjectPropertyValues(obj, property) {
   return null;
 }
 
+export function applyAnimatedProperty(obj, property, evaluatedValue) {
+  if (!obj) return false;
+  if (property === 'visible') {
+    obj.visible = Boolean(evaluatedValue);
+    return true;
+  }
+  if (property === 'castShadow') {
+    const next = Boolean(evaluatedValue);
+    if (typeof obj.setCastShadowRecursive === 'function') obj.setCastShadowRecursive(next);
+    else obj.castShadow = next;
+    return true;
+  }
+  if (property === 'fov') {
+    const nextFov = Number(evaluatedValue);
+    if (!Number.isFinite(nextFov)) return false;
+    obj.fov = nextFov;
+    if (typeof obj.updateProjection === 'function') obj.updateProjection();
+    if (Array.isArray(obj.children)) {
+      for (const child of obj.children) {
+        if (child && child.isCameraHelper && typeof child.update === 'function') {
+          child.update();
+        }
+      }
+    }
+    return true;
+  }
+  if (property === 'shadow.radius') {
+    const nextR = Number(evaluatedValue);
+    if (!obj.shadow || !Number.isFinite(nextR)) return false;
+    obj.shadow.radius = nextR;
+    return true;
+  }
+  if (property.startsWith('material.')) {
+    const slot = property.slice('material.'.length);
+    const mats = getAllMats(obj);
+    if (!mats.length) return false;
+    let applied = false;
+    for (const mat of mats) {
+      if (!mat) continue;
+      if (OBJECT_PROPS.has(property)) {
+        if (slot in mat) {
+          const tex = evaluatedValue || null;
+          mat[slot] = tex;
+          if (tex && slot !== 'map' && slot !== 'emissiveMap' && typeof mat.setHasPbr === 'function' && !mat.hasPbr) {
+            mat.setHasPbr(true);
+          }
+          applied = true;
+        }
+        continue;
+      }
+      if (slot === 'opacity') {
+        const op = Number(evaluatedValue);
+        if (Number.isFinite(op)) {
+          if (typeof mat.setOpacity === 'function') mat.setOpacity(op);
+          else {
+            mat.opacity = op;
+            mat.transparent = op < 0.999;
+          }
+          applied = true;
+        }
+        continue;
+      }
+      if (slot === 'shininess') {
+        const sh = Number(evaluatedValue);
+        if (Number.isFinite(sh)) {
+          if (typeof mat.setShininess === 'function') mat.setShininess(sh);
+          else mat.shininess = sh;
+          applied = true;
+        }
+        continue;
+      }
+      if (slot === 'normalScale') {
+        const ns = Number(evaluatedValue);
+        if (mat.normalScale && Number.isFinite(ns)) {
+          mat.normalScale.set(ns, ns);
+          applied = true;
+        }
+        continue;
+      }
+      if (slot === 'steps') {
+        const st = Number(evaluatedValue);
+        if ('steps' in mat && Number.isFinite(st)) {
+          mat.steps = Math.max(1, Math.round(st));
+          applied = true;
+        }
+        continue;
+      }
+      const cur = mat[slot];
+      if (cur === undefined) continue;
+      if (cur && typeof cur.set === 'function' && cur.r !== undefined && cur.g !== undefined && cur.b !== undefined) {
+        if (evaluatedValue && evaluatedValue.r !== undefined) {
+          cur.set(evaluatedValue.r, evaluatedValue.g, evaluatedValue.b);
+        } else if (Array.isArray(evaluatedValue)) {
+          cur.set(evaluatedValue[0] ?? 0, evaluatedValue[1] ?? 0, evaluatedValue[2] ?? 0);
+        }
+        applied = true;
+      } else if (typeof cur === 'boolean') {
+        mat[slot] = Boolean(evaluatedValue);
+        applied = true;
+      } else if (typeof cur === 'number') {
+        const num = Number(evaluatedValue);
+        if (Number.isFinite(num)) {
+          mat[slot] = num;
+          applied = true;
+        }
+      }
+    }
+    return applied;
+  }
+
+  const prop = property === 'weights' ? 'morphTargetInfluences' : property;
+  const targetVal = obj[prop];
+  if (targetVal === undefined || targetVal === null) return false;
+
+  if (typeof targetVal === 'boolean') {
+    obj[prop] = Boolean(evaluatedValue);
+    return true;
+  }
+  if (typeof targetVal === 'number') {
+    const num = Number(evaluatedValue);
+    if (!Number.isFinite(num)) return false;
+    obj[prop] = num;
+    return true;
+  }
+  if (targetVal && typeof targetVal.set === 'function' && targetVal.r !== undefined && targetVal.g !== undefined && targetVal.b !== undefined) {
+    if (evaluatedValue && evaluatedValue.r !== undefined) {
+      targetVal.set(evaluatedValue.r, evaluatedValue.g, evaluatedValue.b);
+    } else if (Array.isArray(evaluatedValue)) {
+      targetVal.set(evaluatedValue[0] ?? 0, evaluatedValue[1] ?? 0, evaluatedValue[2] ?? 0);
+    }
+    return true;
+  }
+  return false;
+}
+
 function trackMatchesProperty(track, property) {
   if (!property) return true;
   const list = Array.isArray(property) ? property : [property];
-  const trProp = track.property || (track.name && track.name.includes('.') ? track.name.split('.').pop() : '');
+  const { property: trProp } = splitTrackNameAndProperty(track.name, track.property);
   for (const p of list) {
     if (trProp === p || (track.name && track.name.endsWith(`.${p}`))) return true;
   }
@@ -57,7 +364,8 @@ function isDescendantOrSelfNode(node, ancestor) {
  * `name` dice a qué se aplica: 'Hombro.position' (objeto por nombre + propiedad) o, si quieres
  * atar el pista a un objeto concreto, `track.target = hueso` y `track.property = 'position'`.
  *
- * Propiedades admitidas: 'position', 'scale' (Vec3), 'quaternion' (Quat) y 'rotation' (Euler).
+ * Propiedades admitidas: 'position', 'scale', 'quaternion', 'rotation', 'visible', 'fov',
+ * propiedades de luz ('intensity', 'color', ...) y de material ('material.color', 'material.opacity', 'material.map', ...).
  * Interpolación: 'linear' (por defecto), 'smooth', 'easeIn', 'easeOut' o 'step'.
  */
 export class KeyframeTrack {
@@ -68,7 +376,7 @@ export class KeyframeTrack {
     this.interpolation = interpolation;
     this.valueSize = 3;
     this.target = null;      // Object3D (opcional): si se pone, gana sobre el nombre
-    this.property = null;    // 'position' | 'quaternion' | 'scale' | 'rotation'
+    this.property = null;    // 'position' | 'quaternion' | 'scale' | 'rotation' | 'material.color' | ...
   }
   get duration() { return this.times.length ? this.times[this.times.length - 1] : 0; }
   get count() { return this.times.length; }
@@ -289,6 +597,231 @@ export class QuaternionKeyframeTrack extends KeyframeTrack {
 
 const _q = new Quat(), _q2 = new Quat();
 
+// Pista escalar numérica (p. ej. intensidad de luz, opacidad, brillo, FOV).
+export class NumberKeyframeTrack extends KeyframeTrack {
+  constructor(name, times, values, interpolation = 'linear') {
+    super(name, times, values, interpolation);
+    this.valueSize = 1;
+    this.isNumberTrack = true;
+  }
+  evaluate(time, target) {
+    if (!this.times.length) {
+      if (Array.isArray(target) || ArrayBuffer.isView(target)) { target[0] = 0; return target; }
+      return 0;
+    }
+    const { i, t } = this._search(time);
+    const v = this.values;
+    let out;
+    if (this.interpolation === 'step' || i >= this.times.length - 1) {
+      out = v[i] ?? 0;
+    } else {
+      const k = evalInterp(this.interpolation, t);
+      out = (v[i] ?? 0) * (1 - k) + (v[i + 1] ?? 0) * k;
+    }
+    if (Array.isArray(target) || ArrayBuffer.isView(target)) {
+      target[0] = out;
+      return target;
+    }
+    return out;
+  }
+  clone() {
+    const c = new NumberKeyframeTrack(this.name, Float32Array.from(this.times), Float32Array.from(this.values), this.interpolation);
+    c.target = this.target;
+    c.property = this.property;
+    return c;
+  }
+}
+
+// Pista de Color RGB (0..1 floats).
+export class ColorKeyframeTrack extends KeyframeTrack {
+  constructor(name, times, values, interpolation = 'linear') {
+    super(name, times, values, interpolation);
+    this.valueSize = 3;
+    this.isColorTrack = true;
+  }
+  evaluate(time, target) {
+    if (!this.times.length) return target;
+    const { i, t } = this._search(time);
+    const s = 3, v = this.values;
+    let r, g, b;
+    if (this.interpolation === 'step' || i >= this.times.length - 1) {
+      const a = i * s;
+      r = v[a] ?? 0; g = v[a + 1] ?? 0; b = v[a + 2] ?? 0;
+    } else {
+      const k = evalInterp(this.interpolation, t);
+      const a = i * s, idxB = (i + 1) * s, w = 1 - k;
+      r = (v[a] ?? 0) * w + (v[idxB] ?? 0) * k;
+      g = (v[a + 1] ?? 0) * w + (v[idxB + 1] ?? 0) * k;
+      b = (v[a + 2] ?? 0) * w + (v[idxB + 2] ?? 0) * k;
+    }
+    if (target && typeof target.set === 'function') return target.set(r, g, b);
+    if (Array.isArray(target) || ArrayBuffer.isView(target)) {
+      target[0] = r; target[1] = g; target[2] = b;
+      return target;
+    }
+    return { r, g, b };
+  }
+  clone() {
+    const c = new ColorKeyframeTrack(this.name, Float32Array.from(this.times), Float32Array.from(this.values), this.interpolation);
+    c.target = this.target;
+    c.property = this.property;
+    return c;
+  }
+}
+
+// Pista booleana con evaluación escalón (p. ej. visibilidad, wireframe, sombras).
+export class BooleanKeyframeTrack extends KeyframeTrack {
+  constructor(name, times, values, interpolation = 'step') {
+    const numVals = Array.from(values || [], (v) => (v ? 1 : 0));
+    super(name, times, numVals, interpolation || 'step');
+    this.valueSize = 1;
+    this.interpolation = 'step';
+    this.isBooleanTrack = true;
+  }
+  evaluate(time, target) {
+    if (!this.times.length) {
+      if (Array.isArray(target) || ArrayBuffer.isView(target)) { target[0] = 0; return target; }
+      return false;
+    }
+    const { i } = this._search(time);
+    const out = (this.values[i] ?? 0) >= 0.5;
+    if (Array.isArray(target) || ArrayBuffer.isView(target)) {
+      target[0] = out ? 1 : 0;
+      return target;
+    }
+    return out;
+  }
+  setKeyframe(time, valArr, opts) {
+    const raw = Array.isArray(valArr) ? valArr[0] : valArr;
+    return super.setKeyframe(time, [raw ? 1 : 0], opts);
+  }
+  clone() {
+    const c = new BooleanKeyframeTrack(this.name, Float32Array.from(this.times), Float32Array.from(this.values), 'step');
+    c.target = this.target;
+    c.property = this.property;
+    return c;
+  }
+}
+
+// Pista de referencias discretas (p. ej. cambio de texturas `material.map` a lo largo del tiempo).
+export class ObjectKeyframeTrack extends KeyframeTrack {
+  constructor(name, times = [], values = [], interpolation = 'step') {
+    super(name, times, [], 'step');
+    this.values = Array.isArray(values) ? values.slice() : Array.from(values || []);
+    this.valueSize = 1;
+    this.interpolation = 'step';
+    this.isObjectTrack = true;
+  }
+  evaluate(time) {
+    if (!this.times.length) return null;
+    const { i } = this._search(time);
+    return this.values[i] ?? null;
+  }
+  getKeyframeValueAt(time, eps = 0.035) {
+    const idx = this.getKeyframeIndexAt(time, eps);
+    if (idx < 0) return null;
+    return {
+      index: idx,
+      time: this.times[idx],
+      values: [this.values[idx] ?? null],
+    };
+  }
+  setKeyframe(time, valArr, { mergeEps = 0.035 } = {}) {
+    const t = roundKeyframeTime(time);
+    const val = Array.isArray(valArr) ? (valArr[0] ?? null) : (valArr ?? null);
+    const times = Array.from(this.times);
+    const values = this.values.slice();
+
+    const existingIdx = this.getKeyframeIndexAt(t, mergeEps);
+    if (existingIdx >= 0) {
+      times[existingIdx] = t;
+      values[existingIdx] = val;
+      this.times = Float32Array.from(times);
+      this.values = values;
+      return { index: existingIdx, time: t, replaced: true };
+    }
+
+    let insertIdx = times.length;
+    for (let i = 0; i < times.length; i++) {
+      if (times[i] > t) {
+        insertIdx = i;
+        break;
+      }
+    }
+    times.splice(insertIdx, 0, t);
+    values.splice(insertIdx, 0, val);
+    this.times = Float32Array.from(times);
+    this.values = values;
+    return { index: insertIdx, time: t, replaced: false };
+  }
+  removeKeyframeAt(time, eps = 0.035) {
+    const times = Array.from(this.times);
+    const values = this.values.slice();
+    let removed = false;
+    for (let i = times.length - 1; i >= 0; i--) {
+      if (Math.abs(times[i] - time) <= eps) {
+        times.splice(i, 1);
+        values.splice(i, 1);
+        removed = true;
+      }
+    }
+    if (removed) {
+      this.times = Float32Array.from(times);
+      this.values = values;
+    }
+    return removed;
+  }
+  moveKeyframe(fromTime, toTime, { eps = 0.035, mergeEps = 0.025, merge = false } = {}) {
+    const idx = this.getKeyframeIndexAt(fromTime, eps);
+    if (idx < 0) return false;
+    const destTime = roundKeyframeTime(toTime);
+    const movedVal = this.values[idx] ?? null;
+
+    const entries = [];
+    for (let i = 0; i < this.times.length; i++) {
+      if (i === idx) continue;
+      const kt = this.times[i];
+      if (merge && Math.abs(kt - destTime) <= mergeEps) continue;
+      entries.push({ t: kt, v: this.values[i] ?? null, isMoved: false });
+    }
+    entries.push({ t: destTime, v: movedVal, isMoved: true });
+    entries.sort((a, b) => (a.t !== b.t ? a.t - b.t : (a.isMoved ? 1 : -1)));
+
+    this.times = Float32Array.from(entries.map((e) => e.t));
+    this.values = entries.map((e) => e.v);
+    return true;
+  }
+  captureSnapshot() {
+    return {
+      trackRef: this,
+      name: this.name,
+      property: this.property || null,
+      target: this.target || null,
+      valueSize: 1,
+      interpolation: 'step',
+      times: Float32Array.from(this.times),
+      values: this.values.slice(),
+    };
+  }
+  restoreSnapshot(snap) {
+    if (!snap) return this;
+    this.name = snap.name ?? this.name;
+    this.property = snap.property ?? null;
+    this.target = snap.target ?? null;
+    this.valueSize = 1;
+    this.interpolation = 'step';
+    this.times = Float32Array.from(snap.times || []);
+    this.values = Array.isArray(snap.values) ? snap.values.slice() : Array.from(snap.values || []);
+    return this;
+  }
+  clone() {
+    const c = new ObjectKeyframeTrack(this.name, Float32Array.from(this.times), this.values.slice(), 'step');
+    c.target = this.target;
+    c.property = this.property;
+    return c;
+  }
+}
+
 // Pista de arreglo numérico (p. ej. pesos de morph targets).
 export class NumberArrayKeyframeTrack extends KeyframeTrack {
   constructor(name, times, values, valueSize = 1, interpolation = 'linear') {
@@ -351,14 +884,10 @@ export class AnimationClip {
   static resolveTrackTarget(track, fallbackRoot = null) {
     if (!track) return null;
     if (track.target) {
-      const idx = track.name ? track.name.lastIndexOf('.') : -1;
-      const property = track.property || (idx >= 0 ? track.name.slice(idx + 1) : 'position');
+      const { property } = splitTrackNameAndProperty(track.name, track.property);
       return { object: track.target, property };
     }
-    const name = track.name || '';
-    const idx = name.lastIndexOf('.');
-    const property = track.property || (idx >= 0 ? name.slice(idx + 1) : 'position');
-    const nodePath = idx >= 0 ? name.slice(0, idx) : name;
+    const { nodePath, property } = splitTrackNameAndProperty(track.name, track.property);
     const root = fallbackRoot;
     let obj = null;
     if (!nodePath) {
@@ -432,11 +961,13 @@ export class AnimationClip {
 
   getInterpolation() {
     if (!this.tracks.length) return 'linear';
-    return this.tracks[0].interpolation || 'linear';
+    const continuous = this.tracks.find((tr) => !tr.isBooleanTrack && !tr.isObjectTrack);
+    return (continuous || this.tracks[0]).interpolation || 'linear';
   }
 
   setInterpolation(interpolation = 'linear') {
     for (const tr of this.tracks) {
+      if (tr.isBooleanTrack || tr.isObjectTrack) continue;
       tr.interpolation = interpolation;
     }
     return this;
@@ -452,15 +983,23 @@ export class AnimationClip {
     );
   }
 
-  getOrCreateTrack(obj, property, valueSize = null) {
+  getOrCreateTrack(obj, property, valueSize = null, sampleValues = null) {
     let track = this.getTrackByTarget(obj, property);
     if (!track) {
       const baseName = `${obj.name || `Obj_${obj.id}`}.${property}`;
       const defaultInterp = this.getInterpolation();
-      const isWeightProp = property === 'weights' || property === 'morphTargetInfluences';
-      if (property === 'quaternion') {
+      const kind = getAnimatedPropertyKind(property, valueSize, sampleValues);
+      if (kind === 'quaternion') {
         track = new QuaternionKeyframeTrack(baseName, [], [], defaultInterp);
-      } else if (isWeightProp || (valueSize != null && valueSize > 0 && valueSize !== 3)) {
+      } else if (kind === 'boolean') {
+        track = new BooleanKeyframeTrack(baseName, [], [], 'step');
+      } else if (kind === 'object') {
+        track = new ObjectKeyframeTrack(baseName, [], [], 'step');
+      } else if (kind === 'color') {
+        track = new ColorKeyframeTrack(baseName, [], [], defaultInterp);
+      } else if (kind === 'number') {
+        track = new NumberKeyframeTrack(baseName, [], [], defaultInterp);
+      } else if (kind === 'numberArray') {
         const size = Math.max(1, (valueSize | 0) || obj?.morphTargetInfluences?.length || 1);
         track = new NumberArrayKeyframeTrack(baseName, [], [], size, defaultInterp);
       } else {
@@ -527,7 +1066,7 @@ export class AnimationClip {
     for (const prop of props) {
       const valArr = readObjectPropertyValues(obj, prop);
       if (!valArr || !valArr.length) continue;
-      const tr = this.getOrCreateTrack(obj, prop, valArr.length);
+      const tr = this.getOrCreateTrack(obj, prop, valArr.length, valArr);
       tr.setKeyframe(t, valArr, { mergeEps });
       updated = true;
     }
@@ -598,7 +1137,7 @@ export class AnimationClip {
       if (target && !AnimationClip.trackMatchesTarget(tr, target, owner)) continue;
       const kf = tr.getKeyframeValueAt(time, eps);
       if (!kf) continue;
-      const prop = tr.property || (tr.name && tr.name.includes('.') ? tr.name.split('.').pop() : null);
+      const { property: prop } = splitTrackNameAndProperty(tr.name, tr.property);
       if (!prop) continue;
       outProps[prop] = {
         values: kf.values.slice(),
@@ -624,8 +1163,8 @@ export class AnimationClip {
     const pasted = [];
     for (const [prop, entry] of Object.entries(data.properties)) {
       if (!entry || !Array.isArray(entry.values) || !entry.values.length) continue;
-      const tr = this.getOrCreateTrack(obj, prop, entry.valueSize || entry.values.length);
-      if (entry.interpolation && !tr.times.length) {
+      const tr = this.getOrCreateTrack(obj, prop, entry.valueSize || entry.values.length, entry.values);
+      if (entry.interpolation && !tr.times.length && !tr.isBooleanTrack && !tr.isObjectTrack) {
         tr.interpolation = entry.interpolation;
       }
       tr.setKeyframe(t, entry.values, { mergeEps });
@@ -649,6 +1188,28 @@ export class AnimationClip {
       if (!resolved || !resolved.object) continue;
       const { object, property } = resolved;
       const prop = property === 'weights' ? 'morphTargetInfluences' : property;
+
+      if (track.isObjectTrack || OBJECT_PROPS.has(prop)) {
+        const objVal = track.evaluate(localTime);
+        if (applyAnimatedProperty(object, prop, objVal)) updated.add(object);
+        continue;
+      }
+      if (track.isBooleanTrack || BOOLEAN_PROPS.has(prop)) {
+        const boolVal = Boolean(track.evaluate(localTime));
+        if (applyAnimatedProperty(object, prop, boolVal)) updated.add(object);
+        continue;
+      }
+      if (track.isNumberTrack || NUMBER_PROPS.has(prop) || (track.valueSize === 1 && !Array.isArray(object[prop]) && !ArrayBuffer.isView(object[prop]))) {
+        const numVal = track.evaluate(localTime);
+        if (applyAnimatedProperty(object, prop, numVal)) updated.add(object);
+        continue;
+      }
+      if (track.isColorTrack || COLOR_PROPS.has(prop)) {
+        track.evaluate(localTime, _evalColor);
+        if (applyAnimatedProperty(object, prop, _evalColor)) updated.add(object);
+        continue;
+      }
+
       const targetVal = object[prop];
       if (!targetVal) continue;
 
@@ -678,11 +1239,11 @@ export class AnimationClip {
     return this.tracks.some((tr) => {
       if (tr.target && isDescendantOrSelfNode(tr.target, target)) return true;
       if (tr.name && target.getObjectByName) {
-        const nodeName = tr.name.split('.')[0];
-        if (nodeName && (target.name === nodeName || target.getObjectByName(nodeName))) return true;
+        const { nodePath } = splitTrackNameAndProperty(tr.name, tr.property);
+        const rootName = nodePath.includes('/') ? nodePath.split('/')[0] : nodePath;
+        if (rootName && (target.name === rootName || target.getObjectByName(rootName))) return true;
       }
       return false;
     });
   }
 }
-

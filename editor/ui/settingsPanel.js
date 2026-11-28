@@ -6,7 +6,55 @@ import { resizeRenderer, syncShadowResolutionUI, switchRenderBackend } from '../
 import { exitCameraView } from '../cameraView.js';
 import { applyEnvironmentPreset, loadEnvironmentFile, setNeutralLightingMode } from '../sceneActions.js';
 import { closeAllPopovers } from './popovers.js';
-import { drawTimelineCanvas, syncAnimationUI } from '../animationController.js';
+import {
+  drawTimelineCanvas,
+  syncAnimationUI,
+  bindAutoKeyframeControl,
+  recordAutoKeyframeIfNeeded,
+} from '../animationController.js';
+import { syncAnimatedInspectorValues } from './objectInspector.js';
+import { syncRangeVisual } from './rangeControls.js';
+
+export function syncAnimatedSettingsLights() {
+  const dir = lighting.dirLight;
+  if (dir) {
+    if (dom.dirIntensity) {
+      if (document.activeElement !== dom.dirIntensity) {
+        dom.dirIntensity.value = String(dir.intensity ?? 1);
+        syncRangeVisual(dom.dirIntensity);
+      }
+      if (dom.dirIntensityVal) dom.dirIntensityVal.textContent = (dir.intensity ?? 1).toFixed(1);
+    }
+    if (dom.dirColor && dir.color && document.activeElement !== dom.dirColor) {
+      dom.dirColor.value = dir.color.getStyle();
+    }
+    if (dom.dirShadows && document.activeElement !== dom.dirShadows) {
+      dom.dirShadows.checked = Boolean(dir.castShadow);
+      syncShadowResolutionUI();
+    }
+    if (dom.dirShadowSoft && dir.shadow) {
+      const soft = dir.shadow.radius ?? 1.25;
+      if (document.activeElement !== dom.dirShadowSoft) {
+        dom.dirShadowSoft.value = String(soft);
+        syncRangeVisual(dom.dirShadowSoft);
+      }
+      if (dom.dirShadowSoftVal) dom.dirShadowSoftVal.textContent = soft.toFixed(2);
+    }
+  }
+  const pt = lighting.pointLight;
+  if (pt) {
+    if (dom.pointIntensity) {
+      if (document.activeElement !== dom.pointIntensity) {
+        dom.pointIntensity.value = String(pt.intensity ?? 1);
+        syncRangeVisual(dom.pointIntensity);
+      }
+      if (dom.pointIntensityVal) dom.pointIntensityVal.textContent = (pt.intensity ?? 1).toFixed(1);
+    }
+    if (dom.pointColor && pt.color && document.activeElement !== dom.pointColor) {
+      dom.pointColor.value = pt.color.getStyle();
+    }
+  }
+}
 
 export function bindSettingsPanel() {
   if (dom.dirShadowRes) {
@@ -65,18 +113,33 @@ export function bindSettingsPanel() {
   });
 
   // Luces
+  const getDirLight = () => lighting.dirLight;
+  const getPointLight = () => lighting.pointLight;
+
   dom.dirIntensity?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.dirIntensityVal.textContent = v.toFixed(1);
-    if (lighting.dirLight) lighting.dirLight.intensity = v;
+    if (lighting.dirLight) {
+      lighting.dirLight.intensity = v;
+      if (sceneStore.selected === lighting.dirLight) syncAnimatedInspectorValues();
+    }
   });
+  bindAutoKeyframeControl(dom.dirIntensity, getDirLight, 'intensity');
+
   dom.dirColor?.addEventListener('input', (e) => {
-    if (lighting.dirLight) lighting.dirLight.color.set(e.target.value);
+    if (lighting.dirLight) {
+      lighting.dirLight.color.set(e.target.value);
+      if (sceneStore.selected === lighting.dirLight) syncAnimatedInspectorValues();
+    }
   });
+  bindAutoKeyframeControl(dom.dirColor, getDirLight, 'color');
+
   dom.dirShadows?.addEventListener('change', (e) => {
     if (!lighting.dirLight) return;
     lighting.dirLight.castShadow = e.target.checked;
     syncShadowResolutionUI();
+    if (sceneStore.selected === lighting.dirLight) syncAnimatedInspectorValues();
+    recordAutoKeyframeIfNeeded([lighting.dirLight], { properties: ['castShadow'] });
   });
   dom.dirShadowRes?.addEventListener('change', (e) => {
     if (!lighting.dirLight) return;
@@ -94,18 +157,32 @@ export function bindSettingsPanel() {
   dom.dirShadowSoft?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.dirShadowSoftVal.textContent = v.toFixed(2);
-    if (lighting.dirLight?.shadow) lighting.dirLight.shadow.radius = v;
+    if (lighting.dirLight?.shadow) {
+      lighting.dirLight.shadow.radius = v;
+      if (sceneStore.selected === lighting.dirLight) syncAnimatedInspectorValues();
+    }
   });
+  bindAutoKeyframeControl(dom.dirShadowSoft, getDirLight, 'shadow.radius');
+
   dom.dirOrbit?.addEventListener('change', (e) => { lighting.orbitLight = e.target.checked; });
 
   dom.pointIntensity?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.pointIntensityVal.textContent = v.toFixed(1);
-    if (lighting.pointLight) lighting.pointLight.intensity = v;
+    if (lighting.pointLight) {
+      lighting.pointLight.intensity = v;
+      if (sceneStore.selected === lighting.pointLight) syncAnimatedInspectorValues();
+    }
   });
+  bindAutoKeyframeControl(dom.pointIntensity, getPointLight, 'intensity');
+
   dom.pointColor?.addEventListener('input', (e) => {
-    if (lighting.pointLight) lighting.pointLight.color.set(e.target.value);
+    if (lighting.pointLight) {
+      lighting.pointLight.color.set(e.target.value);
+      if (sceneStore.selected === lighting.pointLight) syncAnimatedInspectorValues();
+    }
   });
+  bindAutoKeyframeControl(dom.pointColor, getPointLight, 'color');
   dom.ambIntensity?.addEventListener('input', (e) => {
     const v = Number(e.target.value);
     dom.ambIntensityVal.textContent = v.toFixed(2);

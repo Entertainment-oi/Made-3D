@@ -14,6 +14,8 @@ import {
   OrbitControls,
   HistoryManager,
   SpotLight,
+  DirectionalLight,
+  Texture,
   Vec3,
   Quat,
   AVAILABLE_MODULES,
@@ -2035,4 +2037,137 @@ test('AnimationTimeline unifica posición, rotación y escala en un solo keyfram
   assert.equal(rm.ok, true);
   assert.equal(tl.hasKeyframeAtSelection(obj, 0.5), false);
   assert.deepEqual(tl.getKeyframeTimesForSelection(obj), [1.5]);
+});
+
+test('Texture.createPreset genera presets válidos en Node y conserva userData al clonar', () => {
+  const presets = ['checker', 'grid', 'stripes', 'brick', 'wood', 'noise', 'uv'];
+  for (const id of presets) {
+    const tex = Texture.createPreset(id, { size: 64 });
+    assert.ok(tex instanceof Texture, `Preset ${id} debe devolver instancia Texture`);
+    assert.equal(tex.userData?.presetId, id);
+    assert.ok(tex.width >= 2 && tex.height >= 2);
+    tex.name = `preset-${id}`;
+    const cloned = tex.clone();
+    assert.equal(cloned.userData?.presetId, id);
+    assert.equal(cloned.name, tex.name);
+  }
+});
+
+test('AnimationClip, AnimationMixer y AnimationTimeline animan color, visibilidad, textura, opacidad, luz y cámara sin romper GLTFExporter', async () => {
+  const {
+    AnimationClip,
+    AnimationMixer,
+    AnimationTimeline,
+    NumberKeyframeTrack,
+    ColorKeyframeTrack,
+    BooleanKeyframeTrack,
+    ObjectKeyframeTrack,
+  } = await loadAnimation();
+  const { GLTFExporter } = await loadGLTFExporter();
+
+  const scene = new Scene();
+  const mesh = new Mesh(new BoxGeometry(1, 1, 1), new StandardMaterial({ color: 0xff0000, opacity: 1 }));
+  mesh.name = 'CuboProps';
+  const texA = Texture.createPreset('checker', { size: 32 });
+  const texB = Texture.createPreset('brick', { size: 32 });
+
+  const light = new DirectionalLight(0xffffff, 2.0);
+  light.name = 'SolPrincipal';
+
+  const cam = new PerspectiveCamera(50, 16 / 9, 0.1, 100);
+  cam.name = 'CamAnim';
+
+  scene.add(mesh, light, cam);
+
+  // 1. Auto-keyframe + timeline para propiedades no-transform
+  const tl = new AnimationTimeline();
+
+  mesh.material.color.setHex(0xff0000);
+  mesh.material.opacity = 1.0;
+  mesh.material.roughness = 0.2;
+  mesh.material.wireframe = false;
+  mesh.material.map = null;
+  mesh.visible = true;
+  tl.recordAutoKeyframe([mesh], {
+    properties: ['material.color', 'material.opacity', 'material.roughness', 'material.wireframe', 'material.map', 'visible'],
+    time: 0,
+  });
+
+  mesh.material.color.setHex(0x0000ff);
+  mesh.material.opacity = 0.2;
+  mesh.material.roughness = 0.8;
+  mesh.material.wireframe = true;
+  mesh.material.map = texA;
+  mesh.visible = false;
+  tl.recordAutoKeyframe([mesh], {
+    properties: ['material.color', 'material.opacity', 'material.roughness', 'material.wireframe', 'material.map', 'visible'],
+    time: 1.0,
+  });
+
+  const clip = tl.getActiveClipForObject(mesh);
+  assert.ok(clip, 'Debe crear clip para el objeto al auto-keyframear material/visibilidad');
+  assert.ok(clip.getTrackByTarget(mesh, 'material.color') instanceof ColorKeyframeTrack);
+  assert.ok(clip.getTrackByTarget(mesh, 'material.opacity') instanceof NumberKeyframeTrack);
+  assert.ok(clip.getTrackByTarget(mesh, 'material.roughness') instanceof NumberKeyframeTrack);
+  assert.ok(clip.getTrackByTarget(mesh, 'material.wireframe') instanceof BooleanKeyframeTrack);
+  assert.ok(clip.getTrackByTarget(mesh, 'material.map') instanceof ObjectKeyframeTrack);
+  assert.ok(clip.getTrackByTarget(mesh, 'visible') instanceof BooleanKeyframeTrack);
+
+  // Evaluar a mitad (t = 0.5): color interpolado, opacidad = 0.6, roughness = 0.5, visible = true (step), map = null (step)
+  tl.setCurrentTime(0.5, [mesh, light, cam], scene);
+  assert.ok(Math.abs(mesh.material.color.r - 0.5) < 1e-3);
+  assert.ok(Math.abs(mesh.material.color.b - 0.5) < 1e-3);
+  assert.ok(Math.abs(mesh.material.opacity - 0.6) < 1e-3);
+  assert.equal(mesh.material.transparent, true);
+  assert.ok(Math.abs(mesh.material.roughness - 0.5) < 1e-3);
+  assert.equal(mesh.visible, true);
+  assert.equal(mesh.material.wireframe, false);
+  assert.equal(mesh.material.map, null);
+
+  // Evaluar en t = 1.0: toma textura, wireframe = true y visible = false
+  tl.setCurrentTime(1.0, [mesh, light, cam], scene);
+  assert.equal(mesh.visible, false);
+  assert.equal(mesh.material.wireframe, true);
+  assert.equal(mesh.material.map, texA);
+  assert.ok(Math.abs(mesh.material.color.b - 1) < 1e-3);
+
+  // Copiar y pegar keyframe de propiedades no-transform en t = 2.0 y comprobar snapshot undo/redo
+  const kfData = clip.extractKeyframeData(1.0, { target: mesh, owner: mesh });
+  assert.ok(kfData && kfData.properties['material.map'] && kfData.properties['material.color']);
+  const beforeSnap = clip.captureSnapshot();
+  mesh.material.map = texB;
+  tl.recordAutoKeyframe([mesh], { properties: ['material.map'], time: 1.5 });
+  assert.equal(clip.hasKeyframeAt(1.5, { properties: ['material.map'] }), true);
+  clip.restoreSnapshot(beforeSnap);
+  assert.equal(clip.hasKeyframeAt(1.5, { properties: ['material.map'] }), false);
+  clip.applyKeyframeData(mesh, kfData, 2.0);
+  assert.equal(clip.hasKeyframeAt(2.0, { properties: ['material.map'] }), true);
+
+  // 2. Luz (intensity, color) y Cámara (fov) con AnimationMixer
+  const envClip = new AnimationClip('LuzYCamara', 2.0);
+  light.intensity = 1.0;
+  light.color.setHex(0xff0000);
+  envClip.setObjectKeyframe(light, 0, ['intensity', 'color']);
+  light.intensity = 5.0;
+  light.color.setHex(0x00ff00);
+  envClip.setObjectKeyframe(light, 1.0, ['intensity', 'color']);
+
+  cam.fov = 40;
+  envClip.setObjectKeyframe(cam, 0, ['fov']);
+  cam.fov = 80;
+  envClip.setObjectKeyframe(cam, 1.0, ['fov']);
+
+  const mixer = new AnimationMixer(scene);
+  const action = mixer.clipAction(envClip, 'once');
+  action.play();
+  mixer.update(0.5);
+  assert.ok(Math.abs(light.intensity - 3.0) < 1e-3);
+  assert.ok(Math.abs(light.color.r - 0.5) < 1e-3 && Math.abs(light.color.g - 0.5) < 1e-3);
+  assert.ok(Math.abs(cam.fov - 60) < 1e-3);
+
+  // 3. GLTFExporter debe ignorar limpiamente pistas de propiedades no glTF sin lanzar errores
+  mesh.visible = true;
+  mesh.material.map = null;
+  const glb = await new GLTFExporter().parse(scene, { binary: true, animations: [clip, envClip] });
+  assert.ok(glb instanceof ArrayBuffer && glb.byteLength > 0);
 });

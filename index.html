@@ -1206,6 +1206,10 @@
                 </div>
               </div>
 
+              <div class="obj-visibility-bar">
+                <label class="check-row"><input type="checkbox" id="obj-visible" checked /> Visible en escena</label>
+              </div>
+
               <div class="popover-subtabs" id="object-subtabs">
                 <button type="button" class="chip-tab is-active" data-obj-sub="material" id="tab-btn-obj-material">Material</button>
                 <button type="button" class="chip-tab" data-obj-sub="subsurf" id="tab-btn-obj-subsurf">Alisar</button>
@@ -1233,6 +1237,27 @@
                   <div class="field-row">
                     <label class="field-label" for="mat-color">Color base</label>
                     <input type="color" id="mat-color" class="input-color" value="#4f86f7" />
+                  </div>
+                  <div class="mat-texture-block">
+                    <div class="field-row">
+                      <label class="field-label" for="mat-texture-preset">Textura (Color) <span id="mat-texture-state" class="meta-text">Sin textura</span></label>
+                      <select id="mat-texture-preset" class="input-select">
+                        <option value="none">Sin textura</option>
+                        <option value="checker">Tablero (Checker)</option>
+                        <option value="grid">Cuadrícula</option>
+                        <option value="stripes">Rayas</option>
+                        <option value="brick">Ladrillo</option>
+                        <option value="wood">Madera</option>
+                        <option value="noise">Piedra / Ruido</option>
+                        <option value="uv">Guía UV</option>
+                        <option value="custom" hidden>Imagen personalizada</option>
+                      </select>
+                    </div>
+                    <div class="mat-texture-actions">
+                      <button type="button" id="btn-mat-texture-upload" class="action-btn">Subir imagen...</button>
+                      <button type="button" id="btn-mat-texture-clear" class="action-btn" hidden>Quitar textura</button>
+                    </div>
+                    <input type="file" id="mat-map-file-input" class="sr-only" accept=".png,.jpg,.jpeg,.webp,.gif,.bmp" />
                   </div>
                   <div id="row-mat-shininess" class="field-row">
                     <label class="field-label" for="mat-shininess">Brillo especular <span id="mat-shininess-val" class="val-num">48</span></label>
@@ -1290,14 +1315,12 @@
                           <button type="button" class="mat-map-clear" data-mat-map-clear="emissiveMap" hidden>✕</button>
                         </div>
                       </div>
-                      <input type="file" id="mat-map-file-input" class="sr-only" accept=".png,.jpg,.jpeg,.webp" />
                     </div>
                   </div>
                   <div class="field-row">
                     <label class="field-label" for="mat-opacity">Opacidad <span id="mat-opacity-val" class="val-num">1.00</span></label>
                     <input type="range" id="mat-opacity" min="0.05" max="1" step="0.01" value="1" />
                   </div>
-                  <label class="check-row"><input type="checkbox" id="mat-texture" /> Textura de prueba</label>
                   <label class="check-row"><input type="checkbox" id="mat-wireframe" /> Mostrar alambre (Wireframe)</label>
                   <label class="check-row"><input type="checkbox" id="obj-cast-shadow" checked /> Proyectar sombra</label>
                   <label class="check-row"><input type="checkbox" id="obj-auto-spin" /> Rotación automática</label>
